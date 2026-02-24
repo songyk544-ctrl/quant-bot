@@ -19,7 +19,7 @@ def get_top_200_tickers():
 @st.cache_data
 def load_full_data(start, end, ticker):
     df_price = stock.get_market_ohlcv(start, end, ticker)
-    df_investor = stock.get_market_net_purchases_of_equities_by_ticker(start, end, ticker)
+    df_investor = stock.get_market_trading_value_by_date(start, end, ticker, detail=True)
     return pd.concat([df_price, df_investor], axis=1)
 
 # 데이터 로딩 시작
