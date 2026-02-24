@@ -77,7 +77,7 @@ try:
         st.metric(
             label="오늘 거래량",
             value=f"{current_vol:,}주",
-            delat=f"{vol_change:,}주",
+            delta=f"{vol_change:,}주",
             delta_color="normal"
         )
 
