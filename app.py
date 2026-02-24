@@ -72,7 +72,11 @@ try:
     # 캔들 차트 추가
     fig.add_trace(go.Candlestick(
         x=df.index.astype(str), open=df['시가'], high=df['고가'], 
-        low=df['저가'], close=df['종가'], name="주가"
+        low=df['저가'], close=df['종가'], name="주가",
+        increasing_line_color='red', 
+        increasing_fillcolor='red',  
+        decreasing_line_color='blue', 
+        decreasing_fillcolor='blue'
     ), row=1, col=1)
 
     # 이동 평균선 추가
@@ -95,12 +99,11 @@ try:
     fig.update_layout(
         height=900,
         margin=dict(l=10, r=10, b=10, t=10),
-        xaxis_rangeslider_visible=False,
-        xaxis_type='category',
+        xaxis_rangeslider_visible=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
 
-    fig.update_xaxes(nticks=12, row=3, col=1)
+    fig.update_xaxes(type='category', nticks=12)
 
     st.plotly_chart(fig, use_container_width=True)
 
