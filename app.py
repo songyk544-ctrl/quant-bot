@@ -77,8 +77,11 @@ try:
     fig.update_layout(
         height=500,
         margin=dict(l=10, r=10, b=10, t=10),
-        xaxis_rangeslider_visible=False
+        xaxis_rangeslider_visible=False,
+        xaxis_type='category'
     )
+
+    fig.update_xaxes(nticks=10)
 
     st.plotly_chart(fig, use_container_width=True)
 
