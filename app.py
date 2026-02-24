@@ -54,9 +54,33 @@ try:
 
     with col2:
         st.subheader("💡 종목 퀵 정보")
-        # 데이터프레임의 가장 마지막 줄(최근 거래일) 데이터를 뽑아서 예쁘게 보여줍니다.
-        st.metric(label="마지막 거래일 종가", value=f"{df.iloc[-1]['종가']:,}원")
-        st.metric(label="거래량", value=f"{df.iloc[-1]['거래량']:,}주")
-        
+        # 1. 등락 계산 (오늘 종가 - 어제 종가)
+        current_price = int(df.iloc[-1]['종가'])
+        yesterday_price = int(df.iloc[-2]['종가'])
+        change = current_price - yesterday_price
+
+        # 2. 전일 대비 수익률 계산
+        change_rate = (change / yesterday_price) * 100
+
+        # 3. metric 표시
+        st.metric(
+            label="현재 종가",
+            value=f"{current_price:,}원",
+            delta=f"{change:,}원 ({change_rate:.2f}%)"
+        )
+
+        # 거래량도 동일하게 전일 대비 변화량 표시
+        current_vol = int(df.iloc[-1]["거래량"])
+        yesterday_vol = int(df.iloc[-2]["거래량"])
+        vol_change = current_vol - yesterday_vol
+
+        st.metric(
+            label="오늘 거래량",
+            value=f"{current_vol:,}주",
+            delat=f"{vol_change:,}주",
+            delta_color="normal"
+        )
+
+
 except Exception as e:
     st.error(f"데이터를 불러오는 중 에러가 발생했습니다: {e}")
