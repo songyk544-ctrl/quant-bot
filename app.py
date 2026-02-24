@@ -63,34 +63,42 @@ try:
     df['MA60'] = df['종가'].rolling(window=60).mean()
     df['MA120'] = df['종가'].rolling(window=120).mean()
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                        vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2],
+                        subplot_titles=("주가 및 이동평균선", "거래량", "투자자별 수급"))
     
     # 캔들 차트 추가
     fig.add_trace(go.Candlestick(
         x=df.index.astype(str), open=df['시가'], high=df['고가'], 
         low=df['저가'], close=df['종가'], name="주가"
-    ), row=1, col1=1)
+    ), row=1, col=1)
 
     # 이동 평균선 추가
     for ma, color in zip(['MA5', 'MA20', 'MA60', 'MA120'], ['white', 'gold', 'purple', 'green']):
         fig.add_trace(go.Scatter(x=df.index.astype(str), y=df[ma], name=ma,
-                                 line=dict(width=1, color=color)), row=1, col1=1)
-        
+                                 line=dict(width=1, color=color)), row=1, col=1)
+    
+    # 거래량
+    fig.add_trace(go.Bar(
+        x=df.index.astype(str), y=df['거래량'], name="거래량",
+        marker_color="lightgray", opacity=0.7
+    ), row=2, col=1)
+
     # 수급 보조 지표
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인'], name="외국인", marker_color='red'), row=2, col1=1)
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['기관합계'], name="기관", marker_color='blue'), row=2, col1=1)
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['연기금'], name="연기금", marker_color='orange'), row=2, col1=1)
+    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인'], name="외국인", marker_color='red'), row=3, col=1)
+    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['기관합계'], name="기관", marker_color='blue'), row=3, col=1)
+    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['연기금'], name="연기금", marker_color='orange'), row=3, col=1)
 
     # 레이아웃 업데이트
     fig.update_layout(
-        height=800,
+        height=900,
         margin=dict(l=10, r=10, b=10, t=10),
         xaxis_rangeslider_visible=False,
-        xaxis_type='category'
+        xaxis_type='category',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
 
-    fig.update_xaxes(nticks=15, row=2, col=1)
+    fig.update_xaxes(nticks=12, row=3, col=1)
 
     st.plotly_chart(fig, use_container_width=True)
 
