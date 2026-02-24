@@ -99,7 +99,7 @@ try:
     fig.update_layout(
         height=900,
         margin=dict(l=10, r=10, b=10, t=10),
-        xaxis_rangeslider_visible=True,
+        xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
 
