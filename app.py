@@ -85,7 +85,7 @@ try:
     ), row=2, col=1)
 
     # 수급 보조 지표
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인'], name="외국인", marker_color='red'), row=3, col=1)
+    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인합계'], name="외국인", marker_color='red'), row=3, col=1)
     fig.add_trace(go.Bar(x=df.index.astype(str), y=df['기관합계'], name="기관", marker_color='blue'), row=3, col=1)
     fig.add_trace(go.Bar(x=df.index.astype(str), y=df['연기금'], name="연기금", marker_color='orange'), row=3, col=1)
 
