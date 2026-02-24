@@ -20,6 +20,8 @@ def get_top_200_tickers():
 def load_full_data(start, end, ticker):
     df_price = stock.get_market_ohlcv(start, end, ticker)
     df_investor = stock.get_market_trading_value_by_date(start, end, ticker, detail=True)
+    inst_cols = [c for c in ['금융투자','보험','투신','사모','은행','기타금융','연기금'] if c in df_investor.columns]
+    df_investor['기관합계'] = df_investor[inst_cols].sum(axis=1) if inst_cols else 0
     return pd.concat([df_price, df_investor], axis=1)
 
 # 데이터 로딩 시작
@@ -85,7 +87,7 @@ try:
     ), row=2, col=1)
 
     # 수급 보조 지표
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인합계'], name="외국인", marker_color='red'), row=3, col=1)
+    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인'], name="외국인", marker_color='red'), row=3, col=1)
     fig.add_trace(go.Bar(x=df.index.astype(str), y=df['기관합계'], name="기관", marker_color='blue'), row=3, col=1)
     fig.add_trace(go.Bar(x=df.index.astype(str), y=df['연기금'], name="연기금", marker_color='orange'), row=3, col=1)
 
