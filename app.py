@@ -42,7 +42,7 @@ def load_detail_data(ticker):
     start_date = (today - timedelta(days=365 * 3)).strftime("%Y%m%d")
     end_date = today.strftime("%Y%m%d")
 
-    df_price = stock.get_get_market_ohlcv(start_date, end_date, ticker)
+    df_price = stock.get_market_ohlcv(start_date, end_date, ticker)
     df_fund = stock.get_market_fundamental(start_date, end_date, ticker)
 
     df = pd.concat([df_price['종가'], df_fund[['BPS', 'PBR']]], axis=1).dropna()
