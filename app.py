@@ -12,7 +12,7 @@ st.set_page_config(layout="wide", page_title="나만의 AI 퀀트 비서", page_
 # 함수 적용
 @st.cache_data
 def load_summary_data():
-    toady = datetime.today()
+    today = datetime.today()
 
     # 주말/공휴일을 대비해 최근 5일 중 데이터가 있는 가장 마지막 거래일을 찾습니다.
     for i in range(5):
