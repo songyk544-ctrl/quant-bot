@@ -23,14 +23,30 @@ def load_summary_data():
             top_200 = df.sort_values(by='시가총액', ascending=False).head(200)
             
             # [마법의 1줄] 시가총액을 1억(100,000,000)으로 나누어 '억' 단위로 변환합니다.
-            top_200['시가총액'] = top_200['시가총액'] / 100000000
+            top_200['시가총액'] = top_200['시가총액'] / 100_000_000
             
             top_200['종목명'] = [stock.get_market_ticker_name(t) for t in top_200.index]
             top_200 = top_200.reset_index().rename(columns={'티커': '종목코드'})
             
-            np.random.seed(42) 
-            top_200['AI_Score'] = np.random.randint(60, 100, size=200)
-            
+            # ==========================================
+            # 🧠 [NEW] AI 퀀트 스코어링 엔진 (가치투자 기반)
+            # ==========================================
+            # 1. 적자 기업(PER 0 이하) 필터링
+            valid_per = top_200['PER'] > 0
+            valid_pbr = top_200['PBR'] > 0
+
+            # 2. 백분위 랭킹 계산 (rank(pct=True)는 0.0 ~ 1.0 사이의 비율을 반환)
+            # PER/PBR은 낮을수록 좋으므로, (1 - 비율)을 하여 점수를 뒤집어 줍니다.
+            top_200.loc[valid_per, 'PER_Score'] = (1.0 - top_200.loc[valid_per, 'PER'].rank(pct=True)) * 100
+            top_200.loc[valid_pbr, 'PBR_Score'] = (1.0 - top_200.loc[valid_pbr, 'PBR'].rank(pct=True)) * 100
+
+            # 3. 결측치나 적자 기업은 기본 패널티 점수(20점) 부여
+            top_200['PER_Score'] = top_200['PER_Score'].fillna(20)
+            top_200['PBR_Score'] = top_200['PBR_Score'].fillna(20)
+
+            # 4. 최종 AI Score 산출 (두 지표의 평균)
+            top_200['AI_Score'] = ((top_200['PER_Score'] + top_200['PBR_Score']) / 2).astype(int)
+
             display_cols = ['종목명', '종목코드', 'AI_Score', '종가', '등락률', 'PER', 'PBR', '시가총액']
             return top_200[display_cols]
             
