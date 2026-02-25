@@ -1,115 +1,80 @@
 import streamlit as st
 from pykrx import stock
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# 페이지 기본 설정 (앱을 모바일/PC 화면에 넓게 꽉 차게 쓰기)
+# 페이지 기본 설정
 st.set_page_config(layout="wide", page_title="나만의 AI 퀀트 비서", page_icon="📈")
 
 # 함수 적용
 @st.cache_data
-def get_top_200_tickers():
-    today_str = datetime.today().strftime("%Y%m%d")
-    df_cap = stock.get_market_cap(today_str)
-    top_200 = df_cap.sort_values(by='시가총액', ascending=False).head(200)
-    return dict(zip([stock.get_market_ticker_name(t) for t in top_200.index], top_200.index))
+def load_summary_data():
+    toady = datetime.today()
 
-@st.cache_data
-def load_full_data(start, end, ticker):
-    df_price = stock.get_market_ohlcv(start, end, ticker)
-    df_investor = stock.get_market_trading_value_by_date(start, end, ticker, detail=True)
-    inst_cols = [c for c in ['금융투자','보험','투신','사모','은행','기타금융','연기금'] if c in df_investor.columns]
-    df_investor['기관합계'] = df_investor[inst_cols].sum(axis=1) if inst_cols else 0
-    return pd.concat([df_price, df_investor], axis=1)
+    # 주말/공휴일을 대비해 최근 5일 중 데이터가 있는 가장 마지막 거래일을 찾습니다.
+    for i in range(5):
+        target_date = (today - timedelta(days=i)).strftime("%Y%m%d")
+        df_cap = stock.get_market_cap(target_date, market="KOSPI")
 
-# 데이터 로딩 시작
-with st.spinner("데이터 엔진 가동 중..."):
-    TICKER_MAP = get_top_200_tickers()
+        if not df_cap.empty:
+            df_ohlcv = stock.get_market_ohlcv(target_date, market="KOSPI")
+            df_fundamental = stock.get_market_fundamental(target_date, market="KOSPI")
 
-with st.sidebar:
-    selected_name = st.selectbox("분석할 종목 선택", list(TICKER_MAP.keys()))
-    st.markdown("---")
-    st.write("※ 매일 아침 자동으로 시총 순위가 갱신됩니다.")
+            df = pd.concat([df_cap, df_ohlcv["등락률"], df_fundamental[['PER', 'PBR']]], axis=1)
 
-today = datetime.today()
-start_date = (today - timedelta(days=250)).strftime("%Y%m%d")
-end_date = today.strftime("%Y%m%d")
-selected_ticker = TICKER_MAP[selected_name]
+            top_200 = df.sort_values(by="시가총액", ascending=False).head(200)
 
+            top_200['종목명'] = [stock.get_market_ticker_name(t) for t in top_200.index]
+            top_200 = top_200.reset_index().rename(columns={'티커':'종목코드'})
 
-# 3. 메인화면
-selected_ticker = TICKER_MAP[selected_name]
-st.title(f"📈 {selected_name} 분석 리포트")
+            # [임시 데이터] 추후 AI/XGBoost가 계산할 퀀트점수 뼈대
+            np.random.seed(42)
+            top_200['AI_Score'] = np.random.randint(60,100,size=200)
 
-# 향후 RAG 에이전트가 들어갈 VIP 존을 미리 만들어 둡니다.
-st.info("🤖 **AI 비서 브리핑 (예정)**: 뉴스와 수급을 분석한 결과가 곧 여기에 배달됩니다.")
-
-try:
-    df = load_full_data(start_date, end_date, selected_ticker)
-
-    # 상단 요약 정보
-    m1, m2, m3 = st.columns(3)
-    curr_p = int(df.iloc[-1]['종가'])
-    prev_p = int(df.iloc[-2]['종가'])
-    change = curr_p - prev_p
-    m1.metric("현재가", f"{curr_p:,}원", f"{change:,}원")
-    m2.metric("거래량", f"{int(df.iloc[-1]['거래량']):,}주")
-    m3.metric("변동률", f"{(change/prev_p)*100:.2f}%")
-
-    # --- 차트 시작 ---
-    # 1. 이동평균선(MA) 계산
-    df['MA5'] = df['종가'].rolling(window=5).mean()
-    df['MA20'] = df['종가'].rolling(window=20).mean()
-    df['MA60'] = df['종가'].rolling(window=60).mean()
-    df['MA120'] = df['종가'].rolling(window=120).mean()
-
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2],
-                        subplot_titles=("주가 및 이동평균선", "거래량", "투자자별 수급"))
+            # 화면에 보여줄 컬럼만
+            display_cols = ["종목명", "종목코드", "AI_Score", "종가", "등락률", "PER", "PBR", "시가총액"]
+            return top_200[display_cols]
     
-    # 캔들 차트 추가
-    fig.add_trace(go.Candlestick(
-        x=df.index.astype(str), open=df['시가'], high=df['고가'], 
-        low=df['저가'], close=df['종가'], name="주가",
-        increasing_line_color='red', 
-        increasing_fillcolor='red',  
-        decreasing_line_color='blue', 
-        decreasing_fillcolor='blue'
-    ), row=1, col=1)
+    return pd.DataFrame()
 
-    # 이동 평균선 추가
-    for ma, color in zip(['MA5', 'MA20', 'MA60', 'MA120'], ['white', 'gold', 'purple', 'green']):
-        fig.add_trace(go.Scatter(x=df.index.astype(str), y=df[ma], name=ma,
-                                 line=dict(width=1, color=color)), row=1, col=1)
-    
-    # 거래량
-    fig.add_trace(go.Bar(
-        x=df.index.astype(str), y=df['거래량'], name="거래량",
-        marker_color="lightgray", opacity=0.7
-    ), row=2, col=1)
 
-    # 수급 보조 지표
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['외국인'], name="외국인", marker_color='red'), row=3, col=1)
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['기관합계'], name="기관", marker_color='blue'), row=3, col=1)
-    fig.add_trace(go.Bar(x=df.index.astype(str), y=df['연기금'], name="연기금", marker_color='orange'), row=3, col=1)
+# 데이터 로딩
+with st.spinner("KRX에서 상위 200개 종목의 펀더멘털을 스캔 중입니다..."):
+    df_summary = load_summary_data()
 
-    # 레이아웃 업데이트
-    fig.update_layout(
-        height=900,
-        margin=dict(l=10, r=10, b=10, t=10),
-        xaxis_rangeslider_visible=False,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+st.title("🤖 퀀트 비서 서머리 대시보드")
+
+# 화면을 두 개의 탭으로 깔끔하게 나눕니다.
+
+tab1, tab2 = st.tabs(["🏆 스코어링 랭킹 보드", "🔍 개별 종목 상세 (차트/뉴스)"])
+
+with tab1:
+    st.markdown("💡 **Tip:** 열 이름(AI_Score, 등락률 등)을 클릭하면 해당 기준으로 정렬됩니다.")
+
+    st.dataframe(
+        df_summary,
+        column_config={
+            "종목명": st.column_config.TextColumn("종목명", width="medium"),
+            "종목코드": st.column_config.TextColumn("코드"),
+            "AI_Score": st.column_config.ProgressColumn(
+                "퀀트 점수", 
+                help="향후 알고리즘이 계산할 종합 매력도",
+                format="%d 점",
+                min_value=0,
+                max_value=100,
+            ),
+            "종가": st.column_config.NumberColumn("현재가", format="%d 원"),
+            "등락률": st.column_config.NumberColumn("등락률", format="%.2f %%"),
+            "PER": st.column_config.NumberColumn("PER", format="%.1f 배"),
+            "PBR": st.column_config.NumberColumn("PBR", format="%.2f 배"),
+            "시가총액": st.column_config.NumberColumn("시총", format="%d")
+        },
+        hide_index=True,
+        use_container_width=True,
+        height=600 # 스크롤 하기 편하게 높이 지정
     )
-
-    fig.update_xaxes(type='category', nticks=12)
-
-    st.plotly_chart(fig, use_container_width=True)
-
-
-    with st.expander("🔍 상세 데이터 보기"):
-        st.dataframe(df.tail(10).sort_index(ascending=False), use_container_width=True)
-
-except Exception as e:
-    st.error(f"데이터를 불러오는 중 에러가 발생했습니다: {e}")
+with tab2:
+    st.info("여기에 선택한 종목의 'AI 요약 브리핑', 'PER/PBR 밴드 차트', 그리고 '보조 수급 차트'가 들어갈 예정입니다.")
