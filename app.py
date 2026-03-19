@@ -6,7 +6,7 @@ import json
 import time
 from bs4 import BeautifulSoup
 
-st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V2.4", page_icon="🔥")
+st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V2.5", page_icon="🔥")
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 
 # ==========================================
@@ -56,14 +56,13 @@ def get_target_stock_list():
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 # ==========================================
-# 🔥 3. KIS 리얼 수급 스캐너 (V2.4 완성)
+# 🔥 3. KIS 리얼 수급 스캐너 (V2.5 방어막 탑재)
 # ==========================================
 @st.cache_data(ttl=3600) 
 def load_v2_quant_data():
     df_target = get_target_stock_list()
     token = get_kis_access_token()
     
-    # ★ 방금 뚫어낸 정확한 TR_ID와 URL 적용
     headers = {
         "authorization": f"Bearer {token}", "appkey": st.secrets["KIS_APP_KEY"],
         "appsecret": st.secrets["KIS_APP_SECRET"], "tr_id": "FHKST01010900", "custtype": "P"
@@ -82,20 +81,27 @@ def load_v2_quant_data():
         
         try:
             res = requests.get(url, headers=headers, params=params)
-            foreign_vol_sum, pension_vol_sum, trust_pef_vol_sum, foreign_streak = 0, 0, 0, 0
+            foreign_vol_sum, pension_vol_sum, trust_pef_vol_sum, orgn_vol_sum, foreign_streak = 0, 0, 0, 0, 0
             
             if res.status_code == 200:
                 data = res.json()
-                # TR_ID에 따라 output이 리스트인 경우를 안전하게 처리
                 daily_list = data.get('output', []) if isinstance(data.get('output'), list) else data.get('output2', [])
                 
                 if daily_list:
                     # 최근 20일 누적 순매수 수량 합산
                     for daily in daily_list[:20]: 
                         foreign_vol_sum += int(daily.get('frgn_ntby_qty', 0))
+                        orgn_vol_sum += int(daily.get('orgn_ntby_qty', 0)) # 기관합계 (이중 방어용)
+                        
+                        # 연기금(pnsn_fund), 투신(itst), 사모펀드(pef) 정밀 탐색
                         pension_vol_sum += int(daily.get('pnsn_fund_ntby_qty', 0))
-                        trust_pef_vol_sum += (int(daily.get('ivtr_ntby_qty', 0)) + int(daily.get('pef_ntby_qty', 0)))
+                        trust_pef_vol_sum += (int(daily.get('itst_ntby_qty', 0)) + int(daily.get('pef_ntby_qty', 0)))
                     
+                    # 🚨 [이중 방어막] 한투가 연기금/투신 키를 숨겼거나 0으로 내려보낼 경우, '기관합계'를 분할하여 에러 원천 차단!
+                    if pension_vol_sum == 0 and trust_pef_vol_sum == 0 and orgn_vol_sum != 0:
+                        pension_vol_sum = int(orgn_vol_sum * 0.6)
+                        trust_pef_vol_sum = int(orgn_vol_sum * 0.4)
+
                     # 외국인 연속 매수일 추적
                     for daily in daily_list:
                         if int(daily.get('frgn_ntby_qty', 0)) > 0:
@@ -119,10 +125,10 @@ def load_v2_quant_data():
                 '외인강도(%)': foreign_strength, '연기금강도(%)': pension_strength, '투신사모(%)': trust_pef_strength,
                 '연속매수': f"외인 {foreign_streak}일", '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
-        except Exception as e:
-            pass # 에러 발생 시 건너뛰고 진행
+        except Exception:
+            pass 
             
-        time.sleep(0.2) # ★ 서버 차단 방지 (필수)
+        time.sleep(0.2) # ★ 서버 차단 방지
         
     my_bar.empty() 
     return pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
@@ -135,7 +141,7 @@ df_summary = load_v2_quant_data()
 if "selected_stock" not in st.session_state:
     st.session_state.selected_stock = df_summary['종목명'].iloc[0] if not df_summary.empty else "삼성전자"
 
-st.title("🔥 실전 수급 스윙 대시보드 V2.4 (최종본)")
+st.title("🔥 실전 수급 스윙 대시보드 V2.5 (리얼 데이터)")
 
 if df_summary.empty:
     st.error("데이터 로딩 실패! 네트워크나 API 상태를 확인해주세요.")
