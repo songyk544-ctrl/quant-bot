@@ -1,208 +1,220 @@
-# import streamlit as st
-# from pykrx import stock
-# import pandas as pd
-# from datetime import datetime, timedelta
-# import numpy as np
-# import plotly.graph_objects as go
-
-# st.set_page_config(layout="wide", page_title="나만의 퀀트 비서", page_icon="🤖")
-
-# @st.cache_data
-# def load_summary_data():
-#     today = datetime.today()
-    
-#     for i in range(5):
-#         target_date = (today - timedelta(days=i)).strftime("%Y%m%d")
-#         df_cap = stock.get_market_cap(target_date, market="KOSPI")
-        
-#         if not df_cap.empty:
-#             df_ohlcv = stock.get_market_ohlcv(target_date, market="KOSPI")
-#             df_fundamental = stock.get_market_fundamental(target_date, market="KOSPI")
-            
-#             df = pd.concat([df_cap, df_ohlcv['등락률'], df_fundamental[['PER', 'PBR']]], axis=1)
-#             top_200 = df.sort_values(by='시가총액', ascending=False).head(200)
-            
-#             # [마법의 1줄] 시가총액을 1억(100,000,000)으로 나누어 '억' 단위로 변환합니다.
-#             top_200['시가총액'] = top_200['시가총액'] / 100_000_000
-            
-#             top_200['종목명'] = [stock.get_market_ticker_name(t) for t in top_200.index]
-#             top_200 = top_200.reset_index().rename(columns={'티커': '종목코드'})
-            
-#             # ==========================================
-#             # 🧠 [NEW] AI 퀀트 스코어링 엔진 (가치투자 기반)
-#             # ==========================================
-#             # 1. 적자 기업(PER 0 이하) 필터링
-#             valid_per = top_200['PER'] > 0
-#             valid_pbr = top_200['PBR'] > 0
-
-#             # 2. 백분위 랭킹 계산 (rank(pct=True)는 0.0 ~ 1.0 사이의 비율을 반환)
-#             # PER/PBR은 낮을수록 좋으므로, (1 - 비율)을 하여 점수를 뒤집어 줍니다.
-#             top_200.loc[valid_per, 'PER_Score'] = (1.0 - top_200.loc[valid_per, 'PER'].rank(pct=True)) * 100
-#             top_200.loc[valid_pbr, 'PBR_Score'] = (1.0 - top_200.loc[valid_pbr, 'PBR'].rank(pct=True)) * 100
-
-#             # 3. 결측치나 적자 기업은 기본 패널티 점수(20점) 부여
-#             top_200['PER_Score'] = top_200['PER_Score'].fillna(20)
-#             top_200['PBR_Score'] = top_200['PBR_Score'].fillna(20)
-
-#             # 4. 최종 AI Score 산출 (두 지표의 평균)
-#             top_200['AI_Score'] = ((top_200['PER_Score'] + top_200['PBR_Score']) / 2).astype(int)
-
-#             display_cols = ['종목명', '종목코드', 'AI_Score', '종가', '등락률', 'PER', 'PBR', '시가총액']
-#             return top_200[display_cols]
-            
-#     return pd.DataFrame()
-
-# @st.cache_data
-# def load_detail_data(ticker):
-#     today = datetime.today()
-#     start_date = (today - timedelta(days=365 * 3)).strftime("%Y%m%d")
-#     end_date = today.strftime("%Y%m%d")
-
-#     df_price = stock.get_market_ohlcv(start_date, end_date, ticker)
-#     df_fund = stock.get_market_fundamental(start_date, end_date, ticker)
-
-#     df = pd.concat([df_price['종가'], df_fund[['BPS', 'PBR']]], axis=1).dropna()
-#     return df
-
-# with st.spinner("KRX 데이터 동기화 중..."):
-#     df_summary = load_summary_data()
-
-# with st.sidebar:
-#     st.header("🔍 종목 상세 검색")
-#     # 200개 종목명과 코드를 딕셔너리로 묶어 선택하기 쉽게 만듭니다.
-#     ticker_dict = dict(zip(df_summary['종목명'], df_summary['종목코드']))
-#     selected_name = st.selectbox("분석할 종목을 고르세요", list(ticker_dict.keys()))
-#     selected_ticker = ticker_dict[selected_name]
-#     st.markdown('---')
-#     st.caption("※ 여기서 선택한 종목은 'Tab 2'에 상세 분석됩니다.")
-
-# st.title("🤖 퀀트 비서 서머리 대시보드")
-# tab1, tab2 = st.tabs(["🏆 스코어링 랭킹 보드", f"📊 [{selected_name}] 상세 분석"])
-
-# with tab1:
-#     st.markdown("💡 **Tip:** 열 이름을 클릭하면 내림차순/오름차순으로 정렬됩니다.")
-    
-#     def color_fluctuation(val):
-#         if val > 0:
-#             return 'color: #FF3333; font-weight: bold;'
-#         elif val < 0:
-#             return 'color: #0066FF; font-weight: bold;'
-#         return 'color: gray;'
-
-#     def format_fluctuation(val):
-#         if val > 0:
-#             return f"🔺 +{val:.2f}%"
-#         elif val < 0:
-#             return f"🔻 {val:.2f}%"
-#         return f"➖ {val:.2f}%"
-
-#     # 시가총액 포맷을 '{:,.0f}' 로 유지하면 억 단위 변환된 숫자에 예쁘게 콤마가 찍힙니다.
-#     styled_df = df_summary.style.map(color_fluctuation, subset=['등락률']) \
-#                                 .format({
-#                                     "종가": "{:,.0f}",
-#                                     "시가총액": "{:,.0f}", 
-#                                     "등락률": format_fluctuation,
-#                                     "PER": "{:.1f}",
-#                                     "PBR": "{:.2f}"
-#                                 })
-
-#     st.dataframe(
-#         styled_df,
-#         column_config={
-#             "종목명": st.column_config.TextColumn("종목명", width="medium"),
-#             "종목코드": st.column_config.TextColumn("코드"),
-#             "AI_Score": st.column_config.ProgressColumn(
-#                 "퀀트 점수", 
-#                 help="향후 알고리즘이 계산할 종합 매력도",
-#                 format="%d 점",
-#                 min_value=0,
-#                 max_value=100,
-#             ),
-#             "종가": st.column_config.Column("현재가 (원)"),
-#             "등락률": st.column_config.Column("등락률 (%)"),
-#             "PER": st.column_config.Column("PER (배)"),
-#             "PBR": st.column_config.Column("PBR (배)"),
-#             # 단위가 '억 원'임을 명시해 줍니다.
-#             "시가총액": st.column_config.Column("시가총액 (억 원)") 
-#         },
-#         hide_index=True,
-#         use_container_width=True,
-#         height=600 
-#     )
-
-# with tab2:
-#     st.info("여기에 선택한 종목의 'AI 요약 브리핑', 'PER/PBR 밴드 차트', 그리고 '보조 수급 차트'가 들어갈 예정입니다.")
-#     st.subheader(f"📈 {selected_name} PBR 밴드 (과거 3년 가치평가)")
-
-#     try:
-#         df_detail = load_detail_data(selected_ticker)
-
-#         min_pbr = df_detail['PBR'].min()
-#         max_pbr = df_detail['PBR'].max()
-#         pbr_levels = np.linspace(min_pbr, max_pbr, 5)
-
-#         fig = go.Figure()
-
-#         # 1. 주가 그리기 (흰색 굵은 선)
-#         fig.add_trace(go.Scatter(x=df_detail.index, y=df_detail['종가'], name='실제 주가', line=dict(color='white', width=2)))
-
-#         colors = ['#3498DB', '#2ECC71', '#F1C40F', '#E67E22', '#E74C3C'] # 파랑(저평가) -> 빨강(고평가)
-
-#         for i, p_level in enumerate(pbr_levels):
-#             band_price = df_detail['BPS'] * p_level
-#             fig.add_trace(go.Scatter(
-#                 x=df_detail.index,
-#                 y=band_price,
-#                 name=f'PBR {p_level:.2f}x',
-#                 line=dict(color=colors[i], width=1, dash='dot')
-#             ))
-            
-#         fig.update_layout(
-#             height=600,
-#             template="plotly_dark",
-#             margin=dict(l=10, r=10, b=10, t=30),
-#             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-#             hovermode="x unified" # 마우스를 올리면 모든 선의 값을 한 번에 보여줌
-#         )
-
-#         st.plotly_chart(fig, use_container_width=True)
-        
-#         st.info("💡 **해석 방법:** 흰색 실선(주가)이 파란색 점선(하단 밴드)에 가까울수록 역사적 저평가 구간이며, 빨간색 점선(상단 밴드)에 닿을수록 고평가(과열) 구간입니다.")
-        
-#     except Exception as e:
-#         st.error(f"차트 데이터를 불러오는 중 에러가 발생했습니다: {e}")
-
 import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+import numpy as np
+import plotly.graph_objects as go
 import requests
 import json
+import time
+import FinanceDataReader as fdr
 
-# 1. 한국투자증권 접속 토큰 발급 함수
+st.set_page_config(layout="wide", page_title="나만의 퀀트 비서", page_icon="🤖")
+
+URL_BASE = "https://openapi.koreainvestment.com:9443"
+
+# 1. 🛡️ 한투 토큰 발급 (24시간 캐싱: 하루 1번만 발급받아 카톡 경고 방지)
+@st.cache_data(ttl=86400)
 def get_kis_access_token():
-    # 한투 실전투자 공식 서버 주소
-    url = "https://openapi.koreainvestment.com:9443/oauth2/tokenP"
-    
-    headers = {"content-type": "application/json"}
+    url = f"{URL_BASE}/oauth2/tokenP"
     body = {
         "grant_type": "client_credentials",
         "appkey": st.secrets["KIS_APP_KEY"],
         "appsecret": st.secrets["KIS_APP_SECRET"]
     }
-    
-    # 한투 서버에 똑똑 노크를 합니다.
-    response = requests.post(url, headers=headers, data=json.dumps(body))
-    
-    # 정상적으로 발급되면 긴 토큰을 반환합니다.
-    if response.status_code == 200:
-        return response.json()["access_token"]
-    else:
-        st.error(f"토큰 발급 실패: {response.text}")
-        return None
+    res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body))
+    return res.json().get("access_token")
 
-# 2. 발급 테스트
-if st.button("🚀 한국투자증권 서버 연결 테스트"):
-    with st.spinner("한투 서버에 접속 중..."):
-        token = get_kis_access_token()
-        if token:
-            st.success("🎉 연결 성공! 한투 VIP 출입증 발급 완료!")
-            st.write("발급된 토큰 (보안상 앞 30자리만 표시):")
-            st.code(token[:30] + "...")
+# 2. 📊 서머리 데이터 엔진 (FDR + 한투 API 하이브리드)
+@st.cache_data(ttl=3600) # 시세는 1시간 동안 유지 (서버 부하 최소화)
+def load_summary_data():
+    token = get_kis_access_token()
+    
+    # [1단계] FDR을 이용해 코스피 시가총액 상위 200위 뼈대를 1초 만에 가져옵니다.
+    df_kospi = fdr.StockListing('KOSPI')
+    top_200_list = df_kospi.sort_values('Marcap', ascending=False).head(200)
+    
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": st.secrets["KIS_APP_KEY"],
+        "appsecret": st.secrets["KIS_APP_SECRET"],
+        "tr_id": "FHKST01010400" # 주식현재가 시세
+    }
+
+    data_list = []
+    total_count = len(top_200_list)
+    
+    # 🌟 사용자 안심용 Progress Bar
+    my_bar = st.progress(0, text="퀀트 데이터 스캔 준비 중...")
+    
+    # [2단계] 200개 종목을 돌면서 한투 API에서 정확한 PER/PBR/등락률을 빼옵니다.
+    for i, row in enumerate(top_200_list.itertuples()):
+        code = row.Code
+        name = row.Name
+        marcap = row.Marcap / 100_000_000 # 억 단위 변환
+        
+        # UI 업데이트
+        my_bar.progress((i + 1) / total_count, text=f"수급/가치 스캔 중... [{i+1}/{total_count}] {name}")
+        
+        res = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-price", 
+                           headers=headers, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
+        
+        if res.status_code == 200:
+            output = res.json().get('output', {})
+            try:
+                per = float(output.get('per', 0)) if output.get('per') else 0.0
+                pbr = float(output.get('pbr', 0)) if output.get('pbr') else 0.0
+                
+                data_list.append({
+                    '종목명': name, '종목코드': code, 
+                    '종가': int(output.get('stck_prpr', 0)),
+                    '등락률': float(output.get('prdy_ctrt', 0)),
+                    'PER': per, 'PBR': pbr, '시가총액': int(marcap)
+                })
+            except:
+                pass
+                
+        # 🛡️ 봇 차단 방지용 안전 휴식 (초당 12건 호출)
+        time.sleep(0.08)
+        
+    my_bar.empty() # 로딩 끝나면 바 숨기기
+    df = pd.DataFrame(data_list)
+    
+    # 🧠 [가치투자 기반 스코어링 로직 복원]
+    if not df.empty:
+        valid_per = df['PER'] > 0
+        valid_pbr = df['PBR'] > 0
+        df.loc[valid_per, 'PER_Score'] = (1.0 - df.loc[valid_per, 'PER'].rank(pct=True)) * 100
+        df.loc[valid_pbr, 'PBR_Score'] = (1.0 - df.loc[valid_pbr, 'PBR'].rank(pct=True)) * 100
+        df['PER_Score'] = df['PER_Score'].fillna(20)
+        df['PBR_Score'] = df['PBR_Score'].fillna(20)
+        df['AI_Score'] = ((df['PER_Score'] + df['PBR_Score']) / 2).astype(int)
+        return df[['종목명', '종목코드', 'AI_Score', '종가', '등락률', 'PER', 'PBR', '시가총액']]
+    return pd.DataFrame()
+
+# 3. 📈 디테일 데이터 엔진 (한투 일봉 차트 API)
+@st.cache_data
+def load_detail_data(ticker):
+    token = get_kis_access_token()
+    
+    # 현재 BPS 가져오기 (PBR 계산용)
+    headers_price = {
+        "authorization": f"Bearer {token}", "appkey": st.secrets["KIS_APP_KEY"],
+        "appsecret": st.secrets["KIS_APP_SECRET"], "tr_id": "FHKST01010400"
+    }
+    res_price = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-price", 
+                             headers=headers_price, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker})
+    bps = float(res_price.json().get('output', {}).get('bps', 1))
+
+    # 과거 3년치 일봉 데이터 가져오기
+    start_date = (datetime.today() - timedelta(days=365 * 3)).strftime("%Y%m%d")
+    end_date = datetime.today().strftime("%Y%m%d")
+    
+    headers_hist = {
+        "authorization": f"Bearer {token}", "appkey": st.secrets["KIS_APP_KEY"],
+        "appsecret": st.secrets["KIS_APP_SECRET"], "tr_id": "FHKST03010100"
+    }
+    params_hist = {
+        "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker,
+        "FID_INPUT_DATE_1": start_date, "FID_INPUT_DATE_2": end_date,
+        "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0" 
+    }
+    
+    res_hist = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", 
+                            headers=headers_hist, params=params_hist)
+    
+    hist_data = res_hist.json().get('output2', [])
+    df_hist = pd.DataFrame(hist_data)
+    
+    if not df_hist.empty:
+        df_hist['Date'] = pd.to_datetime(df_hist['stck_bsop_date'])
+        df_hist['종가'] = df_hist['stck_clpr'].astype(float)
+        df_hist.set_index('Date', inplace=True)
+        df_hist.sort_index(inplace=True)
+        df_hist['BPS'] = bps
+        df_hist['PBR'] = df_hist['종가'] / bps 
+        
+    return df_hist
+
+# ==========================================
+# 🎨 UI 렌더링 영역 (기존 코드 완벽 일치)
+# ==========================================
+df_summary = load_summary_data()
+
+with st.sidebar:
+    st.header("🔍 종목 상세 검색")
+    if not df_summary.empty:
+        ticker_dict = dict(zip(df_summary['종목명'], df_summary['종목코드']))
+        selected_name = st.selectbox("분석할 종목을 고르세요", list(ticker_dict.keys()))
+        selected_ticker = ticker_dict[selected_name]
+    st.markdown('---')
+    st.caption("※ 여기서 선택한 종목은 'Tab 2'에 상세 분석됩니다.")
+
+st.title("🤖 퀀트 비서 서머리 대시보드")
+if df_summary.empty:
+    st.error("데이터 로딩 실패! 터미널의 에러 로그를 확인해주세요.")
+else:
+    tab1, tab2 = st.tabs(["🏆 스코어링 랭킹 보드", f"📊 [{selected_name}] 상세 분석"])
+
+    with tab1:
+        st.markdown("💡 **Tip:** 열 이름을 클릭하면 내림차순/오름차순으로 정렬됩니다.")
+        
+        def color_fluctuation(val):
+            if val > 0: return 'color: #FF3333; font-weight: bold;'
+            elif val < 0: return 'color: #0066FF; font-weight: bold;'
+            return 'color: gray;'
+
+        def format_fluctuation(val):
+            if val > 0: return f"🔺 +{val:.2f}%"
+            elif val < 0: return f"🔻 {val:.2f}%"
+            return f"➖ {val:.2f}%"
+
+        styled_df = df_summary.style.map(color_fluctuation, subset=['등락률']) \
+                                    .format({"종가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": format_fluctuation, "PER": "{:.1f}", "PBR": "{:.2f}"})
+
+        st.dataframe(
+            styled_df,
+            column_config={
+                "종목명": st.column_config.TextColumn("종목명", width="medium"),
+                "종목코드": st.column_config.TextColumn("코드"),
+                "AI_Score": st.column_config.ProgressColumn("퀀트 점수", format="%d 점", min_value=0, max_value=100),
+                "종가": st.column_config.Column("현재가 (원)"),
+                "등락률": st.column_config.Column("등락률 (%)"),
+                "PER": st.column_config.Column("PER (배)"),
+                "PBR": st.column_config.Column("PBR (배)"),
+                "시가총액": st.column_config.Column("시가총액 (억 원)") 
+            },
+            hide_index=True, use_container_width=True, height=600 
+        )
+
+    with tab2:
+        st.info("여기에 선택한 종목의 'AI 요약 브리핑', 'PER/PBR 밴드 차트', 그리고 '보조 수급 차트'가 들어갈 예정입니다.")
+        st.subheader(f"📈 {selected_name} PBR 밴드 (과거 3년 가치평가)")
+
+        try:
+            df_detail = load_detail_data(selected_ticker)
+            
+            if not df_detail.empty:
+                min_pbr = df_detail['PBR'].min()
+                max_pbr = df_detail['PBR'].max()
+                pbr_levels = np.linspace(min_pbr, max_pbr, 5)
+
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(x=df_detail.index, y=df_detail['종가'], name='실제 주가', line=dict(color='white', width=2)))
+
+                colors = ['#3498DB', '#2ECC71', '#F1C40F', '#E67E22', '#E74C3C'] 
+
+                for i, p_level in enumerate(pbr_levels):
+                    band_price = df_detail['BPS'] * p_level
+                    fig.add_trace(go.Scatter(x=df_detail.index, y=band_price, name=f'PBR {p_level:.2f}x', line=dict(color=colors[i], width=1, dash='dot')))
+                    
+                fig.update_layout(
+                    height=600, template="plotly_dark", margin=dict(l=10, r=10, b=10, t=30),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode="x unified"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.info("💡 **해석 방법:** 흰색 실선(주가)이 파란색 점선(하단 밴드)에 가까울수록 역사적 저평가 구간이며, 빨간색 점선(상단 밴드)에 닿을수록 고평가(과열) 구간입니다.")
+            else:
+                st.warning("과거 데이터를 가져오지 못했습니다.")
+                
+        except Exception as e:
+            st.error(f"차트 데이터를 불러오는 중 에러가 발생했습니다: {e}")

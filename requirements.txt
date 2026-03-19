@@ -1,4 +1,4 @@
-pykrx
 pandas
 plotly
 numpy
+finance-datareader
