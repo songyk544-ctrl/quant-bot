@@ -24,35 +24,36 @@ def get_kis_access_token():
     res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body))
     return res.json().get("access_token")
 
-# 2. 📊 서머리 데이터 엔진 (FDR + 한투 API 하이브리드)
-@st.cache_data(ttl=3600) # 시세는 1시간 동안 유지 (서버 부하 최소화)
+# 2. 📊 서머리 데이터 엔진 (코스피/코스닥 통합 시총 8,000억 이상 필터)
+@st.cache_data(ttl=3600) 
 def load_summary_data():
     token = get_kis_access_token()
     
-    # [1단계] FDR을 이용해 코스피 시가총액 상위 200위 뼈대를 1초 만에 가져옵니다.
-    df_kospi = fdr.StockListing('KOSPI')
-    top_200_list = df_kospi.sort_values('Marcap', ascending=False).head(200)
+    # [1단계] FDR을 이용해 코스피+코스닥 전체(KRX) 명단을 가져옵니다.
+    df_krx = fdr.StockListing('KRX')
+    
+    # [2단계] 시가총액 8,000억(800,000,000,000원) 이상인 종목만 필터링하고 내림차순 정렬
+    target_list = df_krx[df_krx['Marcap'] >= 800_000_000_000].sort_values('Marcap', ascending=False)
     
     headers = {
         "authorization": f"Bearer {token}",
         "appkey": st.secrets["KIS_APP_KEY"],
         "appsecret": st.secrets["KIS_APP_SECRET"],
-        "tr_id": "FHKST01010400" # 주식현재가 시세
+        "tr_id": "FHKST01010400" 
     }
 
     data_list = []
-    total_count = len(top_200_list)
+    total_count = len(target_list) # 약 250~300개 종목이 잡힐 겁니다.
     
-    # 🌟 사용자 안심용 Progress Bar
-    my_bar = st.progress(0, text="퀀트 데이터 스캔 준비 중...")
+    # 🌟 진행률 바에 전체 종목수 표시
+    my_bar = st.progress(0, text=f"시총 8,000억 이상 {total_count}개 종목 스캔 준비 중...")
     
-    # [2단계] 200개 종목을 돌면서 한투 API에서 정확한 PER/PBR/등락률을 빼옵니다.
-    for i, row in enumerate(top_200_list.itertuples()):
+    # [3단계] 필터링된 종목들을 돌면서 한투 API에서 정확한 PER/PBR/등락률을 빼옵니다.
+    for i, row in enumerate(target_list.itertuples()):
         code = row.Code
         name = row.Name
         marcap = row.Marcap / 100_000_000 # 억 단위 변환
         
-        # UI 업데이트
         my_bar.progress((i + 1) / total_count, text=f"수급/가치 스캔 중... [{i+1}/{total_count}] {name}")
         
         res = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-price", 
@@ -76,10 +77,9 @@ def load_summary_data():
         # 🛡️ 봇 차단 방지용 안전 휴식 (초당 12건 호출)
         time.sleep(0.08)
         
-    my_bar.empty() # 로딩 끝나면 바 숨기기
+    my_bar.empty() 
     df = pd.DataFrame(data_list)
     
-    # 🧠 [가치투자 기반 스코어링 로직 복원]
     if not df.empty:
         valid_per = df['PER'] > 0
         valid_pbr = df['PBR'] > 0
