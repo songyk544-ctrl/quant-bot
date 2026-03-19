@@ -1,16 +1,15 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import requests
 import json
 import time
 from bs4 import BeautifulSoup
 
-st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V2.5", page_icon="🔥")
+st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V2.6", page_icon="🔥")
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 
 # ==========================================
-# 🛡️ 1. 한투 토큰 발급 (24시간 캐싱)
+# 🛡️ 1. 한투 토큰 발급
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_kis_access_token():
@@ -56,7 +55,7 @@ def get_target_stock_list():
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 # ==========================================
-# 🔥 3. KIS 리얼 수급 스캐너 (V2.5 방어막 탑재)
+# 🔥 3. KIS 리얼 수급 스캐너 (100% 날것 데이터)
 # ==========================================
 @st.cache_data(ttl=3600) 
 def load_v2_quant_data():
@@ -81,26 +80,18 @@ def load_v2_quant_data():
         
         try:
             res = requests.get(url, headers=headers, params=params)
-            foreign_vol_sum, pension_vol_sum, trust_pef_vol_sum, orgn_vol_sum, foreign_streak = 0, 0, 0, 0, 0
+            foreign_vol_sum, pension_vol_sum, trust_pef_vol_sum, foreign_streak = 0, 0, 0, 0
             
             if res.status_code == 200:
                 data = res.json()
                 daily_list = data.get('output', []) if isinstance(data.get('output'), list) else data.get('output2', [])
                 
                 if daily_list:
-                    # 최근 20일 누적 순매수 수량 합산
+                    # ★ 가짜 분할 로직 전면 폐기. 철저하게 개별 주체 데이터만 합산!
                     for daily in daily_list[:20]: 
                         foreign_vol_sum += int(daily.get('frgn_ntby_qty', 0))
-                        orgn_vol_sum += int(daily.get('orgn_ntby_qty', 0)) # 기관합계 (이중 방어용)
-                        
-                        # 연기금(pnsn_fund), 투신(itst), 사모펀드(pef) 정밀 탐색
-                        pension_vol_sum += int(daily.get('pnsn_fund_ntby_qty', 0))
-                        trust_pef_vol_sum += (int(daily.get('itst_ntby_qty', 0)) + int(daily.get('pef_ntby_qty', 0)))
-                    
-                    # 🚨 [이중 방어막] 한투가 연기금/투신 키를 숨겼거나 0으로 내려보낼 경우, '기관합계'를 분할하여 에러 원천 차단!
-                    if pension_vol_sum == 0 and trust_pef_vol_sum == 0 and orgn_vol_sum != 0:
-                        pension_vol_sum = int(orgn_vol_sum * 0.6)
-                        trust_pef_vol_sum = int(orgn_vol_sum * 0.4)
+                        pension_vol_sum += int(daily.get('pnsn_fund_ntby_qty', 0)) # 연기금 독립 데이터
+                        trust_pef_vol_sum += (int(daily.get('itst_ntby_qty', 0)) + int(daily.get('pef_ntby_qty', 0))) # 투신+사모 독립 데이터
 
                     # 외국인 연속 매수일 추적
                     for daily in daily_list:
@@ -109,13 +100,13 @@ def load_v2_quant_data():
                         else:
                             break
 
-            # 시가총액 대비 강도(%) 계산 (금액 = 수량 * 현재가)
+            # 시가총액 대비 강도(%) 계산
             marcap_won = marcap * 100_000_000
             foreign_strength = (foreign_vol_sum * prpr / marcap_won) * 100 if marcap_won else 0
             pension_strength = (pension_vol_sum * prpr / marcap_won) * 100 if marcap_won else 0
             trust_pef_strength = (trust_pef_vol_sum * prpr / marcap_won) * 100 if marcap_won else 0
             
-            # AI 스코어링 (기본 50점 + 수급 강도 가중치)
+            # AI 스코어링
             ai_score = 50 + (foreign_strength * 5) + (pension_strength * 10) + (trust_pef_strength * 5)
             ai_score = max(0, min(100, ai_score))
             
@@ -128,7 +119,7 @@ def load_v2_quant_data():
         except Exception:
             pass 
             
-        time.sleep(0.2) # ★ 서버 차단 방지
+        time.sleep(0.2)
         
     my_bar.empty() 
     return pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
@@ -141,7 +132,7 @@ df_summary = load_v2_quant_data()
 if "selected_stock" not in st.session_state:
     st.session_state.selected_stock = df_summary['종목명'].iloc[0] if not df_summary.empty else "삼성전자"
 
-st.title("🔥 실전 수급 스윙 대시보드 V2.5 (리얼 데이터)")
+st.title("🔥 실전 수급 스윙 대시보드 V2.6 (100% Raw Data)")
 
 if df_summary.empty:
     st.error("데이터 로딩 실패! 네트워크나 API 상태를 확인해주세요.")
@@ -149,7 +140,7 @@ else:
     tab1, tab2 = st.tabs(["📊 리얼 수급 스캐너", f"🎯 [{st.session_state.selected_stock}] 매매 비서"])
 
     with tab1:
-        st.markdown("💡 **Tip:** KIS 실제 데이터를 기반으로 한 수급 강도입니다. 표를 클릭하면 분석 탭이 변경됩니다.")
+        st.markdown("💡 **Tip:** 가공되지 않은 100% 리얼 연기금/사모펀드 수급 데이터입니다. 손바뀜을 확인하세요.")
         
         def color_score(val):
             color = "#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"
