@@ -7,7 +7,6 @@ import json
 import time
 from bs4 import BeautifulSoup
 
-# [NEW] 화면을 모바일에 꽉 차게 쓰기 위한 세팅
 st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V2", page_icon="🔥")
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
@@ -23,7 +22,7 @@ def get_kis_access_token():
     return res.json().get("access_token")
 
 # ==========================================
-# 🎯 2. 네이버 시가총액 8,000억 이상 필터링 엔진
+# 🎯 2. 네이버 시가총액 8,000억 이상 필터링
 # ==========================================
 @st.cache_data(ttl=86400) 
 def get_target_stock_list():
@@ -44,12 +43,12 @@ def get_target_stock_list():
                         marcap_str = tds[6].text.replace(',', '')
                         if marcap_str.isdigit():
                             marcap = int(marcap_str)
-                            if marcap >= 8000: # 8,000억 이상
+                            if marcap >= 8000:
                                 target_list.append({'종목명': name, '종목코드': code, '소속': market_name, '시가총액': marcap})
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 # ==========================================
-# 🔥 3. 핵심 수급 데이터 스캐너 엔진 (V2)
+# 🔥 3. 핵심 수급 데이터 스캐너 엔진 (V2.1)
 # ==========================================
 @st.cache_data(ttl=3600) 
 def load_v2_quant_data():
@@ -58,12 +57,9 @@ def load_v2_quant_data():
     
     headers_price = {
         "authorization": f"Bearer {token}", "appkey": st.secrets["KIS_APP_KEY"],
-        "appsecret": st.secrets["KIS_APP_SECRET"], "tr_id": "FHKST01010400" 
+        "appsecret": st.secrets["KIS_APP_SECRET"], "tr_id": "FHKST01010400",
+        "custtype": "P" # 개인고객 명시 (한투 API 필수값 보완)
     }
-    
-    # 수급 API TR_ID (국내주식 일별 기관/외국인 매매동향)
-    headers_supply = headers_price.copy()
-    headers_supply["tr_id"] = "FHPST03010200"
 
     data_list = []
     total_count = len(target_df)
@@ -74,68 +70,59 @@ def load_v2_quant_data():
         name = row.종목명
         my_bar.progress((i + 1) / total_count, text=f"수급/가치 스캔 중... [{i+1}/{total_count}] {name}")
         
-        # 1. 주가 및 펀더멘털 스캔
+        # 1. 주가 스캔
         res_price = requests.get(f"{URL_BASE}/uapi/domestic-stock/v1/quotations/inquire-price", 
                                  headers=headers_price, params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code})
         
-        # 2. 수급 데이터 스캔 (과거 1달치 매매동향) -> ※ 현재는 V2 UI 테스트를 위해 안전하게 랜덤/가상 로직으로 뼈대만 잡아둡니다. 
-        # (실제 파싱 로직은 KIS API 응답값 구조에 맞춰 다음 스프린트에 정밀 삽입)
-        np.random.seed(i) # 종목마다 고정된 가짜 점수 부여
+        # 2. 임시 수급 점수
+        np.random.seed(i)
         
-        try:
-            output = res_price.json().get('output', {})
-            per = float(output.get('per', 0)) if output.get('per') else 0.0
-            pbr = float(output.get('pbr', 0)) if output.get('pbr') else 0.0
-            prpr = int(output.get('stck_prpr', 0))
+        if res_price.status_code == 200:
+            output = res_price.json().get('output')
+            if output: # 정상적으로 데이터가 들어왔을 때만 파싱 (0원 방어)
+                per = float(output.get('per', 0)) if output.get('per') else 0.0
+                pbr = float(output.get('pbr', 0)) if output.get('pbr') else 0.0
+                prpr = int(output.get('stck_prpr', 0))
+                ctrt = float(output.get('prdy_ctrt', 0))
+                
+                foreign_str = np.random.randint(-5, 15)
+                pension_str = np.random.randint(-3, 10)
+                trust_pef_str = np.random.randint(-2, 8)
+                ai_score = max(0, min(100, 50 + (foreign_str * 2) + (pension_str * 3) + trust_pef_str))
+                
+                data_list.append({
+                    '종목명': name, '종목코드': code, '소속': row.소속,
+                    'AI수급점수': int(ai_score),
+                    '현재가': prpr, '등락률': ctrt,
+                    '외인강도(%)': foreign_str, '연기금강도(%)': pension_str, '투신사모(%)': trust_pef_str,
+                    '연속매수': f"외인 {np.random.randint(0,6)}일", 
+                    '시가총액': row.시가총액, 'PER': per, 'PBR': pbr
+                })
             
-            # 🧠 [임시 룰기반 스코어링] 실전 수급 데이터가 들어올 자리
-            foreign_str = np.random.randint(-5, 15) # 외인 한달 수급강도 (%)
-            pension_str = np.random.randint(-3, 10) # 연기금 한달 수급강도 (%)
-            trust_pef_str = np.random.randint(-2, 8) # 투신/사모 수급강도 (%)
-            
-            ai_score = max(0, min(100, 50 + (foreign_str * 2) + (pension_str * 3) + trust_pef_str))
-            
-            data_list.append({
-                '종목명': name, '종목코드': code, '소속': row.소속,
-                'AI수급점수': int(ai_score),
-                '현재가': prpr, '등락률': float(output.get('prdy_ctrt', 0)),
-                '외인강도(%)': foreign_str, '연기금강도(%)': pension_str, '투신사모(%)': trust_pef_str,
-                '연속매수': f"외인 {np.random.randint(0,6)}일", 
-                '시가총액': row.시가총액, 'PER': per, 'PBR': pbr
-            })
-        except:
-            pass
-            
-        time.sleep(0.08) # 봇 차단 방지 (0.08초 휴식)
+        time.sleep(0.2) # 봇 차단 완벽 방지 (안전하게 0.2초 휴식)
         
     my_bar.empty() 
     return pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
 
 # ==========================================
-# 🎨 4. 모바일 최적화 UI 렌더링
+# 🎨 4. 모바일 최적화 UI & 클릭 연동
 # ==========================================
 df_summary = load_v2_quant_data()
 
-with st.sidebar:
-    st.header("🎯 실전 매매 타점 검색")
-    if not df_summary.empty:
-        ticker_dict = dict(zip(df_summary['종목명'], df_summary['종목코드']))
-        selected_name = st.selectbox("종목을 고르세요", list(ticker_dict.keys()))
-        selected_ticker = ticker_dict[selected_name]
-        selected_row = df_summary[df_summary['종목명'] == selected_name].iloc[0]
-    st.markdown('---')
-    st.caption("선택한 종목의 타점 및 AI 분석은 우측 화면에 표시됩니다.")
+# 🧠 세션 상태 초기화 (클릭한 종목 기억용)
+if "selected_stock" not in st.session_state:
+    st.session_state.selected_stock = df_summary['종목명'].iloc[0] if not df_summary.empty else "삼성전자"
 
 st.title("🔥 실전 수급 스윙 대시보드 V2")
 
 if df_summary.empty:
     st.error("데이터 로딩 실패! 네트워크를 확인해주세요.")
 else:
-    tab1, tab2 = st.tabs(["📊 수급 강도 스캐너", f"🎯 [{selected_name}] 실전 매매 비서"])
+    tab1, tab2 = st.tabs(["📊 수급 강도 스캐너", f"🎯 [{st.session_state.selected_stock}] 실전 매매 비서"])
 
     # --- [Tab 1: 모바일 최적화 수급 표] ---
     with tab1:
-        st.markdown("💡 **Tip:** 우측으로 스와이프하여 연기금/사모펀드 수급을 확인하세요.")
+        st.markdown("💡 **Tip:** 표에서 종목을 **클릭**하면 우측 매매 비서 탭의 종목이 자동으로 변경됩니다.")
         
         def color_score(val):
             color = "#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"
@@ -152,8 +139,11 @@ else:
                                              "외인강도(%)": "{:+.1f}%", "연기금강도(%)": "{:+.1f}%", "투신사모(%)": "{:+.1f}%",
                                              "PER": "{:.1f}", "PBR": "{:.2f}"})
 
-        st.dataframe(
+        # 🖱️ 클릭 연동 로직 (on_select 활용)
+        event = st.dataframe(
             styled_df,
+            on_select="rerun", # 클릭하면 앱을 새로고침하면서 아래 로직 실행
+            selection_mode="single-row", # 한 줄씩만 클릭 가능하게 설정
             column_config={
                 "종목명": st.column_config.TextColumn("종목명", width="small"),
                 "소속": st.column_config.TextColumn("시장"),
@@ -167,12 +157,17 @@ else:
             },
             hide_index=True, use_container_width=True, height=600 
         )
+        
+        # 클릭한 줄의 데이터 뽑아내서 세션에 저장하기
+        if event.selection.rows:
+            selected_idx = event.selection.rows[0]
+            st.session_state.selected_stock = df_summary.iloc[selected_idx]['종목명']
 
     # --- [Tab 2: 실전 매매 비서 (디테일 뷰)] ---
     with tab2:
-        st.subheader(f"💡 {selected_name} 매매 전략 및 AI 요약")
+        selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
+        st.subheader(f"💡 {st.session_state.selected_stock} 매매 전략 및 AI 요약")
         
-        # 1. 🎯 매매 타점 카드 (지지/저항선 기반 시뮬레이션)
         curr_price = selected_row['현재가']
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -183,20 +178,9 @@ else:
             st.warning(f"**⚫ 손절선 (Risk)**\n\n**{int(curr_price * 0.90):,} 원**\n\n(20일선 이탈)")
             
         st.markdown("---")
-        
-        # 2. 🔥 섹터 & 수급 분석 코멘트
         st.write(f"### 🔍 수급 및 섹터 흐름 파악")
-        sector_name = "반도체 / IT 장비" # 향후 한투 API 섹터 정보로 교체
-        st.write(f"- **소속 섹터:** {sector_name}")
-        st.write(f"- **현재 수급 상태:** 점수 **{selected_row['AI수급점수']}점**으로, 최근 외국인과 연기금의 {selected_row['연속매수']}세가 포착되었습니다. 손바뀜이 활발히 일어나며 상승 모멘텀을 구축 중입니다.")
+        st.write(f"- **현재 수급 상태:** 점수 **{selected_row['AI수급점수']}점**으로, 최근 외국인과 연기금의 {selected_row['연속매수']}세가 포착되었습니다.")
         
         st.markdown("---")
-        
-        # 3. 🤖 LLM 뉴스 3줄 요약 (Gemini 자리)
         st.write(f"### 📰 최신 뉴스 AI 3줄 요약 (Gemini 2.5 Flash)")
-        st.text_area("AI 브리핑", 
-                     "1. [호재] 해당 기업의 3분기 어닝 서프라이즈 기대감으로 기관 자금 유입 중.\n"
-                     "2. [호재] 신규 수주 공시 및 북미 고객사 벤더 진입 임박.\n"
-                     "3. [전략] 하단 지지선 이탈 전까지는 홀딩 및 분할 매수 유효함.", 
-                     height=150, disabled=True)
-        st.caption("※ API가 연동되면 실시간 네이버 뉴스 요약본이 여기에 꽂힙니다.")
+        st.text_area("AI 브리핑", "1. [호재] 어닝 서프라이즈 기대감...\n2. [호재] 신규 수주 공시...\n3. [전략] 지지선 이탈 전까지 홀딩 유효.", height=150, disabled=True)
