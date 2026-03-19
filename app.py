@@ -7,6 +7,7 @@ import requests
 import json
 import time
 import FinanceDataReader as fdr
+from bs4 import BeautifulSoup
 
 st.set_page_config(layout="wide", page_title="나만의 퀀트 비서", page_icon="🤖")
 
@@ -24,16 +25,46 @@ def get_kis_access_token():
     res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body))
     return res.json().get("access_token")
 
-# 2. 📊 서머리 데이터 엔진 (코스피/코스닥 통합 시총 8,000억 이상 필터)
+@st.cache_data(ttl=86400) # 하루에 한 번만 명단을 긁어와서 서버를 쉬게 합니다.
+def get_target_stock_list():
+    target_list = []
+    # 0: KOSPI, 1: KOSDAQ
+    for sosok in [0, 1]:
+        # 1~6페이지 (페이지당 50개, 약 시총 상위 300위까지 넉넉히 스캔)
+        for page in range(1, 7):
+            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(res.text, 'html.parser')
+            
+            table = soup.select('table.type_2 tbody tr')
+            for tr in table:
+                tds = tr.select('td')
+                if len(tds) > 1: # 빈 선(구분선) 제외
+                    name_tag = tr.select_one('a.tltle')
+                    if name_tag:
+                        name = name_tag.text
+                        code = name_tag['href'].split('code=')[-1]
+                        
+                        # 시가총액은 7번째 열(인덱스 6)에 있습니다. (단위: 억원)
+                        marcap_str = tds[6].text.replace(',', '')
+                        if marcap_str.isdigit():
+                            marcap = int(marcap_str)
+                            # 💡 핵심 기획: 시가총액 8,000억 이상만 통과!
+                            if marcap >= 8000:
+                                target_list.append({'Name': name, 'Code': code, 'Marcap': marcap})
+                                
+    # 코스피, 코스닥 합쳐서 시가총액 내림차순으로 정렬
+    return pd.DataFrame(target_list).sort_values('Marcap', ascending=False)
+
+# ==========================================
+# 📊 서머리 데이터 엔진 (업그레이드 버전)
+# ==========================================
 @st.cache_data(ttl=3600) 
 def load_summary_data():
     token = get_kis_access_token()
     
-    # [1단계] FDR을 이용해 코스피+코스닥 전체(KRX) 명단을 가져옵니다.
-    df_krx = fdr.StockListing('KRX')
-    
-    # [2단계] 시가총액 8,000억(800,000,000,000원) 이상인 종목만 필터링하고 내림차순 정렬
-    target_list = df_krx[df_krx['Marcap'] >= 800_000_000_000].sort_values('Marcap', ascending=False)
+    # [1단계] 방금 만든 네이버 크롤러로 8천억 이상 명단을 가져옵니다. (FDR 대체)
+    target_df = get_target_stock_list()
     
     headers = {
         "authorization": f"Bearer {token}",
@@ -43,16 +74,15 @@ def load_summary_data():
     }
 
     data_list = []
-    total_count = len(target_list) # 약 250~300개 종목이 잡힐 겁니다.
+    total_count = len(target_df)
     
-    # 🌟 진행률 바에 전체 종목수 표시
     my_bar = st.progress(0, text=f"시총 8,000억 이상 {total_count}개 종목 스캔 준비 중...")
     
-    # [3단계] 필터링된 종목들을 돌면서 한투 API에서 정확한 PER/PBR/등락률을 빼옵니다.
-    for i, row in enumerate(target_list.itertuples()):
+    # [2단계] 명단을 들고 한투 VIP 서버에서 수급/가치 데이터를 빼옵니다.
+    for i, row in enumerate(target_df.itertuples()):
         code = row.Code
         name = row.Name
-        marcap = row.Marcap / 100_000_000 # 억 단위 변환
+        marcap = row.Marcap # 이미 '억' 단위
         
         my_bar.progress((i + 1) / total_count, text=f"수급/가치 스캔 중... [{i+1}/{total_count}] {name}")
         
@@ -74,7 +104,6 @@ def load_summary_data():
             except:
                 pass
                 
-        # 🛡️ 봇 차단 방지용 안전 휴식 (초당 12건 호출)
         time.sleep(0.08)
         
     my_bar.empty() 
