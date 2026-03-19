@@ -80,7 +80,7 @@ def load_v2_quant_data():
         
         # 2. 수급 데이터 스캔 (과거 1달치 매매동향) -> ※ 현재는 V2 UI 테스트를 위해 안전하게 랜덤/가상 로직으로 뼈대만 잡아둡니다. 
         # (실제 파싱 로직은 KIS API 응답값 구조에 맞춰 다음 스프린트에 정밀 삽입)
-        np.random.seed(int(code)) # 종목마다 고정된 가짜 점수 부여
+        np.random.seed(i) # 종목마다 고정된 가짜 점수 부여
         
         try:
             output = res_price.json().get('output', {})
