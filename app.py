@@ -38,7 +38,7 @@ if st.button("🚀 삼성전자 수급 데이터 1초 검증"):
                 
                 # 2. 스마트 탐지기 파싱 테스트
                 f_qty, p_qty, t_qty, pef_qty = 0, 0, 0, 0
-                daily = daily_list[0]
+                daily = daily_list[1]
                 
                 for k, v in daily.items():
                     if v and 'qty' in k: # 수량(qty) 데이터만 스캔
