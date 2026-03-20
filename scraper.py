@@ -135,7 +135,7 @@ def run_scraper():
             ai_score = max(0, min(100, int(ai_score)))
             
             data_list.append({
-                '종목명': name, '종목코드': code, '소속': row.소속, 'Score': int(ai_score),
+                '종목명': name, '종목코드': code, '소속': row.소속, 'AI수급점수': int(ai_score),
                 '현재가': prpr, '등락률': row.등락률,
                 '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                 '외인연속': foreign_streak,    # 분리된 외인 연속매수
@@ -148,7 +148,7 @@ def run_scraper():
             
         time.sleep(0.2) # API 한도 보호
         
-    df_final = pd.DataFrame(data_list).sort_values('Score', ascending=False)
+    df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
     print("✅ 데이터 수집 및 data.csv 저장 완료!")
 
