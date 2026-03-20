@@ -24,7 +24,7 @@ def safe_float(text):
 def get_target_stock_list():
     target_list = []
     for sosok, market_name in [(0, 'KOSPI'), (1, 'KOSDAQ')]:
-        for page in range(1, 7): # 시총 상위 약 300개
+        for page in range(1, 7): # 시총 상위 약 300개 스캔
             url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
             res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -70,20 +70,36 @@ def run_scraper():
         
         try:
             res = requests.get(url, headers=headers, params=params)
-            f_vol_sum, p_vol_sum, t_vol_sum, pef_vol_sum, foreign_streak = 0, 0, 0, 0, 0
+            
+            f_vol_sum, p_vol_sum, t_vol_sum, pef_vol_sum = 0, 0, 0, 0
+            foreign_streak, pension_streak = 0, 0
+            f_buying, p_buying = True, True  # 연속 매수 스위치
             
             if res.status_code == 200 and res.json().get('rt_cd') == "0":
                 daily_list = res.json().get('output2', [])
                 if daily_list:
+                    # 1. 최근 20일(약 1달) 누적 수급 계산
                     for daily in daily_list[:20]: 
                         f_vol_sum += int(daily.get('frgn_ntby_qty', 0))
                         p_vol_sum += int(daily.get('fund_ntby_qty', 0))
                         t_vol_sum += int(daily.get('ivtr_ntby_qty', 0))
                         pef_vol_sum += int(daily.get('pe_fund_ntby_vol', 0))
 
+                    # 2. 외인 및 연기금 독립적인 연속 매수일 계산
                     for daily in daily_list:
-                        if int(daily.get('frgn_ntby_qty', 0)) > 0: foreign_streak += 1
-                        else: break
+                        f_qty = int(daily.get('frgn_ntby_qty', 0))
+                        p_qty = int(daily.get('fund_ntby_qty', 0))
+                        
+                        if f_buying:
+                            if f_qty > 0: foreign_streak += 1
+                            else: f_buying = False
+                            
+                        if p_buying:
+                            if p_qty > 0: pension_streak += 1
+                            else: p_buying = False
+                            
+                        if not f_buying and not p_buying:
+                            break
 
             marcap_won = marcap * 100_000_000
             f_str = (f_vol_sum * prpr / marcap_won) * 100 if marcap_won else 0
@@ -97,7 +113,9 @@ def run_scraper():
                 '종목명': name, '종목코드': code, '소속': row.소속, 'AI수급점수': int(ai_score),
                 '현재가': prpr, '등락률': row.등락률,
                 '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
-                '연속매수': f"외인 {foreign_streak}일", '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
+                '외인연속': foreign_streak,    # 분리된 외인 연속매수
+                '연기금연속': pension_streak,  # 분리된 연기금 연속매수
+                '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
         except Exception as e:
             print(f"Error parsing {name}: {e}")
@@ -106,7 +124,6 @@ def run_scraper():
         time.sleep(0.2) # API 한도 보호
         
     df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
-    # 수집한 데이터를 CSV 파일로 저장합니다.
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
     print("✅ 데이터 수집 및 data.csv 저장 완료!")
 
