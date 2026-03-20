@@ -1,0 +1,38 @@
+name: Quant Data Scraper
+
+on:
+  schedule:
+    # 매주 월~금, 한국 시간 오후 4시 30분 (UTC 기준 07:30)에 자동 실행
+    - cron: '30 7 * * 1-5'
+  workflow_dispatch: # 수동으로 버튼 눌러서 실행할 수 있는 옵션
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install pandas requests beautifulsoup4
+
+      - name: Run Scraper
+        env:
+          # GitHub Secrets에 저장된 키를 불러옵니다.
+          KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
+          KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
+        run: python scraper.py
+
+      - name: Commit and Push CSV
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data.csv
+          git commit -m "🤖 수급 데이터 자동 업데이트 (장마감)" || exit 0
+          git push
