@@ -70,7 +70,7 @@ def run_scraper():
         code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
         params = {
             "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
-            "FID_INPUT_DATE_1": start_date, "FID_INPUT_DATE_2": end_date,
+            "FID_INPUT_DATE_1": end_date, #"FID_INPUT_DATE_2": end_date,
             "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"
         }
         
