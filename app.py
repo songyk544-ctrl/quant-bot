@@ -3,8 +3,8 @@ import pandas as pd
 import altair as alt
 import os
 
-st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V5.3", page_icon="⚡")
-st.title("⚡ 실전 수급 스윙 대시보드 V5.3 (차트 완벽 복구)")
+st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V5.5", page_icon="⚡")
+st.title("⚡ 실전 수급 스윙 대시보드 V5.5 (틀 고정 패치)")
 st.caption("🌐 글로벌 매크로 동향: 전일 뉴욕 증시 및 주요 환율 데이터 연동 대기 중")
 
 def load_data():
@@ -32,7 +32,10 @@ else:
             elif val < 0: return 'color: #0066FF; font-weight: bold;'
             return 'color: gray;'
 
-        styled_df = df_summary.style.map(color_score, subset=['AI수급점수']) \
+        # 🔥 [핵심 수정] 종목명을 인덱스로 설정하여 '틀 고정' 효과를 만듭니다.
+        df_display = df_summary.set_index('종목명')
+
+        styled_df = df_display.style.map(color_score, subset=['AI수급점수']) \
                                     .map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']) \
                                     .format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", 
                                              "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", 
@@ -43,7 +46,8 @@ else:
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
             column_config={
-                "종목명": st.column_config.TextColumn("종목명", width="small"),
+                # 🔥 인덱스("_index")의 디자인을 설정합니다. (여기가 고정되는 영역)
+                "_index": st.column_config.TextColumn("종목명", width="small"),
                 "AI수급점수": st.column_config.NumberColumn("🏆 AI 점수"),
                 "현재가": st.column_config.Column("현재가"),
                 "등락률": st.column_config.Column("등락"),
@@ -53,9 +57,15 @@ else:
                 "사모강도(%)": st.column_config.Column("사모(1달)"),
                 "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"),
                 "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"),
-                "이격도(%)": None, "손바뀜(%)": None, "소속": None, "PER": None, "ROE": None, "시가총액": None 
+                "이격도(%)": st.column_config.Column("이격도"),
+                "손바뀜(%)": st.column_config.Column("손바뀜"),
+                "시가총액": st.column_config.Column("시총(억)"),
+                "PER": st.column_config.Column("PER"),
+                "ROE": st.column_config.Column("ROE"),
+                "소속": st.column_config.Column("시장")
             },
-            hide_index=True, use_container_width=True, height=600 
+            hide_index=False, # 🔥 숨겼던 인덱스를 보여주면 완벽한 틀 고정이 됩니다!
+            use_container_width=True, height=600 
         )
         
         if event.selection.rows:
@@ -76,10 +86,9 @@ else:
             target_hist = df_history[df_history['종목명'] == st.session_state.selected_stock].copy()
             
             if not target_hist.empty:
-                # 🔥 [핵심 해결 로직] 날짜를 미리 예쁜 '글자' 형태로 만들어서 던져줌
                 target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
                 target_hist = target_hist.sort_values('일자')
-                target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d') # 예: 03/24
+                target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d')
 
                 col1, col2 = st.columns(2)
                 
@@ -90,7 +99,6 @@ else:
 
                 with col1:
                     st.markdown("##### 📈 일봉 차트 (최근 20일 종가)")
-                    # format을 지우고 미리 만든 '일자_표시' 글자를 그대로 사용. sort=None으로 시간순 정렬 유지.
                     chart_close = alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(
                         x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
                         y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)
@@ -106,7 +114,7 @@ else:
                     chart_bar = alt.Chart(bar_data).mark_bar().encode(
                         x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
                         y=alt.Y('금액:Q', title=None),
-                        color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None)),
+                        color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
                         order=alt.Order('투자자:N', sort='descending')
                     ).properties(height=280)
                     
