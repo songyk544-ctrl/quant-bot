@@ -16,8 +16,14 @@ def get_kis_access_token():
     res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body))
     return res.json().get("access_token")
 
+# 네이버 크롤링용 안전 변환
 def safe_float(text):
     try: return float(text.replace(',', '').replace('%', '').strip())
+    except: return 0.0
+
+# 🔥 [해결 2] 한투 API에서 빈 문자열("")이 올 때 뻗지 않도록 막아주는 방패 함수
+def safe_api_float(val):
+    try: return float(val) if val else 0.0
     except: return 0.0
 
 def get_target_stock_list():
@@ -88,17 +94,16 @@ def run_scraper():
             if res.status_code == 200 and res.json().get('rt_cd') == "0":
                 daily_list = res.json().get('output2', [])
                 if daily_list:
-                    # 🔥 [해결] API의 '대금'을 믿지 않고, 직접 '수량 * 당일 종가(원)'로 계산합니다.
                     for idx, daily in enumerate(daily_list[:20]): 
-                        close_prc = float(daily.get('stck_clpr', 0))
+                        # API에서 온 빈 값을 안전하게 변환
+                        close_prc = safe_api_float(daily.get('stck_clpr'))
                         closes.append(close_prc)
                         
-                        f_qty = float(daily.get('frgn_ntby_qty', 0))
-                        p_qty = float(daily.get('fund_ntby_qty', 0))
-                        t_qty = float(daily.get('ivtr_ntby_qty', 0))
-                        pef_qty = float(daily.get('pe_fund_ntby_vol', 0))
+                        f_qty = safe_api_float(daily.get('frgn_ntby_qty'))
+                        p_qty = safe_api_float(daily.get('fund_ntby_qty'))
+                        t_qty = safe_api_float(daily.get('ivtr_ntby_qty'))
+                        pef_qty = safe_api_float(daily.get('pe_fund_ntby_vol'))
                         
-                        # 1원 단위의 완벽한 실제 매수 금액
                         f_amt = f_qty * close_prc
                         p_amt = p_qty * close_prc
                         t_amt = t_qty * close_prc
@@ -109,12 +114,10 @@ def run_scraper():
                         t_amt_sum += t_amt
                         pef_amt_sum += pef_amt
                         
-                        # 5일 손바뀜도 '거래량 * 종가'로 직접 1원 단위로 계산
-                        daily_vol = float(daily.get('acml_vol', 0))
+                        daily_vol = safe_api_float(daily.get('acml_vol'))
                         if idx < 5:
                             vol_tr_sum_5d += (daily_vol * close_prc)
 
-                        # 차트용 DB에는 보기 좋게 100만으로 나눠서 '백만원' 단위로 기록
                         history_list.append({
                             '종목명': name,
                             '일자': daily.get('stck_bsop_date', ''),
@@ -126,8 +129,8 @@ def run_scraper():
                         })
 
                     for daily in daily_list:
-                        f_qty = int(daily.get('frgn_ntby_qty', 0))
-                        p_qty = int(daily.get('fund_ntby_qty', 0))
+                        f_qty = safe_api_float(daily.get('frgn_ntby_qty'))
+                        p_qty = safe_api_float(daily.get('fund_ntby_qty'))
 
                         if f_buying:
                             if f_qty > 0: foreign_streak += 1
@@ -140,8 +143,11 @@ def run_scraper():
                         if not f_buying and not p_buying:
                             break
 
-            # 🎯 모든 계산을 '원' 단위 하나로 통일!
-            marcap_won = marcap * 100_000_000 # 시가총액(억원) -> 원
+            # 🔥 [해결 1] 실수로 날려먹었던 이격도(gap_20) 계산식 완벽 복구
+            ma20 = sum(closes) / len(closes) if closes else prpr
+            gap_20 = (prpr / ma20) * 100 if ma20 else 100 
+            
+            marcap_won = marcap * 100_000_000 
 
             f_str = (f_amt_sum / marcap_won) * 100 if marcap_won else 0
             p_str = (p_amt_sum / marcap_won) * 100 if marcap_won else 0
@@ -187,7 +193,7 @@ def run_scraper():
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
     
     pd.DataFrame(history_list).to_csv("history.csv", index=False, encoding='utf-8-sig')
-    print("✅ 데이터 수집 완료! 단위 스트레스 끝!")
+    print("✅ 데이터 수집 완료! 에러 방어 적용 완료!")
 
 if __name__ == "__main__":
     run_scraper()
