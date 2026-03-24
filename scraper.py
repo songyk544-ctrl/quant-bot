@@ -64,15 +64,15 @@ def run_scraper():
     start_date = (now_kst - timedelta(days=40)).strftime("%Y%m%d") 
 
     data_list = []
-    history_list = [] # 🔥 [신규] 차트 데이터를 담을 바구니
+    history_list = [] # 🔥 차트 데이터를 담을 바구니
 
     for i, row in enumerate(df_target.itertuples()):
         code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
         
-        # 👇 대표님이 완벽하게 디버깅하신 파라미터 그대로 적용!
+        # 대표님이 수정한 파라미터 유지
         params = {
             "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
-            "FID_INPUT_DATE_1": end_date, #"FID_INPUT_DATE_2": end_date,
+            "FID_INPUT_DATE_1": end_date, 
             "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"
         }
 
@@ -83,7 +83,6 @@ def run_scraper():
             foreign_streak, pension_streak = 0, 0
             f_buying, p_buying = True, True  
             
-            # 🔥 [신규] 기술적 분석용 변수 추가
             closes = [] 
             vol_tr_sum_5d = 0 
 
@@ -101,11 +100,9 @@ def run_scraper():
                         t_amt_sum += t_pbmn
                         pef_amt_sum += pef_pbmn
                         
-                        # 이평선 계산을 위한 종가 수집
                         close_prc = float(daily.get('stck_clpr', 0))
                         closes.append(close_prc)
                         
-                        # 5일 누적 거래대금 (손바뀜 확인용)
                         if idx < 5:
                             vol_tr_sum_5d += float(daily.get('acml_tr_pbmn', 0))
 
@@ -135,17 +132,18 @@ def run_scraper():
                         if not f_buying and not p_buying:
                             break
 
-            marcap_million = marcap * 100 
+            # 🔥 [핵심 수정] 네이버 시총(억원)에 1억을 곱해 모든 단위를 '원'으로 완벽 통일
+            marcap_won = marcap * 100_000_000 
 
-            f_str = (f_amt_sum / marcap_million) * 100 if marcap_million else 0
-            p_str = (p_amt_sum / marcap_million) * 100 if marcap_million else 0
-            t_str = (t_amt_sum / marcap_million) * 100 if marcap_million else 0
-            pef_str = (pef_amt_sum / marcap_million) * 100 if marcap_million else 0
+            f_str = (f_amt_sum / marcap_won) * 100 if marcap_won else 0
+            p_str = (p_amt_sum / marcap_won) * 100 if marcap_won else 0
+            t_str = (t_amt_sum / marcap_won) * 100 if marcap_won else 0
+            pef_str = (pef_amt_sum / marcap_won) * 100 if marcap_won else 0
 
-            # 🎯 [신규] 기술적 지표 계산 (이격도 & 손바뀜)
+            # 🎯 기술적 지표 계산 (이격도 & 손바뀜)
             ma20 = sum(closes) / len(closes) if closes else prpr
             gap_20 = (prpr / ma20) * 100 if ma20 else 100 
-            turnover_rate = (vol_tr_sum_5d / marcap_million) * 100 if marcap_million else 0 
+            turnover_rate = (vol_tr_sum_5d / marcap_won) * 100 if marcap_won else 0 
             
             tech_score = 0
             if 98 <= gap_20 <= 105: tech_score += 10 # 완벽한 눌림목
