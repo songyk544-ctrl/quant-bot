@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
+import altair as alt # 🔥 Altair 고급 차트 라이브러리 추가
 import os
 
-st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V5", page_icon="⚡")
-st.title("⚡ 실전 수급 스윙 대시보드 V5 (AI & 차트)")
+st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V5.1", page_icon="⚡")
+st.title("⚡ 실전 수급 스윙 대시보드 V5.1 (UI 보완)")
 st.caption("🌐 글로벌 매크로 동향: 전일 뉴욕 증시 및 주요 환율 데이터 연동 대기 중")
 
 @st.cache_data(ttl=600) 
@@ -54,7 +55,7 @@ else:
                 "연기금강도(%)": st.column_config.Column("연기금(1달)"),
                 "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"),
                 "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"),
-                "소속": None, "PER": None, "투신강도(%)": None, "사모강도(%)": None # 모바일 화면 확보를 위해 일부 숨김
+                "소속": None, "PER": None, "투신강도(%)": None, "사모강도(%)": None 
             },
             hide_index=True, use_container_width=True, height=600 
         )
@@ -67,29 +68,52 @@ else:
         st.subheader(f"💡 {st.session_state.selected_stock} AI 퀀트 브리핑 (LLM 연동 대기중)")
         st.write(f"- **현재가:** {selected_row['현재가']:,}원 ({selected_row['등락률']}%)")
         st.write(f"- **수급 종합점수:** **{selected_row['AI수급점수']}점** (외인 {selected_row['외인연속']}일 / 연기금 {selected_row['연기금연속']}일 연속 매수)")
-        
-        # 기술적 지표 해석 추가
         tech_status = "🟢 완벽한 눌림목 타점" if 98 <= selected_row['이격도(%)'] <= 105 else ("🔴 단기 과열 주의" if selected_row['이격도(%)'] > 115 else "⚫ 추세 관망")
         st.write(f"- **기술적 분석:** 20일 이평선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 최근 5일 손바뀜 {selected_row['손바뀜(%)']}%")
         
         st.markdown("---")
         
-        # 🔥 차트 시각화 영역
         if not df_history.empty:
+            # 선택한 종목 데이터만 필터링
             target_hist = df_history[df_history['종목명'] == st.session_state.selected_stock].copy()
             
             if not target_hist.empty:
                 # 일자를 오름차순(과거->현재)으로 정렬하고 날짜 형식으로 변환
                 target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
-                target_hist = target_hist.sort_values('일자').set_index('일자')
+                target_hist = target_hist.sort_values('일자')
                 
                 col1, col2 = st.columns(2)
                 
+                # 가중치별 색상 정의 (색맹 친화적 팔레트)
+                color_scale = alt.Scale(
+                    domain=['외인', '연기금', '투신', '사모'],
+                    range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'] # 빨, 파, 노, 연두
+                )
+
                 with col1:
                     st.markdown("##### 📈 일봉 차트 (최근 20일 종가)")
-                    st.line_chart(target_hist['종가'], height=250, use_container_width=True)
+                    # 🔥 해결 1: Y축 스케일 자동 조정 (Scale(zero=False))
+                    # X축을 Ordinal(:O)로 설정하여 주말 공백 제거
+                    chart_close = alt.Chart(target_hist).mark_line(color='#1C83E1').encode(
+                        x=alt.X('일자:O', axis=alt.Axis(format='%Y-%m-%d', title=None)), # 일자 포맷 및 공백 제거
+                        y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None) # Y축 0부터 시작 금지!
+                    ).properties(height=280)
+                    
+                    st.altair_chart(chart_close, use_container_width=True)
                     
                 with col2:
                     st.markdown("##### 📊 세력별 순매수 대금 (백만원)")
-                    # 모바일에서도 예쁘게 보이도록 누적 바(Bar) 차트 렌더링
-                    st.bar_chart(target_hist[['외인', '연기금', '투신', '사모']], height=250, use_container_width=True)
+                    
+                    # Altair를 위한 데이터 변환 (Long-form 데이터)
+                    bar_data = target_hist.melt('일자', value_vars=['외인', '연기금', '투신', '사모'], 
+                                                 var_name='투자자', value_name='금액')
+                    
+                    # 🔥 해결 2: X축을 Ordinal(:O)로 설정하여 주말(거래 없는 날) 공백 완벽 제거
+                    chart_bar = alt.Chart(bar_data).mark_bar().encode(
+                        x=alt.X('일자:O', axis=alt.Axis(format='%Y-%m-%d', title=None)), # 공백 없이 꽉 채움
+                        y=alt.Y('금액:Q', title=None),
+                        color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None)), # 범례 제목 제거
+                        order=alt.Order('투자자:N', sort='descending') # 누적 바 쌓는 순서
+                    ).properties(height=280)
+                    
+                    st.altair_chart(chart_bar, use_container_width=True)
