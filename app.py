@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
-import altair as alt # Altair 고급 차트 라이브러리 추가
+import altair as alt
 import os
 
-st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V5.2", page_icon="⚡")
-st.title("⚡ 실전 수급 스윙 대시보드 V5.2 (긴급 패치)")
+st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V5.3", page_icon="⚡")
+st.title("⚡ 실전 수급 스윙 대시보드 V5.3 (차트 완벽 복구)")
 st.caption("🌐 글로벌 매크로 동향: 전일 뉴욕 증시 및 주요 환율 데이터 연동 대기 중")
 
-# @st.cache_data(ttl=600) # 🔥 긴급: 차트 로딩 문제를 해결하기 위해 캐시를 한시적으로 제거합니다!
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
@@ -18,8 +17,6 @@ df_summary, df_history = load_data()
 if df_summary.empty:
     st.warning("⏳ 데이터 수집 봇이 아직 파일을 생성하지 않았습니다. GitHub Actions를 확인해주세요.")
 else:
-    # st.success("✅ GitHub 파이프라인 데이터 로딩 완료 (0.1초)") # 캐시 제거 시 광속 로딩 표시 지움
-    
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
@@ -52,14 +49,11 @@ else:
                 "등락률": st.column_config.Column("등락"),
                 "외인강도(%)": st.column_config.Column("외인(1달)"),
                 "연기금강도(%)": st.column_config.Column("연기금(1달)"),
-                
-                # 🔥 숨겨졌던 투신/사모 강도를 복원합니다! (텍스트 컬럼으로 표시)
                 "투신강도(%)": st.column_config.Column("투신(1달)"),
                 "사모강도(%)": st.column_config.Column("사모(1달)"),
-                
                 "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"),
                 "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"),
-                "이격도(%)": None, "손바뀜(%)": None, "소속": None, "PER": None, "ROE": None, "시가총액": None # 차트 탭에 집중하기 위해 일부 숨김
+                "이격도(%)": None, "손바뀜(%)": None, "소속": None, "PER": None, "ROE": None, "시가총액": None 
             },
             hide_index=True, use_container_width=True, height=600 
         )
@@ -78,45 +72,42 @@ else:
         
         st.markdown("---")
         
-        # 차트 시각화 영역
         if not df_history.empty:
             target_hist = df_history[df_history['종목명'] == st.session_state.selected_stock].copy()
             
             if not target_hist.empty:
-                # 일자를 오름차순(과거->현재)으로 정렬하고 날짜 형식으로 변환
+                # 🔥 [핵심 해결 로직] 날짜를 미리 예쁜 '글자' 형태로 만들어서 던져줌
                 target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
                 target_hist = target_hist.sort_values('일자')
-                
+                target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d') # 예: 03/24
+
                 col1, col2 = st.columns(2)
                 
-                # 가중치별 색상 정의 (색맹 친화적 팔레트)
                 color_scale = alt.Scale(
                     domain=['외인', '연기금', '투신', '사모'],
-                    range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'] # 빨, 파, 노, 연두
+                    range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'] 
                 )
 
                 with col1:
                     st.markdown("##### 📈 일봉 차트 (최근 20일 종가)")
-                    # Y축 스케일 자동 조정 (Scale(zero=False)) 및 주말 공백 제거
-                    chart_close = alt.Chart(target_hist).mark_line(color='#1C83E1').encode(
-                        x=alt.X('일자:O', axis=alt.Axis(format='%Y-%m-%d', title=None)), # 일자 포맷 및 공백 제거
-                        y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None) # Y축 0부터 시작 금지!
+                    # format을 지우고 미리 만든 '일자_표시' 글자를 그대로 사용. sort=None으로 시간순 정렬 유지.
+                    chart_close = alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(
+                        x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
+                        y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)
                     ).properties(height=280)
                     
                     st.altair_chart(chart_close, use_container_width=True)
                     
                 with col2:
                     st.markdown("##### 📊 세력별 순매수 대금 (백만원)")
-                    # Altair를 위한 데이터 변환 (Long-form 데이터)
-                    bar_data = target_hist.melt('일자', value_vars=['외인', '연기금', '투신', '사모'], 
+                    bar_data = target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], 
                                                  var_name='투자자', value_name='금액')
                     
-                    # 주말 공백 완벽 제거 및 누적 바 차트
                     chart_bar = alt.Chart(bar_data).mark_bar().encode(
-                        x=alt.X('일자:O', axis=alt.Axis(format='%Y-%m-%d', title=None)), # 공백 없이 꽉 채움
+                        x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
                         y=alt.Y('금액:Q', title=None),
-                        color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None)), # 범례 제목 제거
-                        order=alt.Order('투자자:N', sort='descending') # 누적 바 쌓는 순서
+                        color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None)),
+                        order=alt.Order('투자자:N', sort='descending')
                     ).properties(height=280)
                     
                     st.altair_chart(chart_bar, use_container_width=True)
