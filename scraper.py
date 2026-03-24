@@ -2,7 +2,7 @@ import pandas as pd
 import requests
 import json
 import time
-from datetime import datetime, timedelta, timezone # 🔥 timezone 추가!
+from datetime import datetime, timedelta, timezone 
 from bs4 import BeautifulSoup
 import os
 
@@ -46,108 +46,147 @@ def run_scraper():
     print("🚀 수집기 봇 가동 시작...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
-    
+
     headers = {
         "authorization": f"Bearer {token}", "appkey": KIS_APP_KEY,
         "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"
     }
     url = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
-    # 🔥 [수정 1] 한국 시간(KST) 강제 고정 및 15시 40분 기준일 판별
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
-    
+
     if now_kst.hour > 15 or (now_kst.hour == 15 and now_kst.minute >= 40):
-        end_date = now_kst.strftime("%Y%m%d") # 15:40 이후면 당일 데이터 포함!
+        end_date = now_kst.strftime("%Y%m%d") 
     else:
-        end_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d") # 아니면 어제까지만!
-        
+        end_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d") 
+
     start_date = (now_kst - timedelta(days=40)).strftime("%Y%m%d") 
-    
+
     data_list = []
-    
+    history_list = [] # 🔥 [신규] 차트 데이터를 담을 바구니
+
     for i, row in enumerate(df_target.itertuples()):
         code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
+        
+        # 👇 대표님이 완벽하게 디버깅하신 파라미터 그대로 적용!
         params = {
             "FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code,
             "FID_INPUT_DATE_1": end_date, #"FID_INPUT_DATE_2": end_date,
             "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"
         }
-        
+
         try:
             res = requests.get(url, headers=headers, params=params)
-            
-            # 🔥 수량이 아닌 '순매수 금액'을 담을 바구니로 변경
+
             f_amt_sum, p_amt_sum, t_amt_sum, pef_amt_sum = 0, 0, 0, 0
             foreign_streak, pension_streak = 0, 0
             f_buying, p_buying = True, True  
             
+            # 🔥 [신규] 기술적 분석용 변수 추가
+            closes = [] 
+            vol_tr_sum_5d = 0 
+
             if res.status_code == 200 and res.json().get('rt_cd') == "0":
                 daily_list = res.json().get('output2', [])
                 if daily_list:
-                    # 🔥 [수정 2] 정확한 20일치 '거래 대금(_pbmn)' 누적 합산 (단위: 백만원)
-                    for daily in daily_list[:20]: 
-                        f_amt_sum += float(daily.get('frgn_ntby_tr_pbmn', 0))
-                        p_amt_sum += float(daily.get('fund_ntby_tr_pbmn', 0))
-                        t_amt_sum += float(daily.get('ivtr_ntby_tr_pbmn', 0))
-                        pef_amt_sum += float(daily.get('pe_fund_ntby_tr_pbmn', 0))
+                    for idx, daily in enumerate(daily_list[:20]): 
+                        f_pbmn = float(daily.get('frgn_ntby_tr_pbmn', 0))
+                        p_pbmn = float(daily.get('fund_ntby_tr_pbmn', 0))
+                        t_pbmn = float(daily.get('ivtr_ntby_tr_pbmn', 0))
+                        pef_pbmn = float(daily.get('pe_fund_ntby_tr_pbmn', 0))
+
+                        f_amt_sum += f_pbmn
+                        p_amt_sum += p_pbmn
+                        t_amt_sum += t_pbmn
+                        pef_amt_sum += pef_pbmn
+                        
+                        # 이평선 계산을 위한 종가 수집
+                        close_prc = float(daily.get('stck_clpr', 0))
+                        closes.append(close_prc)
+                        
+                        # 5일 누적 거래대금 (손바뀜 확인용)
+                        if idx < 5:
+                            vol_tr_sum_5d += float(daily.get('acml_tr_pbmn', 0))
+
+                        # 📈 차트용 DB(history.csv)에 기록
+                        history_list.append({
+                            '종목명': name,
+                            '일자': daily.get('stck_bsop_date', ''),
+                            '종가': close_prc,
+                            '외인': f_pbmn,
+                            '연기금': p_pbmn,
+                            '투신': t_pbmn,
+                            '사모': pef_pbmn
+                        })
 
                     for daily in daily_list:
-                        # 연속 매수는 '수량(_qty)' 기준으로 판별
                         f_qty = int(daily.get('frgn_ntby_qty', 0))
                         p_qty = int(daily.get('fund_ntby_qty', 0))
-                        
+
                         if f_buying:
                             if f_qty > 0: foreign_streak += 1
                             else: f_buying = False
-                            
+
                         if p_buying:
                             if p_qty > 0: pension_streak += 1
                             else: p_buying = False
-                            
+
                         if not f_buying and not p_buying:
                             break
 
-            # 🔥 [수정 3] 추정치 폐기 -> 리얼 대금 기반 강도(%) 계산
-            # 한투 대금 단위는 '백만원', 네이버 시총 단위는 '억원' -> 시총에 100을 곱해 단위를 맞춤
             marcap_million = marcap * 100 
-            
+
             f_str = (f_amt_sum / marcap_million) * 100 if marcap_million else 0
             p_str = (p_amt_sum / marcap_million) * 100 if marcap_million else 0
             t_str = (t_amt_sum / marcap_million) * 100 if marcap_million else 0
             pef_str = (pef_amt_sum / marcap_million) * 100 if marcap_million else 0
+
+            # 🎯 [신규] 기술적 지표 계산 (이격도 & 손바뀜)
+            ma20 = sum(closes) / len(closes) if closes else prpr
+            gap_20 = (prpr / ma20) * 100 if ma20 else 100 
+            turnover_rate = (vol_tr_sum_5d / marcap_million) * 100 if marcap_million else 0 
             
-            # 다중 팩터 스코어링 로직 적용
+            tech_score = 0
+            if 98 <= gap_20 <= 105: tech_score += 10 # 완벽한 눌림목
+            elif gap_20 > 115: tech_score -= 10      # 단기 과열
+            if turnover_rate >= 15: tech_score += 10 # 손바뀜 우수
+
             strength_score = (max(-10, min(10, p_str)) * 2.0) + (max(-5, min(5, t_str)) * 1.5) + (max(-5, min(5, pef_str)) * 1.5) + (max(-5, min(5, f_str)) * 1.0)
             streak_score = min(20, pension_streak * 3.0) + min(10, foreign_streak * 1.5)
-            
+
             fund_score = 0
             if row.ROE >= 15: fund_score += 15
             elif row.ROE >= 8: fund_score += 8
-            
             if 0 < row.PER <= 10: fund_score += 15
             elif 10 < row.PER <= 20: fund_score += 8
 
-            ai_score = 30 + strength_score + streak_score + fund_score
+            # AI 점수 총합
+            ai_score = 20 + strength_score + streak_score + fund_score + tech_score
             ai_score = max(0, min(100, int(ai_score)))
-            
+
             data_list.append({
                 '종목명': name, '종목코드': code, '소속': row.소속, 'AI수급점수': int(ai_score),
                 '현재가': prpr, '등락률': row.등락률,
                 '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                 '외인연속': foreign_streak,
                 '연기금연속': pension_streak,
+                '이격도(%)': round(gap_20, 1),
+                '손바뀜(%)': round(turnover_rate, 1),
                 '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
         except Exception as e:
             print(f"Error parsing {name}: {e}")
             pass 
-            
+
         time.sleep(0.2) 
-        
+
     df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
-    print("✅ 데이터 수집 및 data.csv 저장 완료!")
+    
+    # 🔥 차트용 데이터베이스 별도 생성
+    pd.DataFrame(history_list).to_csv("history.csv", index=False, encoding='utf-8-sig')
+    print("✅ 데이터 수집 및 data.csv / history.csv 저장 완료!")
 
 if __name__ == "__main__":
     run_scraper()
