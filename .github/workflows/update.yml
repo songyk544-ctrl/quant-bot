@@ -19,8 +19,9 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
+        # 🔥 [수정 1] 봇 서버에도 구글 AI 모듈(google-generativeai) 설치!
         run: |
-          pip install pandas requests beautifulsoup4
+          pip install pandas requests beautifulsoup4 google-generativeai
 
       - name: Run Scraper
         env:
@@ -31,9 +32,10 @@ jobs:
         run: python scraper.py
 
       - name: Commit and Push CSV
+        # 🔥 [수정 2] AI가 작성한 report.md 파일도 함께 저장(Commit)하도록 추가!
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data.csv history.csv
-          git commit -m "🤖 수급 데이터 자동 업데이트 (장마감)" || exit 0
+          git add data.csv history.csv report.md
+          git commit -m "🤖 수급 데이터 및 AI 거시경제 리포트 자동 업데이트" || exit 0
           git push
