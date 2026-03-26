@@ -1,6 +1,6 @@
 pandas
 requests
 beautifulsoup4
-altair
+altair<5
 streamlit
 google-generativeai
