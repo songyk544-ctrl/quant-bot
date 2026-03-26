@@ -195,7 +195,13 @@ def run_scraper():
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             top_data_str = df_merged.to_string(index=False)
             
+            # 🔥 [여기 추가!] 파이썬이 오늘 날짜를 '2026년 3월 26일' 형태로 만듭니다.
+            KST = timezone(timedelta(hours=9))
+            today_str = datetime.now(KST).strftime("%Y년 %m월 %d일")
+            
             prompt = f"""
+            오늘 날짜는 {today_str}이야. 리포트 제목이나 내용에 날짜가 들어간다면 이 날짜를 꼭 사용해 줘.
+            
             너는 여의도 최고의 탑다운(Top-Down) 퀀트 애널리스트야.
             아래는 오늘자 수급 및 기술적 지표 최상위 15개 종목의 리얼타임 데이터야.
             ('당일_외인/연기금순매수'의 단위는 백만 원이야.)
