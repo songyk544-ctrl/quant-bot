@@ -28,6 +28,9 @@ def safe_api_float(val):
 
 def get_target_stock_list():
     target_list = []
+    # 🔥 [추가] 퀀트 분석의 노이즈가 되는 ETF, ETN, 스팩주 필터링 키워드
+    noise_keywords = ['KODEX', 'TIGER', 'RISE', 'ACE', 'KBSTAR', 'HANARO', 'KOSEF', 'SOL', 'PLUS', 'ARIRANG', 'ETN', '스팩', '인버스', '레버리지', 'CD금리', 'KOFR']
+    
     for sosok, market_name in [(0, 'KOSPI'), (1, 'KOSDAQ')]:
         for page in range(1, 7): 
             url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
@@ -38,10 +41,15 @@ def get_target_stock_list():
                 if len(tds) > 11:
                     name_tag = tr.select_one('a.tltle')
                     if name_tag:
+                        stock_name = name_tag.text
+                        # 🔥 노이즈 키워드가 포함된 종목은 수집에서 즉시 제외 (Pass)
+                        if any(keyword in stock_name for keyword in noise_keywords):
+                            continue
+                            
                         marcap = safe_float(tds[6].text)
                         if marcap >= 8000:
                             target_list.append({
-                                '종목명': name_tag.text, '종목코드': name_tag['href'].split('code=')[-1], 
+                                '종목명': stock_name, '종목코드': name_tag['href'].split('code=')[-1], 
                                 '소속': market_name, '현재가': int(safe_float(tds[2].text)),
                                 '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
                                 'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text)
@@ -49,7 +57,7 @@ def get_target_stock_list():
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작...")
+    print("🚀 수집기 봇 가동 시작 (ETF 노이즈 필터링 적용)...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
 
@@ -138,7 +146,6 @@ def run_scraper():
             pef_str = (pef_amt_sum / marcap_won) * 100 if marcap_won else 0
             turnover_rate = (vol_tr_sum_5d / marcap_won) * 100 if marcap_won else 0 
             
-            # 🔥 V6 팩터: 추세 & 돈의 힘에 집중
             tech_score = 0
             if 101 <= gap_20 <= 108: tech_score += 15 
             elif gap_20 < 95: tech_score -= 20 
@@ -173,56 +180,59 @@ def run_scraper():
     
     df_history = pd.DataFrame(history_list)
     df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
-    print("✅ 데이터 수집 완료!")
+    print("✅ 데이터 수집 완료! 순수 기업 데이터만 확보했습니다.")
 
-    # 🔥 [핵심] 봇이 마지막에 스스로 글로벌 매크로 AI 리포트를 작성합니다!
     if GEMINI_API_KEY:
-        print("📝 AI 글로벌 매크로 마감 리포트 생성 중...")
+        print("📝 실시간 구글 검색(Grounding) 기반 AI 마감 리포트 생성 중...")
         try:
             genai.configure(api_key=GEMINI_API_KEY)
-            # 대표님이 직접 찾아낸 최강의 무료 모델 탑재!
             model = genai.GenerativeModel('gemini-2.5-flash')
             
-            top_15_names = df_final.head(15)['종목명'].tolist()
+            # 🔥 [수정] 표본을 20개로 확대!
+            top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
-            df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_15_names))]
+            df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
             
             df_merged = pd.merge(
-                df_final.head(15)[['종목명', '소속', 'AI수급점수', '이격도(%)', '손바뀜(%)']],
+                df_final.head(20)[['종목명', '소속', 'AI수급점수', '이격도(%)', '손바뀜(%)']],
                 df_today[['종목명', '외인', '연기금']],
                 on='종목명', how='left'
             )
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             top_data_str = df_merged.to_string(index=False)
             
-            # 🔥 [여기 추가!] 파이썬이 오늘 날짜를 '2026년 3월 26일' 형태로 만듭니다.
+            # 날짜 변수 생성 (KST 기준)
             KST = timezone(timedelta(hours=9))
             today_str = datetime.now(KST).strftime("%Y년 %m월 %d일")
             
             prompt = f"""
-            오늘 날짜는 {today_str}이야. 리포트 제목이나 내용에 날짜가 들어간다면 이 날짜를 꼭 사용해 줘.
+            오늘 날짜는 {today_str}이야. 리포트 제목과 내용에 이 날짜를 기준점으로 사용해 줘.
             
             너는 여의도 최고의 탑다운(Top-Down) 퀀트 애널리스트야.
-            아래는 오늘자 수급 및 기술적 지표 최상위 15개 종목의 리얼타임 데이터야.
+            아래는 ETF 등 노이즈가 완벽히 제거된 오늘자 수급 및 기술적 지표 최상위 20개 종목의 리얼타임 데이터야.
             ('당일_외인/연기금순매수'의 단위는 백만 원이야.)
 
             {top_data_str}
 
             다음 순서로 전문가 수준의 마감 리포트를 작성해 줘:
-            1. 🌐 글로벌 매크로 & 이벤트 브리핑 (가장 중요함!): 
-               - 주식 시장을 분석할 때 항상 글로벌 이벤트를 최우선으로 고려해야 해.
-               - 현재 시장에 큰 영향을 미치고 있는 최신 글로벌 이벤트(예: 뉴욕 증시, 미 연준 금리 정책, 환율 변화, 지정학적 리스크, AI 산업 동향 등)를 반드시 상세히 짚어줘.
-               - 투자자가 놓쳤을 법한 글로벌 리스크나 거시적 관점의 추가 코멘트를 덧붙여서 오늘 한국 시장이 왜 이런 흐름을 보였는지 배경을 설명해 줘.
+            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑 (구글 검색 데이터 활용!): 
+               - 반드시 구글 검색을 활용해서 오늘 시장에 가장 큰 영향을 미친 실시간 글로벌 뉴스(미국 증시, 금리, 지정학적 이슈, 환율 등)를 찾아서 상세히 짚어줘.
+               - 투자자가 놓쳤을 법한 글로벌 리스크나 거시적 흐름을 덧붙여서 한국 증시 흐름의 배경을 완벽하게 설명해 줘.
             2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: 
-               - 위 데이터를 보고, 오늘 외인과 기관의 뭉칫돈이 어떤 시장(코스피/코스닥)의 어떤 섹터로 집중되었는지 당일 매수 금액을 바탕으로 추론해서 요약해 줘.
-            3. 🎯 내일의 Top 3 관심종목 & 매크로 관점 추천 사유: 
-               - 위 데이터 중 이격도(눌림목)와 손바뀜이 좋으면서, 당일 수급이 강력하고 앞서 분석한 '글로벌 거시적 환경'에 부합하는 3종목을 꼽고 그 이유를 냉철하게 작성해 줘.
+               - 위 데이터를 분석하여, 오늘 뭉칫돈이 어떤 시장(코스피/코스닥)의 어떤 '섹터'로 집중되었는지 파악하고 요약해 줘.
+            3. 🎯 내일의 Top 3 관심종목 & 매크로 연계 추천 사유: 
+               - 위 데이터 중 이격도(눌림목)와 손바뀜이 좋으면서, 당일 수급이 강력하고 오늘 파악한 '글로벌 거시적 환경'에 가장 잘 부합하는 3종목을 꼽고 그 이유를 냉철하게 작성해 줘.
             """
-            response = model.generate_content(prompt)
+            
+            # 🔥 [추가] 대망의 구글 실시간 검색 연동 (Grounding)
+            response = model.generate_content(
+                prompt,
+                tools='google_search_retrieval' # 이 한 줄이 AI를 '실시간 뉴스 분석가'로 만듭니다.
+            )
             
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(response.text)
-            print("✅ AI 마감 리포트(report.md) 생성 및 저장 완료!")
+            print("✅ 실시간 검색 기반 AI 마감 리포트(report.md) 생성 및 저장 완료!")
             
         except Exception as e:
             print(f"⚠️ AI 리포트 생성 실패: {e}")
