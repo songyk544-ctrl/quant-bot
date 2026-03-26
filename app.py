@@ -129,7 +129,7 @@ else:
                 with st.spinner("AI가 글로벌 매크로 이벤트와 당일 수급 데이터를 융합 분석 중입니다... (약 10초 소요)"):
                     try:
                         genai.configure(api_key=api_key)
-                        model = genai.GenerativeModel('gemini-1.5-flash')
+                        model = genai.GenerativeModel('gemini-1.5-pro-latest')
                         
                         # 🔥 [핵심 추가] 대표님 아이디어 적용! 당일 history 데이터와 summary 데이터를 결합합니다.
                         top_15_names = df_summary.head(15)['종목명'].tolist()
