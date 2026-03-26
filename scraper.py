@@ -156,22 +156,40 @@ def run_scraper():
 
             turnover_rate = (vol_tr_sum_5d / marcap_won) * 100 if marcap_won else 0 
             
+            # ---------------------------------------------------------
+            # 👇 여기서부터 교체해 주세요! (기존 tech_score = 0 부분부터) 👇
+            
             tech_score = 0
-            if 98 <= gap_20 <= 105: tech_score += 10 
-            elif gap_20 > 115: tech_score -= 10      
-            if turnover_rate >= 15: tech_score += 10
+            # 🔥 [수정 1] 역배열 폭락주 철퇴 & 진짜 상승 추세 눌림목만 가점!
+            if 101 <= gap_20 <= 108: 
+                tech_score += 15 # 20일선 '위에서' 지지받는 진짜 상승장 눌림목 (+15점)
+            elif gap_20 < 95: 
+                tech_score -= 20 # 20일선 한참 아래로 깨진 폭락주 (강력 감점 -20점)
+            elif gap_20 > 115: 
+                tech_score -= 10 # 단기 너무 급등한 과열주 (추격매수 방지 -10점)
+                
+            # 손바뀜 기준을 살짝 낮춰서(15->10) 거래대금 터진 종목 우대
+            if turnover_rate >= 10: tech_score += 15 
 
-            strength_score = (max(-10, min(10, p_str)) * 2.0) + (max(-5, min(5, t_str)) * 1.5) + (max(-5, min(5, pef_str)) * 1.5) + (max(-5, min(5, f_str)) * 1.0)
+            # 🔥 [수정 2] 수급 강도 증폭! (기존 대비 가중치 10배 폭발)
+            # 이제 시총 대비 1%만 들어와도 20점이 꽂힙니다. (진짜 돈이 깡패!)
+            strength_score = (max(-10, min(10, p_str)) * 20.0) + (max(-5, min(5, t_str)) * 15.0) + (max(-5, min(5, pef_str)) * 15.0) + (max(-5, min(5, f_str)) * 10.0)
+            
             streak_score = min(20, pension_streak * 3.0) + min(10, foreign_streak * 1.5)
 
+            # 🔥 [수정 3] 가치주 함정(저 PER) 비중 대폭 축소 (최대 30점 -> 15점)
             fund_score = 0
-            if row.ROE >= 15: fund_score += 15
-            elif row.ROE >= 8: fund_score += 8
-            if 0 < row.PER <= 10: fund_score += 15
-            elif 10 < row.PER <= 20: fund_score += 8
+            if row.ROE >= 15: fund_score += 10
+            elif row.ROE >= 8: fund_score += 5
+            if 0 < row.PER <= 15: fund_score += 5 # 성장주도 포함되도록 PER 기준 완화
 
-            ai_score = 20 + strength_score + streak_score + fund_score + tech_score
+            # AI 점수 총합 계산 (기본점수 20 -> 0으로 낮추고 실력으로만 평가)
+            ai_score = strength_score + streak_score + fund_score + tech_score
             ai_score = max(0, min(100, int(ai_score)))
+            
+            # 👆 여기까지 덮어써 주시면 됩니다! (data_list.append 바로 위까지) 👆
+            # ---------------------------------------------------------
+
 
             data_list.append({
                 '종목명': name, '종목코드': code, '소속': row.소속, 'AI수급점수': int(ai_score),
