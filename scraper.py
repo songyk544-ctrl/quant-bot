@@ -230,7 +230,7 @@ def run_scraper():
             # 🔥 [추가] 대망의 구글 실시간 검색 연동 (Grounding)
             response = model.generate_content(
                 prompt,
-                tools='google_search' # 이 한 줄이 AI를 '실시간 뉴스 분석가'로 만듭니다.
+                tools=[{"google_search": {}}]  
             )
             
             with open("report.md", "w", encoding="utf-8") as f:
