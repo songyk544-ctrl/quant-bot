@@ -1,7 +1,6 @@
-streamlit
 pandas
-plotly
 requests
-finance-datareader
-google-generativeai
 beautifulsoup4
+altair
+streamlit
+google-generativeai
