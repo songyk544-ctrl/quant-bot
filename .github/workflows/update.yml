@@ -4,7 +4,7 @@ on:
   schedule:
     # 매주 월~금, 한국 시간 오후 4시 30분 (UTC 기준 07:30)에 자동 실행
     - cron: '30 7 * * 1-5'
-  workflow_dispatch: # 수동으로 버튼 눌러서 실행할 수 있는 옵션
+  workflow_dispatch: 
 
 jobs:
   build:
@@ -19,23 +19,21 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        # 🔥 [수정 1] 봇 서버에도 구글 AI 모듈(google-generativeai) 설치!
         run: |
           pip install pandas requests beautifulsoup4 google-generativeai
 
       - name: Run Scraper
         env:
-          # GitHub Secrets에 저장된 키를 불러옵니다.
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python scraper.py
 
       - name: Commit and Push CSV
-        # 🔥 [수정 2] AI가 작성한 report.md 파일도 함께 저장(Commit)하도록 추가!
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data.csv history.csv report.md
-          git commit -m "🤖 수급 데이터 및 AI 거시경제 리포트 자동 업데이트" || exit 0
+          # 🔥 [V7.0] score_trend.csv 파일이 깃허브에 누적 저장되도록 추가!
+          git add data.csv history.csv report.md score_trend.csv
+          git commit -m "🤖 수급 데이터, 랭킹 트렌드 및 AI 마감 리포트 업데이트" || exit 0
           git push
