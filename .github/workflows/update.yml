@@ -2,7 +2,6 @@ name: Quant Data Scraper
 
 on:
   schedule:
-    # 매주 월~금, 한국 시간 오후 4시 30분 (UTC 기준 07:30)에 자동 실행
     - cron: '30 7 * * 1-5'
   workflow_dispatch: 
 
@@ -27,13 +26,15 @@ jobs:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # 🔥 [텔레그램 추가] 봇 서버에 텔레그램 비밀키를 전달합니다.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scraper.py
 
       - name: Commit and Push CSV
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          # 🔥 [V7.0] score_trend.csv 파일이 깃허브에 누적 저장되도록 추가!
           git add data.csv history.csv report.md score_trend.csv
-          git commit -m "🤖 수급 데이터, 랭킹 트렌드 및 AI 마감 리포트 업데이트" || exit 0
+          git commit -m "🤖 수급 데이터 갱신 및 AI 리포트/텔레그램 발송 완료" || exit 0
           git push
