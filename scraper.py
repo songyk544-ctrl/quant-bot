@@ -28,7 +28,6 @@ def safe_api_float(val):
 
 def get_target_stock_list():
     target_list = []
-    # 🔥 [추가] 퀀트 분석의 노이즈가 되는 ETF, ETN, 스팩주 필터링 키워드
     noise_keywords = ['KODEX', 'TIGER', 'RISE', 'ACE', 'KBSTAR', 'HANARO', 'KOSEF', 'SOL', 'PLUS', 'ARIRANG', 'ETN', '스팩', '인버스', '레버리지', 'CD금리', 'KOFR']
     
     for sosok, market_name in [(0, 'KOSPI'), (1, 'KOSDAQ')]:
@@ -42,7 +41,6 @@ def get_target_stock_list():
                     name_tag = tr.select_one('a.tltle')
                     if name_tag:
                         stock_name = name_tag.text
-                        # 🔥 노이즈 키워드가 포함된 종목은 수집에서 즉시 제외 (Pass)
                         if any(keyword in stock_name for keyword in noise_keywords):
                             continue
                             
@@ -57,7 +55,7 @@ def get_target_stock_list():
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (ETF 노이즈 필터링 적용)...")
+    print("🚀 수집기 봇 가동 시작 (V7.0 트렌드 누적 적용)...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
 
@@ -180,15 +178,31 @@ def run_scraper():
     
     df_history = pd.DataFrame(history_list)
     df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
-    print("✅ 데이터 수집 완료! 순수 기업 데이터만 확보했습니다.")
+    print("✅ 데이터 수집 완료! (노이즈 제거 완료)")
 
+    # 🔥 [V7.0 추가] 날짜별 점수/순위 트렌드 누적 저장
+    today_date = datetime.now(KST).strftime("%Y-%m-%d")
+    df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
+    df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
+    df_trend_new['날짜'] = today_date
+
+    trend_file = "score_trend.csv"
+    if os.path.exists(trend_file):
+        df_trend_old = pd.read_csv(trend_file)
+        # 중복 방지 (하루에 여러번 돌려도 최신값으로 덮어씀)
+        df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
+        df_trend_combined = pd.concat([df_trend_old, df_trend_new], ignore_index=True)
+        df_trend_combined.to_csv(trend_file, index=False, encoding='utf-8-sig')
+    else:
+        df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
+
+    # 🔥 AI 마감 리포트 생성 (에러 방지용으로 파이썬이 강제 제목/날짜 입력)
     if GEMINI_API_KEY:
-        print("📝 실시간 구글 검색(Grounding) 기반 AI 마감 리포트 생성 중...")
+        print("📝 AI 마감 리포트 생성 중...")
         try:
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel('gemini-2.5-flash')
             
-            # 🔥 [수정] 표본을 20개로 확대!
             top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
             df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
@@ -201,46 +215,39 @@ def run_scraper():
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             top_data_str = df_merged.to_string(index=False)
             
-            # 날짜 변수 생성 (KST 기준)
-            KST = timezone(timedelta(hours=9))
-            today_str = datetime.now(KST).strftime("%Y년 %m월 %d일")
-            
             prompt = f"""
-            너는 여의도 최고의 탑다운(Top-Down) 퀀트 애널리스트야.
-            아래는 ETF 등 노이즈가 완벽히 제거된 오늘자 수급 최상위 20개 종목 데이터야.
+            너는 여의도 최고의 탑다운 퀀트 애널리스트야.
+            아래는 ETF 노이즈가 제거된 최상위 20개 종목 데이터야.
             
             {top_data_str}
 
             다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
-            (🚨주의: 리포트 최상단 '제목'은 절대 작성하지 말고, 바로 '1. 🌐 글로벌 매크로' 본문부터 시작해!)
+            (🚨주의: 제목은 쓰지 말고, 바로 '1. 🌐 글로벌 매크로' 본문부터 시작해!)
             
-            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑 (구글 검색 허용): 
-               - 구글 검색을 적극 활용해서 오늘 시장에 가장 큰 영향을 미친 실시간 글로벌 뉴스(미국 증시, 금리, 지정학적 이슈, 환율 등)를 상세히 짚어줘.
+            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 
+               - 오늘 시장에 가장 큰 영향을 미친 글로벌 뉴스(미국 증시, 금리, 환율 등)와 거시적 관점을 상세히 짚어줘.
             
-            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향 (🚨외부 검색 절대 금지): 
-               - 🚨[경고] 뉴스 기사나 구글 검색에서 본 KODEX 등 ETF나 표에 없는 매도 종목은 절대로 언급하지 마!
-               - 오직 내가 위에 제공한 '표 데이터(20개 종목)'의 당일 매수 금액과 종목명만 보고, 오늘 기관/외인 자금이 어떤 섹터로 몰렸는지 순수하게 추론해서 요약해 줘.
+            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향 (🚨외부 종목 언급 금지): 
+               - 오직 제공된 '표 데이터(20개 종목)'만 보고, 오늘 외인과 기관이 어떤 섹터에 집중했는지 추론해 줘. KODEX 등 표에 없는 ETF는 절대 언급하지 마.
                
-            3. 🎯 내일의 Top 3 관심종목 & 매크로 연계 추천 사유 (🚨외부 검색 절대 금지): 
-               - 🚨[경고] 반드시 위에 제공된 '표 데이터 20개 종목' 안에서만 3개를 골라야 해. 표에 없는 외부 종목은 절대 추천하지 마.
-               - 이격도와 손바뀜이 좋으면서 거시적 환경에 부합하는 종목을 골라 이유를 작성해 줘.
+            3. 🎯 내일의 Top 3 관심종목 & 추천 사유 (🚨외부 종목 언급 금지): 
+               - 반드시 표 안의 20개 종목 중에서만 3개를 골라 거시적 환경에 맞는 이유를 작성해 줘.
             """
-
             
-            # 🔥 [추가] 대망의 구글 실시간 검색 연동 (Grounding)
-            response = model.generate_content(
-                prompt,
-                 
-            )
+            # 🚨 에러 나던 검색 툴 싹 빼고 가장 안정적인 기본 호출만 사용!
+            response = model.generate_content(prompt)
             
+            today_str = datetime.now(KST).strftime("%Y년 %m월 %d일")
             with open("report.md", "w", encoding="utf-8") as f:
+                f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 마감 리포트 ({today_str})\n\n")
                 f.write(response.text)
-            print("✅ 실시간 검색 기반 AI 마감 리포트(report.md) 생성 및 저장 완료!")
+                
+            print(f"✅ AI 리포트 저장 완료! ({today_str})")
             
         except Exception as e:
             print(f"⚠️ AI 리포트 생성 실패: {e}")
     else:
-        print("⚠️ GEMINI_API_KEY가 환경변수에 없어 리포트 생성을 건너뜁니다.")
+        print("⚠️ GEMINI_API_KEY가 없어 리포트를 건너뜁니다.")
 
 if __name__ == "__main__":
     run_scraper()
