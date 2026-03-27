@@ -3,9 +3,12 @@ import pandas as pd
 import altair as alt
 import os
 
-st.set_page_config(layout="wide", page_title="수급 퀀트 비서 V7.0", page_icon="⚡")
-st.title("⚡ 실전 수급 스윙 대시보드 V7.0")
-st.caption("🌐 AI 매크로 리포트 및 랭킹 모멘텀(Trend) 트래킹 탑재")
+# 1. 브라우저 탭 이름 & 아이콘 고급화
+st.set_page_config(layout="wide", page_title="DeepAlpha Terminal", page_icon="🏛️")
+
+# 2. 메인 타이틀 & 서브타이틀 기관급 워딩으로 변경
+st.title("🏛️ DeepAlpha Quant Terminal")
+st.caption("AI-Driven Institutional Fund Flow & Macro Analysis Platform")
 
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
@@ -15,15 +18,14 @@ def load_data():
 df_summary, df_history = load_data()
 
 if df_summary.empty:
-    st.warning("⏳ 데이터 수집 봇이 아직 파일을 생성하지 않았습니다.")
+    st.warning("⏳ Market data is currently being aggregated. Please check back shortly.")
 else:
-    # 🔥 [V7.0] 랭킹 추세 계산 로직
+    # 랭킹 추세 계산 로직 (기존과 동일)
     df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='min', ascending=False).astype(int)
     if os.path.exists("score_trend.csv"):
         df_trend = pd.read_csv("score_trend.csv")
         dates = sorted(df_trend['날짜'].unique(), reverse=True)
         
-        # 어제(또는 이전) 데이터가 있을 경우에만 비교
         if len(dates) >= 2:
             yday_data = df_trend[df_trend['날짜'] == dates[1]][['종목명', '순위']]
             yday_data.columns = ['종목명', '전일_순위']
@@ -41,7 +43,12 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3 = st.tabs(["📊 리얼 수급 랭킹", f"📈 [{st.session_state.selected_stock}] 상세 차트", "📝 당일 AI 마감 리포트"])
+    # 3. 탭 이름 세련되게 변경
+    tab1, tab2, tab3 = st.tabs([
+        "📊 Market Screener", 
+        f"📈 Advanced Charting", 
+        "🌍 AI Macro Insight"
+    ])
 
     with tab1:
         def color_score(val):
@@ -65,26 +72,26 @@ else:
                                              "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%",
                                              "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
+        # 4. 표 컬럼 이름 고급화 (영문/국문 혼용으로 엣지있게)
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
             column_config={
-                "_index": st.column_config.TextColumn("종목명", width="small"),
-                "랭킹추세": st.column_config.Column("전일대비"), # 🔥 추세 컬럼 노출
-                "AI수급점수": st.column_config.NumberColumn("🏆 AI 점수"),
-                "현재가": st.column_config.Column("현재가"),
-                "등락률": st.column_config.Column("등락"),
-                "외인강도(%)": st.column_config.Column("외인(1달)"),
-                "연기금강도(%)": st.column_config.Column("연기금(1달)"),
-                "이격도(%)": st.column_config.Column("이격도"),
-                "손바뀜(%)": st.column_config.Column("손바뀜"),
-                "투신강도(%)": st.column_config.Column("투신(1달)"),
-                "사모강도(%)": st.column_config.Column("사모(1달)"),
-                "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"),
-                "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"),
-                "시가총액": st.column_config.Column("시총(억)"),
-                "소속": st.column_config.Column("시장")
+                "_index": st.column_config.TextColumn("Ticker", width="small"),
+                "랭킹추세": st.column_config.Column("Momentum"),
+                "AI수급점수": st.column_config.NumberColumn("🏆 Alpha Score"),
+                "현재가": st.column_config.Column("Price(KRW)"),
+                "등락률": st.column_config.Column("Change(%)"),
+                "외인강도(%)": st.column_config.Column("Foreign(1M)"),
+                "연기금강도(%)": st.column_config.Column("Pension(1M)"),
+                "이격도(%)": st.column_config.Column("Disparity(20D)"),
+                "손바뀜(%)": st.column_config.Column("Turnover(5D)"),
+                "투신강도(%)": st.column_config.Column("Trust(1M)"),
+                "사모강도(%)": st.column_config.Column("PEF(1M)"),
+                "외인연속": st.column_config.NumberColumn("F_Streak", format="%d Days"),
+                "연기금연속": st.column_config.NumberColumn("P_Streak", format="%d Days"),
+                "시가총액": st.column_config.Column("Market Cap(억)"),
+                "소속": st.column_config.Column("Market")
             },
-            # 불필요한 계산용 컬럼들은 화면에서 숨김 처리
             column_order=["_index", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
             hide_index=False, use_container_width=True, height=600 
         )
@@ -94,10 +101,12 @@ else:
 
     with tab2:
         selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
-        st.subheader(f"💡 {st.session_state.selected_stock} 기술적 분석")
-        st.write(f"- **수급 종합점수:** **{selected_row['AI수급점수']}점** (전일대비: {selected_row['랭킹추세']})")
-        tech_status = "🟢 완벽한 눌림목 타점" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 하락 추세 (관망)" if selected_row['이격도(%)'] < 95 else "⚫ 보유자 영역")
-        st.write(f"- **기술적 타점:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
+        st.subheader(f"💡 {st.session_state.selected_stock} : Technical & Flow Analysis")
+        st.write(f"- **DeepAlpha Score:** **{selected_row['AI수급점수']} / 100** (Daily Momentum: {selected_row['랭킹추세']})")
+        
+        # 5. 유치했던 진단 멘트를 세련된 트레이딩 용어로 변경
+        tech_status = "🟢 최적 매수 구간 (Golden Zone)" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간 (Wait & See)" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간 (Trend Following)")
+        st.write(f"- **Technical Positioning:** 20D Disparity {selected_row['이격도(%)']}% ({tech_status}) / 5D Turnover {selected_row['손바뀜(%)']}%")
         
         st.markdown("---")
         
@@ -112,26 +121,25 @@ else:
                 color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
                 
                 with col1:
-                    st.markdown("##### 📈 일봉 차트 (최근 20일 종가)")
+                    st.markdown("##### 📈 Price Action (20D)")
                     chart_close = alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(
                         x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
                         y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)
                     ).properties(height=280)
                     st.altair_chart(chart_close, use_container_width=True)
                 with col2:
-                    st.markdown("##### 📊 당일 세력별 순매수 대금 (백만원)")
-                    bar_data = target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')
+                    st.markdown("##### 📊 Institutional Net Flow (KRW Mil)")
+                    bar_data = target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='Investor', value_name='Amount')
                     chart_bar = alt.Chart(bar_data).mark_bar().encode(
                         x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
-                        y=alt.Y('금액:Q', title=None),
-                        color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
-                        order=alt.Order('투자자:N', sort='descending')
+                        y=alt.Y('Amount:Q', title=None),
+                        color=alt.Color('Investor:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
+                        order=alt.Order('Investor:N', sort='descending')
                     ).properties(height=280)
                     st.altair_chart(chart_bar, use_container_width=True)
 
-        # 🔥 [V7.0 추가] 과거 AI 점수 트렌드 차트
         st.markdown("---")
-        st.markdown(f"##### 🎢 과거 AI 점수 트렌드 ({st.session_state.selected_stock})")
+        st.markdown(f"##### 🎢 Alpha Score Trend ({st.session_state.selected_stock})")
         if os.path.exists("score_trend.csv"):
             df_trend = pd.read_csv("score_trend.csv")
             df_stock_trend = df_trend[df_trend['종목명'] == st.session_state.selected_stock].sort_values('날짜')
@@ -142,13 +150,13 @@ else:
                 ).properties(height=200)
                 st.altair_chart(chart_trend, use_container_width=True)
             else:
-                st.caption("⏳ 최소 이틀 이상의 데이터가 쌓이면 트렌드 차트가 표시됩니다.")
+                st.caption("⏳ Analyzing trend... Data accumulation in progress.")
 
     with tab3:
-        st.subheader("📰 오늘의 Top-Down 마감 시황 & 관심종목")
+        st.subheader("📰 Daily Top-Down Macro Briefing")
         if os.path.exists("report.md"):
             with open("report.md", "r", encoding="utf-8") as f:
                 report_content = f.read()
             st.markdown(report_content)
         else:
-            st.info("⏳ 오늘의 AI 마감 리포트가 아직 생성되지 않았습니다.")
+            st.info("⏳ AI Macro Insight report is being generated. Please wait.")
