@@ -147,10 +147,13 @@ def run_scraper():
             })
         except: pass 
         time.sleep(0.2) 
-
     df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
-    pd.DataFrame(history_list).to_csv("history.csv", index=False, encoding='utf-8-sig')
+    
+    # ⭕ 아래처럼 변수(df_history)를 선언하고 저장하도록 딱 2줄로 쪼개주세요!
+    df_history = pd.DataFrame(history_list)
+    df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
+
 
     today_date = datetime.now(KST).strftime("%Y-%m-%d")
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
