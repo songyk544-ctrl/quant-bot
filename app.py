@@ -11,10 +11,30 @@ from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
+# --- 🔥 [V16.0] 고급스러운 블러(Blur) 페이월 UI 함수 ---
+def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
+    st.markdown(f"""
+    <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
+        <!-- 흐릿하게 보이는 가짜 백그라운드 콘텐츠 -->
+        <div style="filter: blur(8px); opacity: 0.4; pointer-events: none; user-select: none;">
+            <h4 style="color: #888;">████████ 기술적 분석 및 수급 동향</h4>
+            <p>██████████████████████████████████████████████████████</p>
+            <p>████████████████████████████████████</p>
+            <div style="height: 150px; background: linear-gradient(90deg, #333 0%, #222 50%, #333 100%); border-radius: 10px; margin-top: 10px;"></div>
+        </div>
+        <!-- 중앙에 떠오르는 고급스러운 자물쇠 오버레이 -->
+        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: rgba(20, 20, 30, 0.85); padding: 30px; border-radius: 15px; border: 1px solid #FFD700; box-shadow: 0 10px 30px rgba(255, 215, 0, 0.15); width: 85%; backdrop-filter: blur(5px);">
+            <h2 style="margin:0; color:#FFD700; font-weight: 800; letter-spacing: 1px;">🔒 PREMIUM ONLY</h2>
+            <p style="color:#FFF; margin-top:15px; font-size: 1.1em;">{message}</p>
+            <p style="font-size:0.85em; color:#AAA; margin-top: 5px;">좌측 <b>[>]</b> 메뉴를 열어 VIP 코드를 입력해주세요.</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
 # 사이드바 VIP 로그인 로직
 VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
-st.sidebar.caption("VIP 코드를 입력하고 20위까지의 숨겨진 주도주와 전체 데이터를 확인하세요.")
+st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
 user_code = st.sidebar.text_input("🔑 VIP 엑세스 코드", type="password")
 
 is_vip = (user_code == VIP_CODE)
@@ -22,12 +42,11 @@ is_vip = (user_code == VIP_CODE)
 if is_vip:
     st.sidebar.success("✅ VIP 인증 완료! 모든 데이터가 개방되었습니다.")
 else:
-    st.sidebar.info("🔒 현재 무료 버전을 이용 중입니다. (Top 5 종목만 공개)")
+    st.sidebar.info("👀 현재 무료 버전을 체험 중입니다.")
 
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
-# --- 🔥 최신 신형 SDK(google-genai) 적용 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 if gemini_key:
     client = genai.Client(api_key=gemini_key)
@@ -96,7 +115,7 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 매크로 인사이트", "📊 수급 스크리너", f"📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 인사이트", "📊 스크리너", f"📈 종목 분석", "🏆 백테스트", "💬 챗봇"])
 
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
@@ -121,8 +140,8 @@ else:
         if is_vip:
             df_display = df_summary.set_index('종목명')
         else:
+            # 무료 회원은 5개만 렌더링
             df_display = df_summary.head(5).set_index('종목명')
-            st.warning("🔒 **[프리미엄 전용]** 무료 버전은 상위 5개 종목만 제공됩니다. VIP 코드를 입력하세요.")
 
         styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
@@ -130,36 +149,47 @@ else:
             styled_df, on_select="rerun", selection_mode="single-row",
             column_config={"_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("모멘텀"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")},
             column_order=["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
-            hide_index=False, use_container_width=True, height=600 
+            hide_index=False, use_container_width=True, height=250 if not is_vip else 600
         )
         if event.selection.rows: 
             selected_name = df_display.iloc[event.selection.rows[0]].name
             st.session_state.selected_stock = selected_name
 
+        # 🔥 표 밑에 예쁜 블러 페이월 띄우기
+        if not is_vip:
+            show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
+
     with tab3:
-        if not is_vip and st.session_state.selected_stock not in df_summary.head(5)['종목명'].values:
-            st.session_state.selected_stock = df_summary.iloc[0]['종목명']
-            
-        selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
-        st.subheader(f"💡 {st.session_state.selected_stock} [{selected_row.get('섹터', '분류안됨')}] : 수급 및 기술적 분석")
-        st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
-        tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
-        st.write(f"- **기술적 위치:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
-        st.markdown("---")
+        # 🔥 종목 분석 탭 블러 처리 로직
+        free_tier_stocks = df_summary.head(5)['종목명'].values
+        target_stock = st.session_state.selected_stock
+        selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
         
-        if not df_history.empty:
-            target_hist = df_history[df_history['종목명'] == st.session_state.selected_stock].copy()
-            if not target_hist.empty:
-                target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
-                target_hist = target_hist.sort_values('일자')
-                target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d')
-                
-                col1, col2 = st.columns(2)
-                color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
-                with col1:
-                    st.altair_chart(alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
-                with col2:
-                    st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
+        st.subheader(f"💡 {target_stock} [{selected_row.get('섹터', '분류안됨')}]")
+        
+        if not is_vip and target_stock not in free_tier_stocks:
+            # 무료 회원이 6위 이하 종목을 보려고 할 때 멋지게 막음
+            show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
+        else:
+            # 정상적인 차트 렌더링
+            st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
+            tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
+            st.write(f"- **기술적 위치:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
+            st.markdown("---")
+            
+            if not df_history.empty:
+                target_hist = df_history[df_history['종목명'] == target_stock].copy()
+                if not target_hist.empty:
+                    target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
+                    target_hist = target_hist.sort_values('일자')
+                    target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d')
+                    
+                    col1, col2 = st.columns(2)
+                    color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
+                    with col1:
+                        st.altair_chart(alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
+                    with col2:
+                        st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
 
     with tab4:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
@@ -217,7 +247,7 @@ else:
                     vip_instruction = ""
                 else:
                     context_data = df_summary.head(5).to_string(index=False)
-                    vip_instruction = "\n**[중요] 현재 사용자는 무료 회원이므로 상위 5개 종목만 볼 수 있어. 6위 이하의 종목을 물어보면 VIP 프리미엄 코드를 입력하라고 안내해!**"
+                    vip_instruction = "\n**[중요] 현재 사용자는 무료 회원이므로 상위 5개 종목만 볼 수 있어. 6위 이하의 종목을 물어보면 데이터를 숨기고, 반드시 VIP 프리미엄 코드를 입력해야 상세 분석이 가능하다고 답변해!**"
                 
                 system_prompt = f"""
                 너는 'DeepAlpha'의 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
@@ -237,7 +267,6 @@ else:
                 with chat_container:
                     with st.chat_message("assistant", avatar="🏛️"):
                         try:
-                            # 🔥 [공식 문서 적용] 신형 SDK 구글 검색 그라운딩 설정
                             config = types.GenerateContentConfig(
                                 tools=[{"google_search": {}}]
                             )
