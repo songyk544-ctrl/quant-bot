@@ -153,7 +153,7 @@ else:
             else: st.info("⏳ 데이터 대기 중")
         else: st.info("⏳ 데이터 대기 중")
 
-    # 🔥 [V12.0] 대화형 챗봇 (버그 픽스 및 추천 프롬프트 탑재)
+    # 🔥 [V12.2] 타이핑 이펙트(Streaming)가 적용된 챗봇
     with tab5:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
@@ -163,7 +163,6 @@ else:
             if "messages" not in st.session_state:
                 st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 오늘의 시장 주도주나 글로벌 매크로 동향에 대해 무엇이든 물어보세요."}]
 
-            # 1. 대화 기록을 표시할 컨테이너를 먼저 잡습니다 (스크롤 꼬임 방지)
             chat_container = st.container()
             with chat_container:
                 for msg in st.session_state.messages:
@@ -172,27 +171,26 @@ else:
                     else:
                         st.chat_message("user", avatar="👤").write(msg["content"])
 
-            # 2. 추천 프롬프트 (가로로 예쁘게 배치)
+            top_stock = df_summary.iloc[0]['종목명'] if not df_summary.empty else "삼성전자"
+            top_sector = df_summary['섹터'].value_counts().idxmax() if not df_summary.empty else "반도체"
+
             st.markdown("<br>", unsafe_allow_html=True)
-            st.caption("🔍 무엇을 물어볼지 고민된다면 아래 버튼을 눌러보세요!")
+            st.caption("🔍 실시간 데이터 기반 추천 질문 (클릭 시 자동 분석)")
             col1, col2, col3 = st.columns(3)
             
-            suggested_prompt = None
-            if col1.button("🛡️ 반도체 주도주", use_container_width=True): suggested_prompt = "오늘 수급 점수가 제일 높은 반도체 주식은 뭐야? 글로벌 시황이랑 엮어서 설명해줘."
-            if col2.button("🚀 HBM 섹터 동향", use_container_width=True): suggested_prompt = "오늘 데이터에 HBM 관련 종목들이 보여? 수급이랑 기술적 위치 어때?"
-            if col3.button("👤 오늘 외인 쏠림주", use_container_width=True): suggested_prompt = "외국인 매수세가 가장 강했던 TOP 3를 알려주고, 시장 뷰랑 엮어서 해석해줘."
+            if col1.button(f"🔥 {top_sector} 섹터 동향", use_container_width=True):
+                st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 통화정책이나 글로벌 이슈와 어떤 연관성이 있는지 분석해줘."
+            if col2.button(f"🏆 {top_stock} 매크로 분석", use_container_width=True):
+                st.session_state.trigger_prompt = f"오늘 수급 1위인 '{top_stock}'의 매력 포인트를 설명해주고, 이 종목에 영향을 줄 수 있는 해외 지수나 환율 동향을 함께 코멘트해줘."
+            if col3.button("🌍 전체 탑다운 뷰", use_container_width=True):
+                st.session_state.trigger_prompt = "현재 글로벌 매크로 환경(미국 국채금리, 기술주 흐름 등)을 바탕으로 오늘 우리 증시의 전체적인 기관/외인 수급 흐름을 총평해줘."
 
-            # 3. 사용자 채팅 입력창 (항상 맨 아래에 고정됩니다)
-            user_input = st.chat_input("예: 오늘 연기금이 가장 많이 담은 반도체 주식은 뭐야?")
-            prompt = suggested_prompt if suggested_prompt else user_input
+            user_input = st.chat_input("종목명이나 궁금한 시황을 입력하세요...")
+            prompt = st.session_state.pop("trigger_prompt", user_input)
 
             if prompt:
                 st.session_state.messages.append({"role": "user", "content": prompt})
-                
-                # 입력이 들어오면 페이지를 즉시 새로고침해서 컨테이너 안에 예쁘게 다시 그립니다
-                if suggested_prompt:
-                    st.rerun()
-                else:
+                with chat_container:
                     st.chat_message("user", avatar="👤").write(prompt)
 
                 context_data = df_summary.head(20).to_string(index=False)
@@ -200,18 +198,32 @@ else:
                 너는 'DeepAlpha'의 수석 퀀트 애널리스트야.
                 아래는 오늘 시장에서 AI 알고리즘으로 추출한 상위 20개 종목의 수급/기술적 데이터야.
                 {context_data}
+                
                 사용자의 질문: {prompt}
-                [지시사항]
-                1. 데이터를 바탕으로 정확하고 엣지있게 답변할 것.
-                2. 주식을 분석할 때는 반드시 글로벌 매크로 이벤트와 연계해서 추가적인 코멘터리를 제공할 것.
+                
+                [핵심 지시사항]
+                1. 주어진 데이터를 바탕으로 정확하게 답변할 것.
+                2. 종목이나 섹터를 분석할 때는 반드시 '미국 기준금리, 나스닥/S&P500 지수 흐름, 환율' 등 글로벌 매크로 이벤트와 연결지어서 큰 그림(Top-Down)의 뷰를 함께 제시할 것.
                 """
 
-                with st.spinner("DeepAlpha 분석 중..."):
-                    try:
-                        response = model.generate_content(system_prompt)
-                        bot_reply = response.text
-                    except Exception as e:
-                        bot_reply = f"앗, 분석 중 에러가 발생했습니다: {e}"
+                # 🔥 [V12.2 핵심] AI의 답변을 통째로 받지 않고 스트리밍(stream=True)으로 받아옵니다.
+                with chat_container:
+                    with st.chat_message("assistant", avatar="🏛️"):
+                        try:
+                            response = model.generate_content(system_prompt, stream=True)
+                            
+                            # 스트림릿의 st.write_stream에 넘겨주기 위한 생성기(Generator) 함수
+                            def stream_generator():
+                                for chunk in response:
+                                    if chunk.text:
+                                        yield chunk.text
+                                        
+                            # 타자 치듯 촤르르륵 출력되는 마법의 함수!
+                            bot_reply = st.write_stream(stream_generator)
+                            
+                        except Exception as e:
+                            bot_reply = f"앗, 분석 중 에러가 발생했습니다: {e}"
+                            st.write(bot_reply)
 
-                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                st.rerun() # 답변 완료 후 한 번 더 예쁘게 정렬
+                    # 최종 완성된 답변을 세션에 저장하여 다음 새로고침 때도 남아있게 합니다.
+                    st.session_state.messages.append({"role": "assistant", "content": bot_reply})
