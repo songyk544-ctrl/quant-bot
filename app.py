@@ -78,9 +78,7 @@ def generate_audio_premium(text):
                 "name": "ko-KR-Chirp3-HD-Sulafat" 
             },
             "audioConfig": {
-                "audioEncoding": "MP3",
-                "speakingRate": 1.15, # Chirp 모델은 자연스러워서 속도를 높여도 발음이 뭉개지지 않습니다!
-                "pitch": 0.0 
+                "audioEncoding": "MP3"
             }
         }
         
