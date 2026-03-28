@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import os
-import yfinance as yf  # 🔥 야후 파이낸스 라이브러리 추가
+import yfinance as yf
 
 # 1. 브라우저 탭 이름 & 아이콘
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
@@ -11,14 +11,18 @@ st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
-# 🔥 [V8.0] 글로벌 매크로 전광판 데이터 수집 (캐싱 적용)
-@st.cache_data(ttl=1800) # 30분마다 갱신 (서버 부하 방지 및 속도 최적화)
+# 🔥 [V8.1] 글로벌/국내 매크로 지표 대거 추가
+@st.cache_data(ttl=1800)
 def get_macro_data():
     tickers = {
-        "🇺🇸 S&P 500": "^GSPC",
-        "🚀 나스닥 (NASDAQ)": "^IXIC",
-        "💵 원/달러 환율": "KRW=X",
-        "📉 미 국채 10년물": "^TNX"
+        "🇰🇷 KOSPI": "^KS11",
+        "🇰🇷 KOSDAQ": "^KQ11",
+        "🇺🇸 S&P500": "^GSPC",
+        "🇺🇸 NASDAQ": "^IXIC",
+        "💵 환율": "KRW=X",
+        "🛢️ WTI유": "CL=F",
+        "📉 미 국채(10y)": "^TNX",
+        "😨 VIX": "^VIX"
     }
     macro_info = {}
     for name, ticker in tickers.items():
@@ -37,26 +41,57 @@ def get_macro_data():
             macro_info[name] = None
     return macro_info
 
-# 🔥 [V8.0] 매크로 위젯 화면 출력
+# 🔥 [V8.1] 모바일 최적화 '가로 스크롤 티커(Ticker)' UI 적용
 macro_data = get_macro_data()
-st.markdown("### 🌐 Global Macro Dashboard")
-cols = st.columns(4)
-for col, (name, data) in zip(cols, macro_data.items()):
-    if data:
-        if "환율" in name:
-            val_str = f"{data['value']:,.1f}원"
-        elif "국채" in name:
-            val_str = f"{data['value']:.3f}%"
-        else:
-            val_str = f"{data['value']:,.2f}"
-        
-        # Streamlit 내장 metric 위젯 사용 (전일 대비 상승/하락 자동 색상 적용)
-        col.metric(label=name, value=val_str, delta=f"{data['change']:.2f} ({data['change_pct']:.2f}%)")
-    else:
-        col.metric(label=name, value="데이터 지연", delta="-")
-        
-st.markdown("---")
 
+# CSS를 활용해 스크롤바를 숨기고 가로로 부드럽게 넘길 수 있는 컨테이너 디자인
+ticker_style = """
+<style>
+.ticker-wrap {
+    width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+    background-color: #1E1E2E;
+    padding: 12px 15px;
+    border-radius: 8px;
+    border: 1px solid #333;
+    margin-bottom: 20px;
+    -webkit-overflow-scrolling: touch; /* 모바일 부드러운 스크롤 */
+}
+.ticker-wrap::-webkit-scrollbar {
+    display: none; /* 지저분한 스크롤바 숨김 */
+}
+.ticker-item {
+    display: inline-block;
+    margin-right: 30px;
+    font-size: 15px;
+    font-family: 'Inter', sans-serif;
+}
+</style>
+"""
+
+ticker_html = "<div class='ticker-wrap'>"
+for name, data in macro_data.items():
+    if data:
+        # 한국 시장 기준: 상승은 빨간색, 하락은 파란색
+        color = "#FF3333" if data['change'] > 0 else "#0066FF" if data['change'] < 0 else "#888888"
+        arrow = "▲" if data['change'] > 0 else "▼" if data['change'] < 0 else "-"
+        
+        # 지표별 소수점 포맷팅
+        if "환율" in name: val_str = f"{data['value']:,.1f}원"
+        elif "국채" in name or "VIX" in name: val_str = f"{data['value']:.2f}"
+        else: val_str = f"{data['value']:,.2f}"
+        
+        ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <b>{val_str}</b> <span style='color: {color}; font-weight: bold;'>{arrow} {abs(data['change_pct']):.2f}%</span></div>"
+    else:
+        ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <span style='color: #888888;'>데이터 지연</span></div>"
+ticker_html += "</div>"
+
+# 스트림릿에 HTML/CSS 강제 주입
+st.markdown(ticker_style + ticker_html, unsafe_allow_html=True)
+
+
+# ---------------- [이하 기존 코드와 동일] ----------------
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
@@ -67,12 +102,10 @@ df_summary, df_history = load_data()
 if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다. 잠시 후 다시 확인해 주세요.")
 else:
-    # 랭킹 추세 계산 로직
     df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='min', ascending=False).astype(int)
     if os.path.exists("score_trend.csv"):
         df_trend = pd.read_csv("score_trend.csv")
         dates = sorted(df_trend['날짜'].unique(), reverse=True)
-        
         if len(dates) >= 2:
             yday_data = df_trend[df_trend['날짜'] == dates[1]][['종목명', '순위']]
             yday_data.columns = ['종목명', '전일_순위']
@@ -90,7 +123,6 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 3. 탭 구성
     tab1, tab2, tab3 = st.tabs([
         "📊 시장 수급 스크리너", 
         f"📈 개별 종목 정밀 분석", 
