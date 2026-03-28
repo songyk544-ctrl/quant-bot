@@ -73,12 +73,14 @@ def generate_audio_premium(text):
             "input": {"text": chunk},
             "voice": {
                 "languageCode": "ko-KR", 
-                "name": "ko-KR-Neural2-B" # 대표님 취향에 맞춘 여성 아나운서 A
+                # 👇 찾아내신 구글의 최신 LLM 기반 음성 모델로 업그레이드!
+                # (구글 콘솔의 '음성 목록'에서 마음에 드는 Chirp 목소리 이름을 넣으시면 됩니다. 통상적으로 아래와 같은 형식을 띱니다.)
+                "name": "ko-KR-Chirp3-HD-Sulafat" 
             },
             "audioConfig": {
                 "audioEncoding": "MP3",
-                "speakingRate": 1.0, # 경쾌하고 약간 빠른 속도
-                "pitch": 0.0 # 약간 중후한 톤
+                "speakingRate": 1.15, # Chirp 모델은 자연스러워서 속도를 높여도 발음이 뭉개지지 않습니다!
+                "pitch": 0.0 
             }
         }
         
