@@ -12,7 +12,6 @@ KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
 KIS_APP_SECRET = os.environ.get("KIS_APP_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 🔥 [텔레그램 추가] 환경변수에서 키를 불러옵니다.
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -56,40 +55,29 @@ def get_target_stock_list():
                             })
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
-# 🔥 [텔레그램 픽스] AI 마크다운을 텔레그램 전용으로 자동 변환!
 def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ 텔레그램 토큰 또는 Chat ID가 설정되지 않아 알림을 건너뜁니다.")
+        print("⚠️ 텔레그램 토큰/Chat ID가 없어 알림을 건너뜁니다.")
         return
-        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    
-    # 1. AI가 작성한 '**' 기호를 텔레그램용 '*' 기호로 싹 바꿔줍니다.
-    clean_text = text.replace('**', '*')
-    
-    # 2. 다시 parse_mode="Markdown" 옵션을 살려서 보냅니다!
+    clean_text = text.replace('**', '*') 
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000], "parse_mode": "Markdown"}
-    
     try:
         res = requests.post(url, data=data)
-        if res.status_code == 200:
-            print("✅ 텔레그램 알림 전송 완료!")
-        else:
-            print(f"⚠️ 텔레그램 전송 실패 (서버 거절): {res.text}")
+        if res.status_code == 200: print("✅ 텔레그램 발송 완료!")
+        else: print(f"⚠️ 텔레그램 서버 거절: {res.text}")
     except Exception as e:
-        print(f"⚠️ 텔레그램 전송 실패 (네트워크 에러): {e}")
-
-
+        print(f"⚠️ 텔레그램 네트워크 에러: {e}")
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작...")
+    print("🚀 수집기 봇 가동 시작 (V8.2 섹터 태깅 탑재)...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
     headers = {
         "authorization": f"Bearer {token}", "appkey": KIS_APP_KEY,
         "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"
     }
-    url = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
+    url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
@@ -102,9 +90,22 @@ def run_scraper():
 
     for i, row in enumerate(df_target.itertuples()):
         code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
+        
+        # 🔥 [V8.2] 네이버 금융에서 개별 종목의 '업종/섹터' 긁어오기
+        sector_name = "분류안됨"
+        try:
+            url_nv = f"https://finance.naver.com/item/main.naver?code={code}"
+            res_nv = requests.get(url_nv, headers={'User-Agent': 'Mozilla/5.0'})
+            soup_nv = BeautifulSoup(res_nv.text, 'html.parser')
+            sector_tag = soup_nv.select_one('div.trade_compare h4.h_sub a')
+            if sector_tag:
+                sector_name = sector_tag.text.strip()
+        except:
+            pass
+
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": end_date, "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"}
         try:
-            res = requests.get(url, headers=headers, params=params)
+            res = requests.get(url_kis, headers=headers, params=params)
             f_amt_sum, p_amt_sum, t_amt_sum, pef_amt_sum = 0, 0, 0, 0
             foreign_streak, pension_streak, f_buying, p_buying = 0, 0, True, True  
             closes, vol_tr_sum_5d = [], 0 
@@ -153,8 +154,10 @@ def run_scraper():
             ai_score = max(0, min(100, int(strength_score + streak_score + fund_score + tech_score)))
 
             data_list.append({
-                '종목명': name, '종목코드': code, '소속': row.소속, 'AI수급점수': ai_score,
-                '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
+                '종목명': name, '종목코드': code, '소속': row.소속, 
+                '섹터': sector_name, # 🔥 수집된 섹터 데이터 추가
+                'AI수급점수': ai_score, '현재가': prpr, '등락률': row.등락률, 
+                '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                 '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                 '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
@@ -188,7 +191,9 @@ def run_scraper():
             top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
             df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
-            df_merged = pd.merge(df_final.head(20)[['종목명', '소속', 'AI수급점수', '이격도(%)', '손바뀜(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
+            
+            # 🔥 섹터 정보까지 AI에게 넘겨서 훨씬 정교한 시황 분석을 유도
+            df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             
             prompt = f"""
@@ -201,7 +206,7 @@ def run_scraper():
             (🚨주의: 제목은 쓰지 말고, 바로 '1. 🌐 글로벌 매크로' 본문부터 시작해!)
             
             1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 오늘 시장에 큰 영향을 미친 글로벌 뉴스(미국 증시, 금리 등)를 상세히 짚어줘.
-            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: 제공된 표 데이터만 보고, 외인/기관이 어느 섹터에 집중했는지 추론해. 표에 없는 외부 종목(ETF 등) 언급 금지.
+            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서, 오늘 외인/기관의 자금이 어느 업종(테마)에 집중되었는지 핵심을 짚어줘.
             3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 거시적 환경에 맞는 이유를 작성.
             """
             
@@ -212,9 +217,12 @@ def run_scraper():
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(report_body)
                 
-            # 🔥 [텔레그램 추가] 앱 링크와 함께 리포트 발송! (링크는 실제 스트림릿 주소로 나중에 수정 가능)
             top3_str = ", ".join(top_N_names[:3])
-            tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드에서 차트 확인하기](https://ge82mjcdoxngn3p6udv5sy.streamlit.app/#89dec91f)"
+            
+            # 🚨 [커스텀 필요] 아래 변수 안의 주소를 대표님의 실제 스트림릿 주소로 꼭 바꿔주세요!
+            MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
+            
+            tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
 
         except Exception as e:
