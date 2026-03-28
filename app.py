@@ -11,7 +11,7 @@ st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
-# 🔥 [V8.1] 글로벌/국내 매크로 지표 대거 추가
+# 매크로 지표 캐싱
 @st.cache_data(ttl=1800)
 def get_macro_data():
     tickers = {
@@ -41,57 +41,34 @@ def get_macro_data():
             macro_info[name] = None
     return macro_info
 
-# 🔥 [V8.1] 모바일 최적화 '가로 스크롤 티커(Ticker)' UI 적용
+# 모바일 가로 스크롤 티커 UI
 macro_data = get_macro_data()
-
-# CSS를 활용해 스크롤바를 숨기고 가로로 부드럽게 넘길 수 있는 컨테이너 디자인
 ticker_style = """
 <style>
 .ticker-wrap {
-    width: 100%;
-    overflow-x: auto;
-    white-space: nowrap;
-    background-color: #1E1E2E;
-    padding: 12px 15px;
-    border-radius: 8px;
-    border: 1px solid #333;
-    margin-bottom: 20px;
-    -webkit-overflow-scrolling: touch; /* 모바일 부드러운 스크롤 */
+    width: 100%; overflow-x: auto; white-space: nowrap;
+    background-color: #1E1E2E; padding: 12px 15px; border-radius: 8px;
+    border: 1px solid #333; margin-bottom: 20px; -webkit-overflow-scrolling: touch;
 }
-.ticker-wrap::-webkit-scrollbar {
-    display: none; /* 지저분한 스크롤바 숨김 */
-}
-.ticker-item {
-    display: inline-block;
-    margin-right: 30px;
-    font-size: 15px;
-    font-family: 'Inter', sans-serif;
-}
+.ticker-wrap::-webkit-scrollbar { display: none; }
+.ticker-item { display: inline-block; margin-right: 30px; font-size: 15px; font-family: 'Inter', sans-serif; }
 </style>
 """
-
 ticker_html = "<div class='ticker-wrap'>"
 for name, data in macro_data.items():
     if data:
-        # 한국 시장 기준: 상승은 빨간색, 하락은 파란색
         color = "#FF3333" if data['change'] > 0 else "#0066FF" if data['change'] < 0 else "#888888"
         arrow = "▲" if data['change'] > 0 else "▼" if data['change'] < 0 else "-"
-        
-        # 지표별 소수점 포맷팅
         if "환율" in name: val_str = f"{data['value']:,.1f}원"
         elif "국채" in name or "VIX" in name: val_str = f"{data['value']:.2f}"
         else: val_str = f"{data['value']:,.2f}"
-        
         ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <b>{val_str}</b> <span style='color: {color}; font-weight: bold;'>{arrow} {abs(data['change_pct']):.2f}%</span></div>"
     else:
         ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <span style='color: #888888;'>데이터 지연</span></div>"
 ticker_html += "</div>"
-
-# 스트림릿에 HTML/CSS 강제 주입
 st.markdown(ticker_style + ticker_html, unsafe_allow_html=True)
 
-
-# ---------------- [이하 기존 코드와 동일] ----------------
+# 메인 데이터 로드
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
@@ -123,11 +100,7 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3 = st.tabs([
-        "📊 시장 수급 스크리너", 
-        f"📈 개별 종목 정밀 분석", 
-        "🌍 AI 매크로 인사이트"
-    ])
+    tab1, tab2, tab3 = st.tabs(["📊 시장 수급 스크리너", f"📈 개별 종목 정밀 분석", "🌍 AI 매크로 인사이트"])
 
     with tab1:
         def color_score(val):
@@ -155,6 +128,7 @@ else:
             styled_df, on_select="rerun", selection_mode="single-row",
             column_config={
                 "_index": st.column_config.TextColumn("종목명", width="small"),
+                "섹터": st.column_config.Column("테마/섹터"),  # 🔥 V8.2 섹터 컬럼 UI 추가
                 "랭킹추세": st.column_config.Column("모멘텀"),
                 "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"),
                 "현재가": st.column_config.Column("현재가(원)"),
@@ -170,7 +144,8 @@ else:
                 "시가총액": st.column_config.Column("시총(억)"),
                 "소속": st.column_config.Column("시장")
             },
-            column_order=["_index", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
+            # 종목명 바로 옆에 섹터가 오도록 배치 순서 조정
+            column_order=["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
             hide_index=False, use_container_width=True, height=600 
         )
         
@@ -179,7 +154,9 @@ else:
 
     with tab2:
         selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
-        st.subheader(f"💡 {st.session_state.selected_stock} : 수급 및 기술적 분석")
+        # 상세 차트 탭에도 섹터 표기
+        sector_disp = selected_row.get('섹터', '분류안됨')
+        st.subheader(f"💡 {st.session_state.selected_stock} [{sector_disp}] : 수급 및 기술적 분석")
         st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
         
         tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
