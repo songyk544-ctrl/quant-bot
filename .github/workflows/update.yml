@@ -2,6 +2,7 @@ name: Quant Data Scraper
 
 on:
   schedule:
+    # 매주 월~금, 한국 시간 오후 4시 30분 (UTC 기준 07:30)에 자동 실행
     - cron: '30 7 * * 1-5'
   workflow_dispatch: 
 
@@ -19,14 +20,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas requests beautifulsoup4 google-generativeai
+          pip install pandas requests beautifulsoup4 google-generativeai yfinance
 
       - name: Run Scraper
         env:
           KIS_APP_KEY: ${{ secrets.KIS_APP_KEY }}
           KIS_APP_SECRET: ${{ secrets.KIS_APP_SECRET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # 🔥 [텔레그램 추가] 봇 서버에 텔레그램 비밀키를 전달합니다.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python scraper.py
@@ -35,6 +35,9 @@ jobs:
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data.csv history.csv report.md score_trend.csv
-          git commit -m "🤖 수급 데이터 갱신 및 AI 리포트/텔레그램 발송 완료" || exit 0
+          
+          # 🔥 [V9.0] 포트폴리오 백테스트용 CSV 파일 2개가 추가되었습니다!
+          git add data.csv history.csv report.md score_trend.csv portfolio.csv performance_trend.csv
+          
+          git commit -m "🤖 수급 데이터 갱신, AI 리포트 및 포트폴리오 성적 업데이트 완료" || exit 0
           git push
