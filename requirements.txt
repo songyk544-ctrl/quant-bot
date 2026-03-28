@@ -6,3 +6,5 @@ streamlit>=1.40.0
 google-genai
 yfinance
 gTTS
+google-cloud-texttospeech
+proto-plus

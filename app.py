@@ -3,14 +3,18 @@ import pandas as pd
 import altair as alt
 import os
 import yfinance as yf
-from gtts import gTTS
+# from gtts import gTTS  <-- 싼티나는 gTTS 도려내기
 import io
 from google import genai
 from google.genai import types
 from datetime import datetime
 
+# 🔥 [V19.0 핵심] Google Cloud TTS 라이브러리 추가
+from google.cloud import texttospeech
+
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
+# 고급스러운 블러(Blur) 페이월 UI 함수
 def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
     st.markdown(f"""
     <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
@@ -28,6 +32,7 @@ def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다.")
     </div>
     """, unsafe_allow_html=True)
 
+# 사이드바 VIP 로그인 로직
 VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
 st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
@@ -43,10 +48,20 @@ else:
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
+# --- AI API 설정 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
+tts_api_key = st.secrets.get("GOOGLE_TTS_API_KEY", os.environ.get("GOOGLE_TTS_API_KEY")) # 🔥 [V19.0] TTS용 API 키 수신
+
 if gemini_key:
+    # 5번째 탭(챗봇)용 제미나이 클라이언트
     client = genai.Client(api_key=gemini_key)
 else: client = None
+
+# 🔥 [V19.0 핵심] 정식 Google Cloud TTS 클라이언트 초기화
+tts_client = None
+if tts_api_key:
+    # API 키 방식으로 클라이언트를 인증합니다.
+    tts_client = texttospeech.TextToSpeechClient(client_options={"api_key": tts_api_key})
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -83,12 +98,40 @@ def load_data():
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
     return df_summary, df_hist
 
+# 🔥 [V19.0 핵심] 프리미엄 아나운서 목소리(Neural2) 생성 함수
 @st.cache_data(show_spinner=False)
-def generate_audio(text):
-    tts = gTTS(text=text, lang='ko', slow=False)
-    fp = io.BytesIO()
-    tts.write_to_fp(fp)
-    return fp.getvalue()
+def generate_audio_premium(text):
+    if not tts_client:
+        return None
+        
+    try:
+        # 1. 아나운서 목소리 세팅 (Neural2)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="ko-KR",
+            # 대표님 터미널에 어울리는 차분한 여의도 퀀트 애널리스트 느낌의 여성 아나운서 목소리 (C)
+            # 남성 목소리를 원하시면 'ko-KR-Neural2-B'로 바꾸시면 됩니다!
+            name="ko-KR-Neural2-C" 
+        )
+        
+        # 2. 오디오 인코딩 세팅 (MP3)
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=0.95, # 앵커처럼 차분하게 95% 속도로 세팅
+            pitch=0.0         # 톤은 자연스럽게 0.0
+        )
+        
+        # 3. 텍스트 합성 요청
+        input_text = texttospeech.SynthesisInput(text=text)
+        response = tts_client.synthesize_speech(
+            input=input_text, voice=voice, audio_config=audio_config
+        )
+        
+        # 4. 바이너리 오디오 데이터 반환
+        return response.audio_content
+        
+    except Exception as e:
+        print(f"⚠️ TTS 생성 실패: {e}")
+        return None
 
 df_summary, df_history = load_data()
 
@@ -117,19 +160,23 @@ else:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
         if os.path.exists("report.md"):
             with open("report.md", "r", encoding="utf-8") as f: report_content = f.read()
-            st.markdown("##### 🎧 시황 라디오 듣기")
-            try:
-                clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
-                st.audio(generate_audio(clean_text), format="audio/mp3")
-            except: st.error("오디오 생성 중 오류가 발생했습니다.")
-            st.markdown("---")
             
+            # 🔥 [V19.0 핵심] 프리미엄 시황 라디오 적용
             if is_vip:
+                st.markdown("##### 🎧 프리미엄 시황 라디오 듣기")
+                clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
+                
+                audio_data = generate_audio_premium(clean_text)
+                if audio_data:
+                    st.audio(audio_data, format="audio/mp3")
+                else:
+                    st.error("오디오 생성 중 오류가 발생했습니다. 사이드바의 API키를 확인해주세요.")
+                st.markdown("---")
                 st.markdown(report_content)
             else:
                 teaser_text = report_content[:250] + "...\n\n"
                 st.markdown(teaser_text)
-                show_premium_paywall("심층 매크로 분석 리포트 전문은 VIP 전용입니다.")
+                show_premium_paywall("심층 매크로 분석 리포트 전문과 프리미엄 아나운서 오디오는 VIP 전용입니다.")
         else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
     with tab2:
@@ -201,13 +248,13 @@ else:
             st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 및 글로벌 시황 연계 분석을 제공합니다.")
             
             if st.button(f"✨ '{target_stock}' 실시간 심층 리포트 생성", use_container_width=True):
+                # 챗봇용 제미나이 클라이언트 확인 (client)
                 if not client:
-                    st.error("API 키가 설정되지 않았습니다.")
+                    st.error("AI 챗봇용 제미나이 API 키가 설정되지 않았습니다.")
                 else:
                     with st.spinner(f"구글 검색으로 '{target_stock}'의 매크로 연계 모멘텀을 수집 중입니다..."):
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
                         
-                        # 🔥 [V18.1 핵심] 글로벌 매크로 이벤트 연계 분석을 프롬프트에 강제로 주입!
                         prompt = f"""
                         너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
                         종목명 '{target_stock}'(섹터: {selected_row.get('섹터', '알수없음')})에 대해 '구글 검색'을 반드시 돌려서 아래 양식으로 밀도 있는 브리핑을 해줘.
@@ -222,6 +269,7 @@ else:
                         4. 🎯 단기 투자 전략 및 리스크 관리: 현재 이격도({selected_row['이격도(%)']}%)를 고려한 매수/보유/관망 의견과 주의해야 할 매크로 변수
                         """
                         try:
+                            # 챗봇용 클라이언트(client) 사용
                             config = types.GenerateContentConfig(tools=[{"google_search": {}}])
                             response = client.models.generate_content_stream(
                                 model='gemini-2.5-flash',
@@ -259,6 +307,7 @@ else:
         if not is_vip:
             show_premium_paywall("실시간 AI 퀀트 애널리스트와의 1:1 무제한 질의응답은 VIP 전용입니다.")
         else:
+            # 챗봇용 클라이언트(client) 확인
             if not client:
                 st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 챗봇을 사용할 수 없습니다.")
             else:
@@ -316,6 +365,7 @@ else:
                     with chat_container:
                         with st.chat_message("assistant", avatar="🏛️"):
                             try:
+                                # 챗봇용 클라이언트(client) 사용
                                 config = types.GenerateContentConfig(
                                     tools=[{"google_search": {}}]
                                 )
