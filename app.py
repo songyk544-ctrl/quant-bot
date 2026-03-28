@@ -5,10 +5,19 @@ import os
 import yfinance as yf
 from gtts import gTTS
 import io
+import google.generativeai as genai  # 🔥 [V11.0] AI 챗봇 라이브러리 추가
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
+
+# --- AI API 설정 ---
+gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
+if gemini_key:
+    genai.configure(api_key=gemini_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+else:
+    model = None
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -43,15 +52,14 @@ def load_data():
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
     return df_summary, df_hist
 
-df_summary, df_history = load_data()
-
-# 🔥 [V10.0] 텍스트를 음성으로 변환하는 함수 (캐싱으로 속도 향상)
 @st.cache_data(show_spinner=False)
 def generate_audio(text):
     tts = gTTS(text=text, lang='ko', slow=False)
     fp = io.BytesIO()
     tts.write_to_fp(fp)
     return fp.getvalue()
+
+df_summary, df_history = load_data()
 
 if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다.")
@@ -72,30 +80,21 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🌍 AI 매크로 인사이트", "📊 시장 수급 스크리너", f"📈 개별 종목 분석", "🏆 AI 봇 포트폴리오 성적"])
+    # 🔥 [V11.0] 5번째 탭(챗봇) 추가!
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 매크로 인사이트", "📊 수급 스크리너", f"📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
-        st.caption("글로벌 이벤트와 매크로 동향을 심층 분석한 AI 시황 브리핑입니다.")
-        
         if os.path.exists("report.md"):
-            with open("report.md", "r", encoding="utf-8") as f: 
-                report_content = f.read()
-            
-            # 🔥 [V10.0] 오디오 플레이어 UI 추가
+            with open("report.md", "r", encoding="utf-8") as f: report_content = f.read()
             st.markdown("##### 🎧 시황 라디오 듣기")
             try:
-                # 듣기 편하도록 특수 기호 제거
                 clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
-                audio_bytes = generate_audio(clean_text)
-                st.audio(audio_bytes, format="audio/mp3")
-            except Exception as e:
-                st.error("오디오 생성 중 오류가 발생했습니다.")
-            
+                st.audio(generate_audio(clean_text), format="audio/mp3")
+            except: st.error("오디오 생성 중 오류가 발생했습니다.")
             st.markdown("---")
             st.markdown(report_content)
-        else: 
-            st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
+        else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
     with tab2:
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
@@ -104,14 +103,11 @@ else:
             if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
             return 'color: gray;'
 
-        df_display = df_summary.set_index('종목명')
-        styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
+        styled_df = df_summary.set_index('종목명').style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
-            column_config={
-                "_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("모멘텀"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")
-            },
+            column_config={"_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("모멘텀"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")},
             column_order=["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
             hide_index=False, use_container_width=True, height=600 
         )
@@ -121,7 +117,6 @@ else:
         selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
         st.subheader(f"💡 {st.session_state.selected_stock} [{selected_row.get('섹터', '분류안됨')}] : 수급 및 기술적 분석")
         st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
-        
         tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
         st.write(f"- **기술적 위치:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
         st.markdown("---")
@@ -135,14 +130,12 @@ else:
                 
                 col1, col2 = st.columns(2)
                 color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
-                
                 with col1:
                     st.markdown("##### 📈 20일 종가 차트")
                     st.altair_chart(alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
                 with col2:
                     st.markdown("##### 📊 주체별 순매수 대금 (백만 원)")
-                    bar_data = target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')
-                    st.altair_chart(alt.Chart(bar_data).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
+                    st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
 
         st.markdown("---")
         st.markdown(f"##### 🎢 과거 AI 점수 트렌드 ({st.session_state.selected_stock})")
@@ -151,23 +144,55 @@ else:
             df_stock_trend = df_trend[df_trend['종목명'] == st.session_state.selected_stock].sort_values('날짜')
             if not df_stock_trend.empty and len(df_stock_trend) >= 2:
                 st.altair_chart(alt.Chart(df_stock_trend).mark_line(color='#E74C3C', point=True).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('AI수급점수:Q', scale=alt.Scale(domain=[0, 100]), title=None)).properties(height=200), use_container_width=True)
-            else: st.caption("⏳ 데이터 누적 및 트렌드 분석 중입니다.")
 
     with tab4:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
-        st.caption("매일 장 마감 기준 AI Top 3 종목을 매수했을 때의 누적 수익률을 추적합니다.")
         if os.path.exists("performance_trend.csv"):
             df_perf = pd.read_csv("performance_trend.csv")
             if not df_perf.empty:
-                latest_ret = df_perf['일간수익률'].iloc[-1]
-                cum_ret = df_perf['누적수익률'].iloc[-1]
-                st.metric(label="현재 누적 수익률", value=f"{cum_ret:+.2f}%", delta=f"전일 대비 {latest_ret:+.2f}%")
-                
-                chart_perf = alt.Chart(df_perf).mark_area(
-                    color=alt.Gradient(gradient='linear', stops=[alt.GradientStop(color='#E74C3C', offset=0), alt.GradientStop(color='transparent', offset=1)], x1=1, x2=1, y1=1, y2=0),
-                    line={'color': '#E74C3C'}
-                ).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('누적수익률:Q', title="누적 수익률 (%)")).properties(height=300)
-                st.altair_chart(chart_perf, use_container_width=True)
-            else: st.info("⏳ 아직 포트폴리오 평가 데이터가 쌓이지 않았습니다.")
+                st.metric(label="현재 누적 수익률", value=f"{df_perf['누적수익률'].iloc[-1]:+.2f}%", delta=f"전일 대비 {df_perf['일간수익률'].iloc[-1]:+.2f}%")
+                st.altair_chart(alt.Chart(df_perf).mark_area(color=alt.Gradient(gradient='linear', stops=[alt.GradientStop(color='#E74C3C', offset=0), alt.GradientStop(color='transparent', offset=1)], x1=1, x2=1, y1=1, y2=0), line={'color': '#E74C3C'}).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('누적수익률:Q', title="누적 수익률 (%)")).properties(height=300), use_container_width=True)
+            else: st.info("⏳ 데이터 대기 중")
+        else: st.info("⏳ 데이터 대기 중")
+
+    # 🔥 [V11.0] 대화형 챗봇 로직
+    with tab5:
+        st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
+        st.caption("오늘 수집된 주도주 데이터와 글로벌 시황에 대해 무엇이든 물어보세요!")
+        
+        if not model:
+            st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 챗봇을 사용할 수 없습니다.")
         else:
-            st.info("⏳ 오늘 최초로 매수할 Top 3 종목이 저장되었습니다. 내일 장 마감 후부터 첫 수익률이 표시됩니다!")
+            if "messages" not in st.session_state:
+                st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 오늘의 글로벌 매크로 동향이나 특정 섹터의 수급 상황이 궁금하신가요?"}]
+
+            for msg in st.session_state.messages:
+                st.chat_message(msg["role"]).write(msg["content"])
+
+            if prompt := st.chat_input("예: 오늘 연기금이 가장 많이 담은 반도체 주식은 뭐야?"):
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                st.chat_message("user").write(prompt)
+
+                # AI에게 오늘 데이터를 컨텍스트로 주입
+                context_data = df_summary.head(20).to_string(index=False)
+                system_prompt = f"""
+                너는 'DeepAlpha'의 수석 퀀트 애널리스트야.
+                아래는 오늘 시장에서 AI 알고리즘으로 추출한 상위 20개 종목의 수급/기술적 데이터야.
+                {context_data}
+                
+                사용자의 질문: {prompt}
+                
+                [지시사항]
+                1. 주어진 데이터를 바탕으로 정확하고 엣지있게 답변할 것.
+                2. 주식을 분석할 때는 반드시 '미국 금리, 환율, 지수' 등 글로벌 매크로 이벤트와 연계해서 추가적인 코멘터리를 제공할 것.
+                """
+
+                with st.spinner("DeepAlpha 분석 중..."):
+                    try:
+                        response = model.generate_content(system_prompt)
+                        bot_reply = response.text
+                    except Exception as e:
+                        bot_reply = f"앗, 분석 중 에러가 발생했습니다: {e}"
+
+                st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+                st.chat_message("assistant").write(bot_reply)
