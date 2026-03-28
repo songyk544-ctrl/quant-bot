@@ -5,7 +5,7 @@ import os
 import yfinance as yf
 from gtts import gTTS
 import io
-import google.generativeai as genai  # 🔥 [V11.0] AI 챗봇 라이브러리 추가
+import google.generativeai as genai
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 st.title("🏛️ DeepAlpha 퀀트 터미널")
@@ -16,8 +16,7 @@ gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 if gemini_key:
     genai.configure(api_key=gemini_key)
     model = genai.GenerativeModel('gemini-2.5-flash')
-else:
-    model = None
+else: model = None
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -36,7 +35,7 @@ def get_macro_data():
 
 macro_data = get_macro_data()
 ticker_style = """<style>.ticker-wrap { width: 100%; overflow-x: auto; white-space: nowrap; background-color: #1E1E2E; padding: 12px 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px; -webkit-overflow-scrolling: touch; } .ticker-wrap::-webkit-scrollbar { display: none; } .ticker-item { display: inline-block; margin-right: 30px; font-size: 15px; font-family: 'Inter', sans-serif; }</style>"""
-ticker_html = "<div class='ticker-wrap'>"
+ticker_html = f"<div class='ticker-wrap'>{ticker_style}"
 for name, data in macro_data.items():
     if data:
         color = "#FF3333" if data['change'] > 0 else "#0066FF" if data['change'] < 0 else "#888888"
@@ -45,7 +44,7 @@ for name, data in macro_data.items():
         ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <b>{val_str}</b> <span style='color: {color}; font-weight: bold;'>{arrow} {abs(data['change_pct']):.2f}%</span></div>"
     else: ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <span style='color: #888888;'>데이터 지연</span></div>"
 ticker_html += "</div>"
-st.markdown(ticker_style + ticker_html, unsafe_allow_html=True)
+st.markdown(ticker_html, unsafe_allow_html=True)
 
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
@@ -80,7 +79,6 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 [V11.0] 5번째 탭(챗봇) 추가!
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 매크로 인사이트", "📊 수급 스크리너", f"📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
     with tab1:
@@ -155,36 +153,57 @@ else:
             else: st.info("⏳ 데이터 대기 중")
         else: st.info("⏳ 데이터 대기 중")
 
-    # 🔥 [V11.0] 대화형 챗봇 로직
+    # 🔥 [V12.0] 대화형 챗봇 (버그 픽스 및 추천 프롬프트 탑재)
     with tab5:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
-        st.caption("오늘 수집된 주도주 데이터와 글로벌 시황에 대해 무엇이든 물어보세요!")
         
         if not model:
             st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 챗봇을 사용할 수 없습니다.")
         else:
             if "messages" not in st.session_state:
-                st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 오늘의 글로벌 매크로 동향이나 특정 섹터의 수급 상황이 궁금하신가요?"}]
+                st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 오늘의 시장 주도주나 글로벌 매크로 동향에 대해 무엇이든 물어보세요."}]
 
-            for msg in st.session_state.messages:
-                st.chat_message(msg["role"]).write(msg["content"])
+            # 1. 대화 기록을 표시할 컨테이너를 먼저 잡습니다 (스크롤 꼬임 방지)
+            chat_container = st.container()
+            with chat_container:
+                for msg in st.session_state.messages:
+                    if msg["role"] == "assistant":
+                        st.chat_message("assistant", avatar="🏛️").write(msg["content"])
+                    else:
+                        st.chat_message("user", avatar="👤").write(msg["content"])
 
-            if prompt := st.chat_input("예: 오늘 연기금이 가장 많이 담은 반도체 주식은 뭐야?"):
+            # 2. 추천 프롬프트 (가로로 예쁘게 배치)
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.caption("🔍 무엇을 물어볼지 고민된다면 아래 버튼을 눌러보세요!")
+            col1, col2, col3 = st.columns(3)
+            
+            suggested_prompt = None
+            if col1.button("🛡️ 반도체 주도주", use_container_width=True): suggested_prompt = "오늘 수급 점수가 제일 높은 반도체 주식은 뭐야? 글로벌 시황이랑 엮어서 설명해줘."
+            if col2.button("🚀 HBM 섹터 동향", use_container_width=True): suggested_prompt = "오늘 데이터에 HBM 관련 종목들이 보여? 수급이랑 기술적 위치 어때?"
+            if col3.button("👤 오늘 외인 쏠림주", use_container_width=True): suggested_prompt = "외국인 매수세가 가장 강했던 TOP 3를 알려주고, 시장 뷰랑 엮어서 해석해줘."
+
+            # 3. 사용자 채팅 입력창 (항상 맨 아래에 고정됩니다)
+            user_input = st.chat_input("예: 오늘 연기금이 가장 많이 담은 반도체 주식은 뭐야?")
+            prompt = suggested_prompt if suggested_prompt else user_input
+
+            if prompt:
                 st.session_state.messages.append({"role": "user", "content": prompt})
-                st.chat_message("user").write(prompt)
+                
+                # 입력이 들어오면 페이지를 즉시 새로고침해서 컨테이너 안에 예쁘게 다시 그립니다
+                if suggested_prompt:
+                    st.rerun()
+                else:
+                    st.chat_message("user", avatar="👤").write(prompt)
 
-                # AI에게 오늘 데이터를 컨텍스트로 주입
                 context_data = df_summary.head(20).to_string(index=False)
                 system_prompt = f"""
                 너는 'DeepAlpha'의 수석 퀀트 애널리스트야.
                 아래는 오늘 시장에서 AI 알고리즘으로 추출한 상위 20개 종목의 수급/기술적 데이터야.
                 {context_data}
-                
                 사용자의 질문: {prompt}
-                
                 [지시사항]
-                1. 주어진 데이터를 바탕으로 정확하고 엣지있게 답변할 것.
-                2. 주식을 분석할 때는 반드시 '미국 금리, 환율, 지수' 등 글로벌 매크로 이벤트와 연계해서 추가적인 코멘터리를 제공할 것.
+                1. 데이터를 바탕으로 정확하고 엣지있게 답변할 것.
+                2. 주식을 분석할 때는 반드시 글로벌 매크로 이벤트와 연계해서 추가적인 코멘터리를 제공할 것.
                 """
 
                 with st.spinner("DeepAlpha 분석 중..."):
@@ -195,4 +214,4 @@ else:
                         bot_reply = f"앗, 분석 중 에러가 발생했습니다: {e}"
 
                 st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-                st.chat_message("assistant").write(bot_reply)
+                st.rerun() # 답변 완료 후 한 번 더 예쁘게 정렬
