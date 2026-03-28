@@ -6,11 +6,23 @@ import yfinance as yf
 from gtts import gTTS
 import io
 import google.generativeai as genai
-import requests
-from bs4 import BeautifulSoup
 from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
+
+# 🔥 [V14.0 핵심] 사이드바 VIP 로그인 로직
+VIP_CODE = "ALPHA2026" # 🚨 대표님이 고객에게 팔(알려줄) 비밀번호입니다!
+st.sidebar.markdown("## 💎 프리미엄 멤버십")
+st.sidebar.caption("VIP 코드를 입력하고 20위까지의 숨겨진 주도주와 전체 데이터를 확인하세요.")
+user_code = st.sidebar.text_input("🔑 VIP 엑세스 코드", type="password")
+
+is_vip = (user_code == VIP_CODE)
+
+if is_vip:
+    st.sidebar.success("✅ VIP 인증 완료! 모든 데이터가 개방되었습니다.")
+else:
+    st.sidebar.info("🔒 현재 무료 버전을 이용 중입니다. (Top 5 종목만 공개)")
+
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
@@ -36,25 +48,10 @@ def get_macro_data():
         except: macro_info[name] = None
     return macro_info
 
-# 🔥 [V13.0] 실시간 주요 뉴스 크롤러 탑재
-@st.cache_data(ttl=1800)
-def get_realtime_news():
-    try:
-        res = requests.get("https://finance.naver.com/news/mainnews.naver", headers={'User-Agent': 'Mozilla/5.0'})
-        soup = BeautifulSoup(res.text, 'html.parser')
-        news_tags = soup.select('.articleSubject a')
-        headlines = [tag.text.strip() for tag in news_tags[:5]]
-        return "\n".join([f"- {h}" for h in headlines])
-    except:
-        return "- 주요 뉴스 수집 지연"
-
 macro_data = get_macro_data()
-realtime_news = get_realtime_news() # 뉴스 수집 실행
-
 ticker_style = """<style>.ticker-wrap { width: 100%; overflow-x: auto; white-space: nowrap; background-color: #1E1E2E; padding: 12px 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px; -webkit-overflow-scrolling: touch; } .ticker-wrap::-webkit-scrollbar { display: none; } .ticker-item { display: inline-block; margin-right: 30px; font-size: 15px; font-family: 'Inter', sans-serif; }</style>"""
 ticker_html = f"<div class='ticker-wrap'>{ticker_style}"
-macro_summary_text = "" # AI에게 먹여줄 매크로 텍스트 요약본
-
+macro_summary_text = ""
 for name, data in macro_data.items():
     if data:
         color = "#FF3333" if data['change'] > 0 else "#0066FF" if data['change'] < 0 else "#888888"
@@ -121,7 +118,14 @@ else:
             if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
             return 'color: gray;'
 
-        styled_df = df_summary.set_index('종목명').style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
+        # 🔥 [V14.0 핵심] VIP 여부에 따라 보여주는 데이터 자르기
+        if is_vip:
+            df_display = df_summary.set_index('종목명')
+        else:
+            df_display = df_summary.head(5).set_index('종목명')
+            st.warning("🔒 **[프리미엄 전용]** 무료 버전은 상위 5개 종목만 제공됩니다. 6~20위의 숨겨진 주도주와 세부 수급 데이터를 보시려면 좌측 사이드바에서 VIP 코드를 입력하세요.")
+
+        styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
@@ -129,9 +133,15 @@ else:
             column_order=["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
             hide_index=False, use_container_width=True, height=600 
         )
-        if event.selection.rows: st.session_state.selected_stock = df_summary.iloc[event.selection.rows[0]]['종목명']
+        if event.selection.rows: 
+            selected_name = df_display.iloc[event.selection.rows[0]].name
+            st.session_state.selected_stock = selected_name
 
     with tab3:
+        # 현재 선택된 종목이 무료 5위 안에 없으면(권한 밖이면) 1위로 강제 리셋
+        if not is_vip and st.session_state.selected_stock not in df_summary.head(5)['종목명'].values:
+            st.session_state.selected_stock = df_summary.iloc[0]['종목명']
+            
         selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
         st.subheader(f"💡 {st.session_state.selected_stock} [{selected_row.get('섹터', '분류안됨')}] : 수급 및 기술적 분석")
         st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
@@ -193,8 +203,8 @@ else:
                 st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 통화정책이나 글로벌 이슈와 어떤 연관성이 있는지 분석해줘."
             if col2.button(f"🏆 {top_stock} 매크로 분석", use_container_width=True):
                 st.session_state.trigger_prompt = f"오늘 수급 1위인 '{top_stock}'의 매력 포인트를 설명해주고, 이 종목에 영향을 줄 수 있는 해외 지수나 환율 동향을 함께 코멘트해줘."
-            if col3.button("🌍 오늘의 글로벌 뉴스 요약", use_container_width=True):
-                st.session_state.trigger_prompt = "방금 수집한 실시간 금융 뉴스와 매크로 데이터를 바탕으로, 오늘 글로벌 시장의 핵심 이슈를 요약해줘."
+            if col3.button("🌍 전체 탑다운 뷰", use_container_width=True):
+                st.session_state.trigger_prompt = "현재 글로벌 매크로 환경(미국 국채금리, 기술주 흐름 등)을 바탕으로 오늘 우리 증시의 전체적인 기관/외인 수급 흐름을 총평해줘."
 
             user_input = st.chat_input("종목명이나 궁금한 시황을 입력하세요...")
             prompt = st.session_state.pop("trigger_prompt", user_input)
@@ -204,9 +214,15 @@ else:
                 with chat_container:
                     st.chat_message("user", avatar="👤").write(prompt)
 
-                # 🔥 [V13.0 핵심] AI에게 오늘 날짜, 실시간 지수, 뉴스를 강제로 주입!
                 today_str = datetime.now().strftime("%Y년 %m월 %d일")
-                context_data = df_summary.head(20).to_string(index=False)
+                
+                # 🔥 [V14.0 핵심] 무료 회원이면 AI의 머릿속에도 5개 종목만 넣어줍니다.
+                if is_vip:
+                    context_data = df_summary.head(20).to_string(index=False)
+                    vip_instruction = ""
+                else:
+                    context_data = df_summary.head(5).to_string(index=False)
+                    vip_instruction = "\n**[중요] 현재 사용자는 무료 회원이므로 상위 5개 종목만 볼 수 있어. 만약 6위 이하의 숨겨진 주도주를 물어본다면 절대 종목명을 알려주지 말고, VIP 프리미엄 코드를 입력해야 볼 수 있다고 안내해!**"
                 
                 system_prompt = f"""
                 너는 'DeepAlpha'의 수석 퀀트 애널리스트야.
@@ -215,17 +231,13 @@ else:
                 [1. 실시간 매크로 지표]
                 {macro_summary_text}
                 
-                [2. 실시간 주요 금융 뉴스]
-                {realtime_news}
-                
-                [3. 오늘의 주도주 수급/기술적 데이터]
+                [2. 사용자에게 허락된 수급 데이터]
                 {context_data}
                 
                 사용자의 질문: {prompt}
                 
                 [핵심 지시사항]
-                1. 제공된 [실시간 주요 금융 뉴스]와 [실시간 매크로 지표]를 적극 활용해서 대답해.
-                2. 글로벌 이벤트(미국 시장, 금리, 유가 등)가 국내 주도주 섹터에 미치는 영향을 연결 지어서 전문가처럼 설명해.
+                1. 글로벌 이벤트와 연결 지어서 큰 그림(Top-Down)의 뷰를 함께 제시할 것.{vip_instruction}
                 """
 
                 with chat_container:
