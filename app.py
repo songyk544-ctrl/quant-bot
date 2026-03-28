@@ -62,10 +62,18 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 [V9.0] 4번째 탭 '포트폴리오 백테스트' 추가!
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 시장 수급 스크리너", f"📈 개별 종목 분석", "🌍 AI 매크로 인사이트", "🏆 AI 봇 포트폴리오 성적"])
+    # 🔥 [V9.1] 탭 순서 변경: 매크로 인사이트가 가장 먼저 보이도록!
+    tab1, tab2, tab3, tab4 = st.tabs(["🌍 AI 매크로 인사이트", "📊 시장 수급 스크리너", f"📈 개별 종목 분석", "🏆 AI 봇 포트폴리오 성적"])
 
+    # 원래 tab3에 있던 AI 리포트를 tab1으로 끌어올림
     with tab1:
+        st.subheader("📰 오늘의 Top-Down 매크로 리포트")
+        if os.path.exists("report.md"):
+            with open("report.md", "r", encoding="utf-8") as f: st.markdown(f.read())
+        else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
+
+    # 원래 tab1에 있던 스크리너를 tab2로 이동
+    with tab2:
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
         def color_fluctuation(val):
             if pd.isna(val): return 'color: gray;'
@@ -85,7 +93,8 @@ else:
         )
         if event.selection.rows: st.session_state.selected_stock = df_summary.iloc[event.selection.rows[0]]['종목명']
 
-    with tab2:
+    # 개별 종목 분석 탭 (순서는 세 번째)
+    with tab3:
         selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
         st.subheader(f"💡 {st.session_state.selected_stock} [{selected_row.get('섹터', '분류안됨')}] : 수급 및 기술적 분석")
         st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
@@ -121,13 +130,6 @@ else:
                 st.altair_chart(alt.Chart(df_stock_trend).mark_line(color='#E74C3C', point=True).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('AI수급점수:Q', scale=alt.Scale(domain=[0, 100]), title=None)).properties(height=200), use_container_width=True)
             else: st.caption("⏳ 데이터 누적 및 트렌드 분석 중입니다.")
 
-    with tab3:
-        st.subheader("📰 오늘의 Top-Down 매크로 리포트")
-        if os.path.exists("report.md"):
-            with open("report.md", "r", encoding="utf-8") as f: st.markdown(f.read())
-        else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
-
-    # 🔥 [V9.0] 4번째 탭 화면 로직
     with tab4:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         st.caption("매일 장 마감 기준 AI Top 3 종목을 매수했을 때의 누적 수익률을 추적합니다.")
