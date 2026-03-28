@@ -56,7 +56,7 @@ def get_target_stock_list():
                             })
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
-# 🔥 [텔레그램 픽스] 마크다운 충돌 제거 및 정확한 에러 로깅
+# 🔥 [텔레그램 픽스] AI 마크다운을 텔레그램 전용으로 자동 변환!
 def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("⚠️ 텔레그램 토큰 또는 Chat ID가 설정되지 않아 알림을 건너뜁니다.")
@@ -64,18 +64,21 @@ def send_telegram_message(text):
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     
-    # parse_mode="Markdown" 옵션을 아예 삭제해서 문법 에러로 튕기는 것을 방지합니다!
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text[:4000]}
+    # 1. AI가 작성한 '**' 기호를 텔레그램용 '*' 기호로 싹 바꿔줍니다.
+    clean_text = text.replace('**', '*')
+    
+    # 2. 다시 parse_mode="Markdown" 옵션을 살려서 보냅니다!
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000], "parse_mode": "Markdown"}
     
     try:
         res = requests.post(url, data=data)
-        # 텔레그램 서버가 200(성공)을 주면 진짜 성공, 아니면 에러 사유를 출력!
         if res.status_code == 200:
             print("✅ 텔레그램 알림 전송 완료!")
         else:
             print(f"⚠️ 텔레그램 전송 실패 (서버 거절): {res.text}")
     except Exception as e:
         print(f"⚠️ 텔레그램 전송 실패 (네트워크 에러): {e}")
+
 
 
 def run_scraper():
