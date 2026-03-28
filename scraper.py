@@ -271,7 +271,7 @@ def run_scraper():
             top3_str = ", ".join(top3_names)
             
             # 🚨 [커스텀 필요] 스트림릿 주소 변경 잊지 마세요!
-            MY_STREAMLIT_URL = "https://udv5sy.streamlit.app"
+            MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
             tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n{eval_msg}🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
