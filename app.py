@@ -55,26 +55,19 @@ if gemini_key:
 else: client = None
 
 # 🔥 [V19.1 핵심] REST API를 이용한 아나운서 음성 생성 함수 (오류 추적 강화)
+# 🔥 [디버깅 모드] 에러의 진짜 원인을 화면에 던져주는 함수로 교체
 @st.cache_data(show_spinner=False)
 def generate_audio_premium(text):
     if not tts_api_key:
-        print("⚠️ 에러: TTS API 키가 없습니다. Secrets 설정을 확인하세요.")
-        return None
+        return None, "⛔ Secrets에 GOOGLE_TTS_API_KEY가 아예 없습니다! 변수명을 확인하세요."
         
     url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={tts_api_key}"
     headers = {"Content-Type": "application/json; charset=utf-8"}
     
     data = {
         "input": {"text": text},
-        "voice": {
-            "languageCode": "ko-KR", 
-            "name": "ko-KR-Neural2-C" 
-        },
-        "audioConfig": {
-            "audioEncoding": "MP3",
-            "speakingRate": 0.95, 
-            "pitch": 0.0
-        }
+        "voice": {"languageCode": "ko-KR", "name": "ko-KR-Neural2-C"},
+        "audioConfig": {"audioEncoding": "MP3", "speakingRate": 0.95, "pitch": 0.0}
     }
     
     try:
@@ -82,13 +75,12 @@ def generate_audio_premium(text):
         if response.status_code == 200:
             audio_base64 = response.json().get("audioContent")
             if audio_base64:
-                return base64.b64decode(audio_base64)
+                return base64.b64decode(audio_base64), "성공"
         else:
-            print(f"⚠️ 구글 TTS API 거절됨: {response.text}")
-            return None
+            # 구글의 거절 사유를 그대로 반환합니다.
+            return None, f"⛔ 구글 API 거절 ({response.status_code}): {response.text}"
     except Exception as e:
-        print(f"⚠️ 통신 에러 발생: {e}")
-        return None
+        return None, f"⛔ 서버 통신 에러: {str(e)}"
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -157,11 +149,13 @@ else:
                 st.markdown("##### 🎧 프리미엄 시황 라디오 듣기")
                 clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
                 
-                audio_data = generate_audio_premium(clean_text)
+                # 🔥 [디버깅 모드] 에러 메시지를 화면에 붉은색 박스로 띄웁니다!
+                audio_data, error_msg = generate_audio_premium(clean_text)
                 if audio_data:
                     st.audio(audio_data, format="audio/mp3")
                 else:
-                    st.error("오디오 생성 중 오류가 발생했습니다. 사이드바의 API키를 확인해주세요.")
+                    st.error(f"🚨 오디오 생성 상세 에러: {error_msg}")
+                
                 st.markdown("---")
                 st.markdown(report_content)
             else:
