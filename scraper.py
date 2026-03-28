@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 import os
 import google.generativeai as genai
+import yfinance as yf  # 🔥 [V13.0] 매크로 지표 수집용 추가
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
@@ -60,14 +61,36 @@ def send_telegram_message(text):
     clean_text = text.replace('**', '*') 
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000], "parse_mode": "Markdown"}
     try:
-        res = requests.post(url, data=data)
-        if res.status_code == 200: print("✅ 텔레그램 발송 완료!")
-        else: print(f"⚠️ 텔레그램 서버 거절: {res.text}")
-    except Exception as e:
-        print(f"⚠️ 텔레그램 네트워크 에러: {e}")
+        requests.post(url, data=data)
+    except: pass
+
+# 🔥 [V13.0] 실시간 매크로 지표 & 뉴스 수집 함수 추가
+def get_live_macro_and_news():
+    # 1. 매크로 데이터 수집
+    tickers = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "S&P500": "^GSPC", "NASDAQ": "^IXIC", "환율": "KRW=X", "WTI유": "CL=F", "미 국채(10y)": "^TNX", "VIX": "^VIX"}
+    macro_str = ""
+    for name, ticker in tickers.items():
+        try:
+            hist = yf.Ticker(ticker).history(period="2d")
+            if len(hist) >= 2:
+                curr, prev = hist['Close'].iloc[-1], hist['Close'].iloc[-2]
+                change_pct = ((curr - prev) / prev) * 100
+                macro_str += f"- {name}: {curr:.2f} ({change_pct:+.2f}%)\n"
+        except: pass
+    
+    # 2. 실시간 네이버 뉴스 수집
+    news_str = ""
+    try:
+        res = requests.get("https://finance.naver.com/news/mainnews.naver", headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(res.text, 'html.parser')
+        headlines = [tag.text.strip() for tag in soup.select('.articleSubject a')[:5]]
+        news_str = "\n".join([f"- {h}" for h in headlines])
+    except: news_str = "- 뉴스 수집 실패"
+    
+    return macro_str, news_str
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V9.0 백테스팅 탑재)...")
+    print("🚀 수집기 봇 가동 시작 (V13.0 RAG 탑재)...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
     headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
@@ -83,10 +106,8 @@ def run_scraper():
         code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
         sector_name = "분류안됨"
         try:
-            url_nv = f"https://finance.naver.com/item/main.naver?code={code}"
-            res_nv = requests.get(url_nv, headers={'User-Agent': 'Mozilla/5.0'})
-            soup_nv = BeautifulSoup(res_nv.text, 'html.parser')
-            sector_tag = soup_nv.select_one('div.trade_compare h4.h_sub a')
+            res_nv = requests.get(f"https://finance.naver.com/item/main.naver?code={code}", headers={'User-Agent': 'Mozilla/5.0'})
+            sector_tag = BeautifulSoup(res_nv.text, 'html.parser').select_one('div.trade_compare h4.h_sub a')
             if sector_tag: sector_name = sector_tag.text.strip()
         except: pass
 
@@ -147,15 +168,14 @@ def run_scraper():
             })
         except: pass 
         time.sleep(0.2) 
+
     df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
     
-    # ⭕ 아래처럼 변수(df_history)를 선언하고 저장하도록 딱 2줄로 쪼개주세요!
     df_history = pd.DataFrame(history_list)
     df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
 
-
-    today_date = datetime.now(KST).strftime("%Y-%m-%d")
+    today_date = now_kst.strftime("%Y-%m-%d")
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
@@ -168,7 +188,6 @@ def run_scraper():
     else:
         df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
 
-    # 🔥 [V9.0] 포트폴리오 수익률 평가 로직 시작
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
     eval_msg = ""
@@ -188,8 +207,6 @@ def run_scraper():
                 eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
             
             daily_ret = sum(returns) / len(returns) if returns else 0
-            
-            # 누적 수익률 계산 및 저장
             cum_ret = daily_ret
             if os.path.exists(perf_file):
                 df_perf = pd.read_csv(perf_file)
@@ -197,22 +214,17 @@ def run_scraper():
                     df_perf = df_perf[df_perf['날짜'] != today_date]
                     cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
                 else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-            else:
-                df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+            else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
                 
             new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
             pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
-            
             eval_msg = "📝 *[전일 추천 Top 3 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 수익률: {daily_ret:+.2f}%*\n\n"
-        except Exception as e:
-            print(f"포트폴리오 평가 에러: {e}")
+        except: pass
 
-    # 내일을 위해 오늘의 Top 3 종가 저장
     top3_names = df_final.head(3)['종목명'].tolist()
     top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
     top3_df['날짜'] = today_date
     top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
-    # 🔥 [V9.0] 포트폴리오 로직 끝
 
     if GEMINI_API_KEY:
         try:
@@ -224,24 +236,35 @@ def run_scraper():
             df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             
+            # 🔥 [V13.0] AI에게 실시간 뉴스 및 매크로 지표 주입!
+            macro_str, news_str = get_live_macro_and_news()
+            today_str = now_kst.strftime("%Y년 %m월 %d일")
+            
             prompt = f"""
-            너는 여의도 최고의 탑다운 퀀트 애널리스트야.
-            아래는 ETF 노이즈가 제거된 최상위 20개 종목 데이터야.
+            너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야. 절대 과거 시점이라고 말하지 마.
+            
+            [1. 실시간 글로벌 매크로 지표]
+            {macro_str}
+            
+            [2. 오늘의 금융 핵심 뉴스]
+            {news_str}
+            
+            [3. 최상위 20개 종목 수급 데이터]
             {df_merged.to_string(index=False)}
-            다음 순서로 전문가 수준의 마감 리포트를 작성해 줘. (제목은 쓰지 말고 1번부터 시작해)
-            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 시장에 큰 영향을 미친 글로벌 뉴스를 상세히 짚어줘.
+
+            다음 순서로 전문가 수준의 마감 리포트를 작성해 줘. (제목 쓰지 마)
+            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 제공된 [실시간 글로벌 매크로 지표]와 [오늘의 금융 핵심 뉴스]를 바탕으로 시장의 큰 흐름을 짚어줘.
             2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서, 외인/기관 자금이 어느 업종에 집중되었는지 핵심을 짚어줘.
-            3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 거시적 환경에 맞는 이유를 작성.
+            3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 [매크로 상황]에 맞는 추천 이유를 작성.
             """
             
             response = model.generate_content(prompt)
-            today_str = datetime.now(KST).strftime("%Y년 %m월 %d일")
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 마감 리포트 ({today_str})\n\n{response.text}")
                 
             top3_str = ", ".join(top3_names)
             
-            # 🚨 [커스텀 필요] 아래 주소를 대표님의 스트림릿 주소로 바꿔주세요!
+            # 🚨 [커스텀 필요] 스트림릿 주소 변경 잊지 마세요!
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
             tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n{eval_msg}🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
