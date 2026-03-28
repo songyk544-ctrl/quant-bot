@@ -169,7 +169,6 @@ else:
         if not is_vip and target_stock not in free_tier_stocks:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
         else:
-            # 🔥 [V18.0] 1. 상단 핵심 지표 요약 (Metrics Board)
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
             col_m1.metric("🏆 종합 AI 점수", f"{selected_row['AI수급점수']}점", f"모멘텀 {selected_row['랭킹추세']}")
             col_m2.metric("💰 시가총액", f"{selected_row['시가총액']:,.0f}억")
@@ -198,23 +197,29 @@ else:
 
             st.markdown("---")
             
-            # 🔥 [V18.0] 2. 실시간 AI 개별 종목 심층 분석 (구글 검색 탑재)
             st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단")
-            st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 뉴스와 모멘텀을 즉시 분석합니다.")
+            st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 및 글로벌 시황 연계 분석을 제공합니다.")
             
             if st.button(f"✨ '{target_stock}' 실시간 심층 리포트 생성", use_container_width=True):
                 if not client:
                     st.error("API 키가 설정되지 않았습니다.")
                 else:
-                    with st.spinner(f"구글 검색으로 '{target_stock}'의 최신 뉴스 및 모멘텀을 수집 중입니다..."):
+                    with st.spinner(f"구글 검색으로 '{target_stock}'의 매크로 연계 모멘텀을 수집 중입니다..."):
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
+                        
+                        # 🔥 [V18.1 핵심] 글로벌 매크로 이벤트 연계 분석을 프롬프트에 강제로 주입!
                         prompt = f"""
-                        너는 여의도 최고의 퀀트 애널리스트야. 오늘은 {today_str}이야.
+                        너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
                         종목명 '{target_stock}'(섹터: {selected_row.get('섹터', '알수없음')})에 대해 '구글 검색'을 반드시 돌려서 아래 양식으로 밀도 있는 브리핑을 해줘.
                         
-                        1. 📰 최신 모멘텀 & 핵심 뉴스: 구글 검색을 통해 알아낸 이 종목의 가장 최근(오늘 또는 이번 주)의 호재/악재 이슈
-                        2. 💡 수급 및 펀더멘털 평가: PER {selected_row['PER']}, ROE {selected_row['ROE']} 지표와 최근 기관/외인 수급 관점에서의 매력도
-                        3. 🎯 단기 투자 전략: 현재 시점에서의 매수/보유/관망 의견과 주의점
+                        [분석 필수 조건]
+                        단순한 개별 종목 뉴스를 나열하지 마. 현재 진행 중인 **글로벌 매크로 이벤트(미국 금리, 환율 동향, 나스닥/S&P500 등 거시 경제 흐름)가 이 특정 종목이나 소속 섹터에 어떤 영향을 미칠지** 반드시 연계해서 입체적으로 코멘트할 것. 만약 사용자가 놓칠만한 리스크가 있다면 그것도 추가로 짚어줘.
+                        
+                        [출력 양식]
+                        1. 📰 최신 모멘텀 & 핵심 뉴스: 구글 검색을 통해 알아낸 이 종목의 가장 최근(오늘/이번 주) 호재 및 악재 이슈
+                        2. 🌍 글로벌 시황 연계 분석: (필수 작성) 현재 글로벌 매크로 환경이나 해외 동종 업계(Peer) 흐름이 해당 종목에 주는 영향 
+                        3. 💡 수급 및 펀더멘털 평가: PER {selected_row['PER']}, ROE {selected_row['ROE']} 및 기관/외인 수급 강도 분석
+                        4. 🎯 단기 투자 전략 및 리스크 관리: 현재 이격도({selected_row['이격도(%)']}%)를 고려한 매수/보유/관망 의견과 주의해야 할 매크로 변수
                         """
                         try:
                             config = types.GenerateContentConfig(tools=[{"google_search": {}}])
@@ -224,12 +229,11 @@ else:
                                 config=config
                             )
                             
-                            st.success("✅ 실시간 검색 및 분석 완료!")
+                            st.success("✅ 실시간 검색 및 탑다운 분석 완료!")
                             def stream_generator():
                                 for chunk in response:
                                     if chunk.text: yield chunk.text
                                     
-                            # 예쁜 상자 안에 리포트 출력
                             with st.container():
                                 st.write_stream(stream_generator)
                                 
