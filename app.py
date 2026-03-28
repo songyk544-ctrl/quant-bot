@@ -75,12 +75,12 @@ def generate_audio_premium(text):
             "input": {"text": chunk},
             "voice": {
                 "languageCode": "ko-KR", 
-                "name": "ko-KR-Neural2-C" 
+                "name": "ko-KR-Neural2-A" 
             },
             "audioConfig": {
                 "audioEncoding": "MP3",
-                "speakingRate": 0.95, 
-                "pitch": 0.0
+                "speakingRate": 1.15, 
+                "pitch": -1.0
             }
         }
         
