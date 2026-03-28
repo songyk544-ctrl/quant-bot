@@ -49,7 +49,7 @@ st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫
 # --- AI API 설정 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 tts_api_key = st.secrets.get("GOOGLE_TTS_API_KEY", os.environ.get("GOOGLE_TTS_API_KEY"))
-
+ 
 if gemini_key:
     client = genai.Client(api_key=gemini_key)
 else: client = None
