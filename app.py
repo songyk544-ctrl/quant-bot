@@ -9,10 +9,11 @@ import base64
 from google import genai
 from google.genai import types
 from datetime import datetime
+import plotly.express as px  # 🔥 [V20.0] 히트맵 차트를 위한 라이브러리 추가
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
-# --- 🔥 [V19.1] 공용 블러(Blur) 페이월 함수 ---
+# 고급스러운 블러(Blur) 페이월 UI 함수
 def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
     st.markdown(f"""
     <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
@@ -30,7 +31,6 @@ def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다.")
     </div>
     """, unsafe_allow_html=True)
 
-# 사이드바 VIP 로그인 로직
 VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
 st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
@@ -54,7 +54,7 @@ if gemini_key:
     client = genai.Client(api_key=gemini_key)
 else: client = None
 
-# 🔥 [V19.2 최종 완성] 글자 수 제한을 무시하는 깍둑썰기(Chunking) 오디오 생성 함수
+# [V19.2] 글자 수 제한을 무시하는 깍둑썰기(Chunking) 오디오 생성 함수 (유지)
 @st.cache_data(show_spinner=False)
 def generate_audio_premium(text):
     if not tts_api_key:
@@ -64,23 +64,21 @@ def generate_audio_premium(text):
     url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={tts_api_key}"
     headers = {"Content-Type": "application/json; charset=utf-8"}
     
-    # 1. 텍스트를 1000자 단위로 깍둑썰기 (한글 1000자 = 3000바이트로 안전 통과!)
     chunk_size = 1000
     text_chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-    
-    combined_audio = b""  # 쪼개진 MP3 조각들을 모을 빈 바구니
+    combined_audio = b""
     
     for i, chunk in enumerate(text_chunks):
         data = {
             "input": {"text": chunk},
             "voice": {
                 "languageCode": "ko-KR", 
-                "name": "ko-KR-Neural2-A" 
+                "name": "ko-KR-Neural2-B" # 대표님 취향에 맞춘 여성 아나운서 A
             },
             "audioConfig": {
                 "audioEncoding": "MP3",
-                "speakingRate": 1.15, 
-                "pitch": -1.0
+                "speakingRate": 1.0, # 경쾌하고 약간 빠른 속도
+                "pitch": 0.0 # 약간 중후한 톤
             }
         }
         
@@ -89,7 +87,6 @@ def generate_audio_premium(text):
             if response.status_code == 200:
                 audio_base64 = response.json().get("audioContent")
                 if audio_base64:
-                    # 2. 도착한 MP3 조각을 바구니에 이어 붙이기
                     combined_audio += base64.b64decode(audio_base64)
             else:
                 print(f"⚠️ 구글 TTS API 거절됨 (조각 {i+1}): {response.text}")
@@ -98,7 +95,6 @@ def generate_audio_premium(text):
             print(f"⚠️ 통신 에러 발생: {e}")
             return None
             
-    # 3. 하나로 완벽하게 합쳐진 최종 MP3 파일 반환!
     return combined_audio
 
 @st.cache_data(ttl=1800)
@@ -157,7 +153,8 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 매크로 인사이트", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
+    # 🔥 [V20.0 핵심] 탭이 6개로 늘어났습니다! (2번째에 섹터 히트맵 추가)
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
@@ -181,7 +178,52 @@ else:
                 show_premium_paywall("심층 매크로 분석 리포트 전문과 프리미엄 아나운서 오디오는 VIP 전용입니다.")
         else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
+    # 🔥 [V20.0 핵심] 2번째 탭: 섹터 히트맵(Treemap)
     with tab2:
+        st.subheader("🗺️ 시가총액 & 수급 섹터 히트맵")
+        st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
+        
+        if not is_vip:
+            show_premium_paywall("전체 시장의 섹터별 자금 흐름을 조망하는 히트맵 분석은 VIP 전용입니다.")
+        else:
+            if not df_summary.empty:
+                # 데이터 전처리: 결측치 제거 및 숫자로 확실히 변환
+                df_hm = df_summary.copy()
+                df_hm['섹터'] = df_hm['섹터'].fillna("기타")
+                df_hm['시가총액'] = pd.to_numeric(df_hm['시가총액'], errors='coerce').fillna(0)
+                df_hm['등락률'] = pd.to_numeric(df_hm['등락률'], errors='coerce').fillna(0)
+                
+                # 히트맵(Treemap) 그리기
+                fig = px.treemap(
+                    df_hm,
+                    path=[px.Constant("국내 증시 주요 섹터"), '섹터', '종목명'],
+                    values='시가총액',
+                    color='등락률',
+                    # 🟦 파란색(하락) -> ⬛ 검은색(보합) -> 🟥 빨간색(상승) (한국 증시 패치)
+                    color_continuous_scale=['#0066FF', '#1E1E2E', '#FF3333'], 
+                    color_continuous_midpoint=0,
+                    custom_data=['등락률', 'AI수급점수']
+                )
+                
+                # 호버(마우스 오버) 텍스트 및 박스 디자인 다듬기
+                fig.update_traces(
+                    texttemplate="<b>%{label}</b><br>%{customdata[0]:.2f}%",
+                    hovertemplate="<b>%{label}</b><br>시가총액: %{value:,.0f}억<br>등락률: %{customdata[0]:.2f}%<br>AI점수: %{customdata[1]}점<extra></extra>",
+                    textfont_color="white"
+                )
+                fig.update_layout(
+                    margin=dict(t=30, l=10, r=10, b=10),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    height=550
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("데이터 대기 중입니다.")
+
+    # 기존의 수급 스크리너는 탭 3으로 밀려납니다.
+    with tab3:
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
         def color_fluctuation(val):
             if pd.isna(val): return 'color: gray;'
@@ -208,7 +250,7 @@ else:
         if not is_vip:
             show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    with tab3:
+    with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         target_stock = st.session_state.selected_stock
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
@@ -288,7 +330,7 @@ else:
                         except Exception as e:
                             st.error(f"분석 중 오류 발생: {e}")
 
-    with tab4:
+    with tab5:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         if not is_vip:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 VIP 전용입니다.")
@@ -301,7 +343,7 @@ else:
                 else: st.info("⏳ 데이터 대기 중")
             else: st.info("⏳ 데이터 대기 중")
 
-    with tab5:
+    with tab6:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
         if not is_vip:

@@ -8,3 +8,4 @@ yfinance
 gTTS
 google-cloud-texttospeech
 proto-plus
+plotly
