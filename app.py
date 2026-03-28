@@ -3,6 +3,8 @@ import pandas as pd
 import altair as alt
 import os
 import yfinance as yf
+from gtts import gTTS
+import io
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 st.title("🏛️ DeepAlpha 퀀트 터미널")
@@ -43,6 +45,14 @@ def load_data():
 
 df_summary, df_history = load_data()
 
+# 🔥 [V10.0] 텍스트를 음성으로 변환하는 함수 (캐싱으로 속도 향상)
+@st.cache_data(show_spinner=False)
+def generate_audio(text):
+    tts = gTTS(text=text, lang='ko', slow=False)
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    return fp.getvalue()
+
 if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다.")
 else:
@@ -62,17 +72,31 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 [V9.1] 탭 순서 변경: 매크로 인사이트가 가장 먼저 보이도록!
     tab1, tab2, tab3, tab4 = st.tabs(["🌍 AI 매크로 인사이트", "📊 시장 수급 스크리너", f"📈 개별 종목 분석", "🏆 AI 봇 포트폴리오 성적"])
 
-    # 원래 tab3에 있던 AI 리포트를 tab1으로 끌어올림
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
+        st.caption("글로벌 이벤트와 매크로 동향을 심층 분석한 AI 시황 브리핑입니다.")
+        
         if os.path.exists("report.md"):
-            with open("report.md", "r", encoding="utf-8") as f: st.markdown(f.read())
-        else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
+            with open("report.md", "r", encoding="utf-8") as f: 
+                report_content = f.read()
+            
+            # 🔥 [V10.0] 오디오 플레이어 UI 추가
+            st.markdown("##### 🎧 시황 라디오 듣기")
+            try:
+                # 듣기 편하도록 특수 기호 제거
+                clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
+                audio_bytes = generate_audio(clean_text)
+                st.audio(audio_bytes, format="audio/mp3")
+            except Exception as e:
+                st.error("오디오 생성 중 오류가 발생했습니다.")
+            
+            st.markdown("---")
+            st.markdown(report_content)
+        else: 
+            st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
-    # 원래 tab1에 있던 스크리너를 tab2로 이동
     with tab2:
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
         def color_fluctuation(val):
@@ -93,7 +117,6 @@ else:
         )
         if event.selection.rows: st.session_state.selected_stock = df_summary.iloc[event.selection.rows[0]]['종목명']
 
-    # 개별 종목 분석 탭 (순서는 세 번째)
     with tab3:
         selected_row = df_summary[df_summary['종목명'] == st.session_state.selected_stock].iloc[0]
         st.subheader(f"💡 {st.session_state.selected_stock} [{selected_row.get('섹터', '분류안됨')}] : 수급 및 기술적 분석")
@@ -140,18 +163,10 @@ else:
                 cum_ret = df_perf['누적수익률'].iloc[-1]
                 st.metric(label="현재 누적 수익률", value=f"{cum_ret:+.2f}%", delta=f"전일 대비 {latest_ret:+.2f}%")
                 
-                st.markdown("##### 📈 누적 수익률(%) 트렌드")
                 chart_perf = alt.Chart(df_perf).mark_area(
-                    color=alt.Gradient(
-                        gradient='linear',
-                        stops=[alt.GradientStop(color='#E74C3C', offset=0), alt.GradientStop(color='transparent', offset=1)],
-                        x1=1, x2=1, y1=1, y2=0
-                    ),
+                    color=alt.Gradient(gradient='linear', stops=[alt.GradientStop(color='#E74C3C', offset=0), alt.GradientStop(color='transparent', offset=1)], x1=1, x2=1, y1=1, y2=0),
                     line={'color': '#E74C3C'}
-                ).encode(
-                    x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)),
-                    y=alt.Y('누적수익률:Q', title="누적 수익률 (%)")
-                ).properties(height=300)
+                ).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('누적수익률:Q', title="누적 수익률 (%)")).properties(height=300)
                 st.altair_chart(chart_perf, use_container_width=True)
             else: st.info("⏳ 아직 포트폴리오 평가 데이터가 쌓이지 않았습니다.")
         else:
