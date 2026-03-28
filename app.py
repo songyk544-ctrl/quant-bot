@@ -5,7 +5,8 @@ import os
 import yfinance as yf
 from gtts import gTTS
 import io
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
@@ -26,16 +27,11 @@ else:
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
-# --- 🔥 [V15.0 핵심] AI API 설정 (구글 검색 도구 탑재) ---
+# --- 🔥 최신 신형 SDK(google-genai) 적용 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 if gemini_key:
-    genai.configure(api_key=gemini_key)
-    # tools='google_search' 한 줄로 공식 문서의 그라운딩 기능을 완벽하게 켭니다!
-    model = genai.GenerativeModel(
-        model_name='gemini-2.5-flash',
-        tools='google_search' 
-    )
-else: model = None
+    client = genai.Client(api_key=gemini_key)
+else: client = None
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -178,7 +174,7 @@ else:
     with tab5:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
-        if not model:
+        if not client:
             st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 챗봇을 사용할 수 없습니다.")
         else:
             if "messages" not in st.session_state:
@@ -241,7 +237,15 @@ else:
                 with chat_container:
                     with st.chat_message("assistant", avatar="🏛️"):
                         try:
-                            response = model.generate_content(system_prompt, stream=True)
+                            # 🔥 [공식 문서 적용] 신형 SDK 구글 검색 그라운딩 설정
+                            config = types.GenerateContentConfig(
+                                tools=[{"google_search": {}}]
+                            )
+                            response = client.models.generate_content_stream(
+                                model='gemini-2.5-flash',
+                                contents=system_prompt,
+                                config=config
+                            )
                             
                             def stream_generator():
                                 for chunk in response:
