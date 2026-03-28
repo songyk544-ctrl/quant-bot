@@ -10,8 +10,8 @@ from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
-# 🔥 [V14.0 핵심] 사이드바 VIP 로그인 로직
-VIP_CODE = "ALPHA2026" # 🚨 대표님이 고객에게 팔(알려줄) 비밀번호입니다!
+# 사이드바 VIP 로그인 로직
+VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
 st.sidebar.caption("VIP 코드를 입력하고 20위까지의 숨겨진 주도주와 전체 데이터를 확인하세요.")
 user_code = st.sidebar.text_input("🔑 VIP 엑세스 코드", type="password")
@@ -26,11 +26,15 @@ else:
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
-# --- AI API 설정 ---
+# --- 🔥 [V15.0 핵심] AI API 설정 (구글 검색 도구 탑재) ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
 if gemini_key:
     genai.configure(api_key=gemini_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    # tools='google_search' 한 줄로 공식 문서의 그라운딩 기능을 완벽하게 켭니다!
+    model = genai.GenerativeModel(
+        model_name='gemini-2.5-flash',
+        tools='google_search' 
+    )
 else: model = None
 
 @st.cache_data(ttl=1800)
@@ -118,12 +122,11 @@ else:
             if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
             return 'color: gray;'
 
-        # 🔥 [V14.0 핵심] VIP 여부에 따라 보여주는 데이터 자르기
         if is_vip:
             df_display = df_summary.set_index('종목명')
         else:
             df_display = df_summary.head(5).set_index('종목명')
-            st.warning("🔒 **[프리미엄 전용]** 무료 버전은 상위 5개 종목만 제공됩니다. 6~20위의 숨겨진 주도주와 세부 수급 데이터를 보시려면 좌측 사이드바에서 VIP 코드를 입력하세요.")
+            st.warning("🔒 **[프리미엄 전용]** 무료 버전은 상위 5개 종목만 제공됩니다. VIP 코드를 입력하세요.")
 
         styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
@@ -138,7 +141,6 @@ else:
             st.session_state.selected_stock = selected_name
 
     with tab3:
-        # 현재 선택된 종목이 무료 5위 안에 없으면(권한 밖이면) 1위로 강제 리셋
         if not is_vip and st.session_state.selected_stock not in df_summary.head(5)['종목명'].values:
             st.session_state.selected_stock = df_summary.iloc[0]['종목명']
             
@@ -159,10 +161,8 @@ else:
                 col1, col2 = st.columns(2)
                 color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
                 with col1:
-                    st.markdown("##### 📈 20일 종가 차트")
                     st.altair_chart(alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
                 with col2:
-                    st.markdown("##### 📊 주체별 순매수 대금 (백만 원)")
                     st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
 
     with tab4:
@@ -182,7 +182,7 @@ else:
             st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 챗봇을 사용할 수 없습니다.")
         else:
             if "messages" not in st.session_state:
-                st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 오늘의 시장 주도주나 글로벌 매크로 동향에 대해 무엇이든 물어보세요."}]
+                st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 종목 분석이나 최신 글로벌 금융 뉴스에 대해 무엇이든 물어보세요."}]
 
             chat_container = st.container()
             with chat_container:
@@ -200,13 +200,13 @@ else:
             col1, col2, col3 = st.columns(3)
             
             if col1.button(f"🔥 {top_sector} 섹터 동향", use_container_width=True):
-                st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 통화정책이나 글로벌 이슈와 어떤 연관성이 있는지 분석해줘."
+                st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 최신 이슈와 어떤 연관성이 있는지 검색해서 분석해줘."
             if col2.button(f"🏆 {top_stock} 매크로 분석", use_container_width=True):
-                st.session_state.trigger_prompt = f"오늘 수급 1위인 '{top_stock}'의 매력 포인트를 설명해주고, 이 종목에 영향을 줄 수 있는 해외 지수나 환율 동향을 함께 코멘트해줘."
-            if col3.button("🌍 전체 탑다운 뷰", use_container_width=True):
-                st.session_state.trigger_prompt = "현재 글로벌 매크로 환경(미국 국채금리, 기술주 흐름 등)을 바탕으로 오늘 우리 증시의 전체적인 기관/외인 수급 흐름을 총평해줘."
+                st.session_state.trigger_prompt = f"오늘 수급 1위인 '{top_stock}'의 매력 포인트를 설명해주고, 이 종목에 영향을 줄 수 있는 최신 글로벌 뉴스를 검색해서 함께 코멘트해줘."
+            if col3.button("🌍 오늘의 글로벌 뉴스 검색", use_container_width=True):
+                st.session_state.trigger_prompt = "지금 당장 구글을 검색해서, 오늘 글로벌 주식 시장에 영향을 미친 가장 중요한 뉴스 3가지를 요약해줘."
 
-            user_input = st.chat_input("종목명이나 궁금한 시황을 입력하세요...")
+            user_input = st.chat_input("종목명이나 궁금한 최신 뉴스를 입력하세요...")
             prompt = st.session_state.pop("trigger_prompt", user_input)
 
             if prompt:
@@ -216,19 +216,17 @@ else:
 
                 today_str = datetime.now().strftime("%Y년 %m월 %d일")
                 
-                # 🔥 [V14.0 핵심] 무료 회원이면 AI의 머릿속에도 5개 종목만 넣어줍니다.
                 if is_vip:
                     context_data = df_summary.head(20).to_string(index=False)
                     vip_instruction = ""
                 else:
                     context_data = df_summary.head(5).to_string(index=False)
-                    vip_instruction = "\n**[중요] 현재 사용자는 무료 회원이므로 상위 5개 종목만 볼 수 있어. 만약 6위 이하의 숨겨진 주도주를 물어본다면 절대 종목명을 알려주지 말고, VIP 프리미엄 코드를 입력해야 볼 수 있다고 안내해!**"
+                    vip_instruction = "\n**[중요] 현재 사용자는 무료 회원이므로 상위 5개 종목만 볼 수 있어. 6위 이하의 종목을 물어보면 VIP 프리미엄 코드를 입력하라고 안내해!**"
                 
                 system_prompt = f"""
-                너는 'DeepAlpha'의 수석 퀀트 애널리스트야.
-                오늘은 {today_str}이야. 절대 과거 시점이라고 말하지 마.
+                너는 'DeepAlpha'의 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
                 
-                [1. 실시간 매크로 지표]
+                [1. 실시간 매크로 전광판 데이터]
                 {macro_summary_text}
                 
                 [2. 사용자에게 허락된 수급 데이터]
@@ -237,7 +235,7 @@ else:
                 사용자의 질문: {prompt}
                 
                 [핵심 지시사항]
-                1. 글로벌 이벤트와 연결 지어서 큰 그림(Top-Down)의 뷰를 함께 제시할 것.{vip_instruction}
+                1. 내장된 '구글 검색 도구'를 적극적으로 활용해서 가장 최신 시점의 뉴스와 정보를 기반으로 대답해.{vip_instruction}
                 """
 
                 with chat_container:
@@ -253,7 +251,7 @@ else:
                             bot_reply = st.write_stream(stream_generator)
                             
                         except Exception as e:
-                            bot_reply = f"앗, 분석 중 에러가 발생했습니다: {e}"
+                            bot_reply = f"앗, 구글 검색 및 분석 중 에러가 발생했습니다: {e}"
                             st.write(bot_reply)
 
                     st.session_state.messages.append({"role": "assistant", "content": bot_reply})
