@@ -5,8 +5,9 @@ import time
 from datetime import datetime, timedelta, timezone 
 from bs4 import BeautifulSoup
 import os
-import google.generativeai as genai
-import yfinance as yf  # 🔥 [V13.0] 매크로 지표 수집용 추가
+from google import genai
+from google.genai import types
+import yfinance as yf
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
@@ -64,9 +65,7 @@ def send_telegram_message(text):
         requests.post(url, data=data)
     except: pass
 
-# 🔥 [V13.0] 실시간 매크로 지표 & 뉴스 수집 함수 추가
 def get_live_macro_and_news():
-    # 1. 매크로 데이터 수집
     tickers = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "S&P500": "^GSPC", "NASDAQ": "^IXIC", "환율": "KRW=X", "WTI유": "CL=F", "미 국채(10y)": "^TNX", "VIX": "^VIX"}
     macro_str = ""
     for name, ticker in tickers.items():
@@ -78,7 +77,6 @@ def get_live_macro_and_news():
                 macro_str += f"- {name}: {curr:.2f} ({change_pct:+.2f}%)\n"
         except: pass
     
-    # 2. 실시간 네이버 뉴스 수집
     news_str = ""
     try:
         res = requests.get("https://finance.naver.com/news/mainnews.naver", headers={'User-Agent': 'Mozilla/5.0'})
@@ -90,7 +88,7 @@ def get_live_macro_and_news():
     return macro_str, news_str
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V13.0 RAG 탑재)...")
+    print("🚀 수집기 봇 가동 시작 (V15.0 구글검색 Grounding 탑재)...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
     headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
@@ -228,44 +226,52 @@ def run_scraper():
 
     if GEMINI_API_KEY:
         try:
-            genai.configure(api_key=GEMINI_API_KEY)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            
             top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
             df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
             df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             
-            # 🔥 [V13.0] AI에게 실시간 뉴스 및 매크로 지표 주입!
             macro_str, news_str = get_live_macro_and_news()
             today_str = now_kst.strftime("%Y년 %m월 %d일")
             
             prompt = f"""
             너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야. 절대 과거 시점이라고 말하지 마.
             
-            [1. 실시간 글로벌 매크로 지표]
+            [1. 파이썬이 수집한 매크로 지표]
             {macro_str}
             
-            [2. 오늘의 금융 핵심 뉴스]
+            [2. 파이썬이 수집한 금융 속보]
             {news_str}
             
             [3. 최상위 20개 종목 수급 데이터]
             {df_merged.to_string(index=False)}
 
-            다음 순서로 전문가 수준의 마감 리포트를 작성해 줘. (제목 쓰지 마)
-            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 제공된 [실시간 글로벌 매크로 지표]와 [오늘의 금융 핵심 뉴스]를 바탕으로 시장의 큰 흐름을 짚어줘.
-            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서, 외인/기관 자금이 어느 업종에 집중되었는지 핵심을 짚어줘.
-            3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 [매크로 상황]에 맞는 추천 이유를 작성.
+            다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
+            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 제공된 지표와 더불어 '구글 검색'을 적극 활용하여 오늘 시장을 움직인 가장 중요한 글로벌 뉴스를 브리핑해줘.
+            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서 자금 쏠림 현상을 짚어줘.
+            3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 [구글 검색으로 찾은 테마 이슈]와 맞물리는 추천 이유를 작성해.
             """
             
-            response = model.generate_content(prompt)
+            # 🔥 [V15.0 핵심] 텔레그램 봇 리포트 생성에도 구글 검색 켜기!
+            config = types.GenerateContentConfig(
+                tools=[{"google_search": {}}]
+            )
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=config
+            )
+            
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 마감 리포트 ({today_str})\n\n{response.text}")
                 
             top3_str = ", ".join(top3_names)
             
             # 🚨 [커스텀 필요] 스트림릿 주소 변경 잊지 마세요!
-            MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
+            MY_STREAMLIT_URL = "https://udv5sy.streamlit.app"
             
             tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n{eval_msg}🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
