@@ -3,17 +3,15 @@ import pandas as pd
 import altair as alt
 import os
 import yfinance as yf
+from gtts import gTTS
 import io
-import requests
-import base64
 from google import genai
 from google.genai import types
 from datetime import datetime
-import plotly.express as px  # 🔥 [V20.0] 히트맵 차트를 위한 라이브러리 추가
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
-# 고급스러운 블러(Blur) 페이월 UI 함수
+# --- 🔥 [V17.0] 공용 블러(Blur) 페이월 함수 ---
 def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
     st.markdown(f"""
     <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
@@ -31,6 +29,7 @@ def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다.")
     </div>
     """, unsafe_allow_html=True)
 
+# 사이드바 VIP 로그인 로직
 VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
 st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
@@ -46,56 +45,10 @@ else:
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
 
-# --- AI API 설정 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
-tts_api_key = st.secrets.get("GOOGLE_TTS_API_KEY", os.environ.get("GOOGLE_TTS_API_KEY"))
-
 if gemini_key:
     client = genai.Client(api_key=gemini_key)
 else: client = None
-
-# [V19.2] 글자 수 제한을 무시하는 깍둑썰기(Chunking) 오디오 생성 함수 (유지)
-@st.cache_data(show_spinner=False)
-def generate_audio_premium(text):
-    if not tts_api_key:
-        print("⚠️ 에러: TTS API 키가 없습니다.")
-        return None
-        
-    url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={tts_api_key}"
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    
-    chunk_size = 1000
-    text_chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-    combined_audio = b""
-    
-    for i, chunk in enumerate(text_chunks):
-        data = {
-            "input": {"text": chunk},
-            "voice": {
-                "languageCode": "ko-KR", 
-                # 👇 찾아내신 구글의 최신 LLM 기반 음성 모델로 업그레이드!
-                # (구글 콘솔의 '음성 목록'에서 마음에 드는 Chirp 목소리 이름을 넣으시면 됩니다. 통상적으로 아래와 같은 형식을 띱니다.)
-                "name": "ko-KR-Chirp3-HD-Sulafat" 
-            },
-            "audioConfig": {
-                "audioEncoding": "MP3"
-            }
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, json=data)
-            if response.status_code == 200:
-                audio_base64 = response.json().get("audioContent")
-                if audio_base64:
-                    combined_audio += base64.b64decode(audio_base64)
-            else:
-                print(f"⚠️ 구글 TTS API 거절됨 (조각 {i+1}): {response.text}")
-                return None
-        except Exception as e:
-            print(f"⚠️ 통신 에러 발생: {e}")
-            return None
-            
-    return combined_audio
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -132,6 +85,13 @@ def load_data():
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
     return df_summary, df_hist
 
+@st.cache_data(show_spinner=False)
+def generate_audio(text):
+    tts = gTTS(text=text, lang='ko', slow=False)
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    return fp.getvalue()
+
 df_summary, df_history = load_data()
 
 if df_summary.empty:
@@ -153,77 +113,28 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 [V20.0 핵심] 탭이 6개로 늘어났습니다! (2번째에 섹터 히트맵 추가)
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 매크로 인사이트", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
         if os.path.exists("report.md"):
             with open("report.md", "r", encoding="utf-8") as f: report_content = f.read()
+            st.markdown("##### 🎧 시황 라디오 듣기")
+            try:
+                clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
+                st.audio(generate_audio(clean_text), format="audio/mp3")
+            except: st.error("오디오 생성 중 오류가 발생했습니다.")
+            st.markdown("---")
             
             if is_vip:
-                st.markdown("##### 🎧 프리미엄 시황 라디오 듣기")
-                clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
-                
-                audio_data = generate_audio_premium(clean_text)
-                if audio_data:
-                    st.audio(audio_data, format="audio/mp3")
-                else:
-                    st.error("오디오 생성 중 오류가 발생했습니다. 사이드바의 API키를 확인해주세요.")
-                st.markdown("---")
                 st.markdown(report_content)
             else:
                 teaser_text = report_content[:250] + "...\n\n"
                 st.markdown(teaser_text)
-                show_premium_paywall("심층 매크로 분석 리포트 전문과 프리미엄 아나운서 오디오는 VIP 전용입니다.")
+                show_premium_paywall("심층 매크로 분석 리포트 전문은 VIP 전용입니다.")
         else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
-    # 🔥 [V20.0 핵심] 2번째 탭: 섹터 히트맵(Treemap)
     with tab2:
-        st.subheader("🗺️ 시가총액 & 수급 섹터 히트맵")
-        st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
-        
-        if not is_vip:
-            show_premium_paywall("전체 시장의 섹터별 자금 흐름을 조망하는 히트맵 분석은 VIP 전용입니다.")
-        else:
-            if not df_summary.empty:
-                # 데이터 전처리: 결측치 제거 및 숫자로 확실히 변환
-                df_hm = df_summary.copy()
-                df_hm['섹터'] = df_hm['섹터'].fillna("기타")
-                df_hm['시가총액'] = pd.to_numeric(df_hm['시가총액'], errors='coerce').fillna(0)
-                df_hm['등락률'] = pd.to_numeric(df_hm['등락률'], errors='coerce').fillna(0)
-                
-                # 히트맵(Treemap) 그리기
-                fig = px.treemap(
-                    df_hm,
-                    path=[px.Constant("국내 증시 주요 섹터"), '섹터', '종목명'],
-                    values='시가총액',
-                    color='등락률',
-                    # 🟦 파란색(하락) -> ⬛ 검은색(보합) -> 🟥 빨간색(상승) (한국 증시 패치)
-                    color_continuous_scale=['#0066FF', '#1E1E2E', '#FF3333'], 
-                    color_continuous_midpoint=0,
-                    custom_data=['등락률', 'AI수급점수']
-                )
-                
-                # 호버(마우스 오버) 텍스트 및 박스 디자인 다듬기
-                fig.update_traces(
-                    texttemplate="<b>%{label}</b><br>%{customdata[0]:.2f}%",
-                    hovertemplate="<b>%{label}</b><br>시가총액: %{value:,.0f}억<br>등락률: %{customdata[0]:.2f}%<br>AI점수: %{customdata[1]}점<extra></extra>",
-                    textfont_color="white"
-                )
-                fig.update_layout(
-                    margin=dict(t=30, l=10, r=10, b=10),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    height=550
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("데이터 대기 중입니다.")
-
-    # 기존의 수급 스크리너는 탭 3으로 밀려납니다.
-    with tab3:
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
         def color_fluctuation(val):
             if pd.isna(val): return 'color: gray;'
@@ -250,7 +161,7 @@ else:
         if not is_vip:
             show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    with tab4:
+    with tab3:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         target_stock = st.session_state.selected_stock
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
@@ -260,14 +171,9 @@ else:
         if not is_vip and target_stock not in free_tier_stocks:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
         else:
-            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric("🏆 종합 AI 점수", f"{selected_row['AI수급점수']}점", f"모멘텀 {selected_row['랭킹추세']}")
-            col_m2.metric("💰 시가총액", f"{selected_row['시가총액']:,.0f}억")
-            col_m3.metric("📊 PER / ROE", f"{selected_row['PER']:.1f} / {selected_row['ROE']:.1f}%")
-            
-            tech_status = "🟢최적 매수" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴리스크 관리" if selected_row['이격도(%)'] < 95 else "⚫추세 추종")
-            col_m4.metric("📈 20일선 이격도", f"{selected_row['이격도(%)']}%", tech_status, delta_color="off")
-            
+            st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
+            tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
+            st.write(f"- **기술적 위치:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
             st.markdown("---")
             
             if not df_history.empty:
@@ -280,57 +186,12 @@ else:
                     col1, col2 = st.columns(2)
                     color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
                     with col1:
-                        st.markdown("##### 📈 20일 종가 추이")
                         st.altair_chart(alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
                     with col2:
-                        st.markdown("##### 📊 주체별 순매수 대금 (백만 원)")
-                        st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
+                        # 🔥 [V17.1] legend=None 처리하여 불필요한 칼라맵(범례) 제거!
+                        st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=None), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
 
-            st.markdown("---")
-            
-            st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단")
-            st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 및 글로벌 시황 연계 분석을 제공합니다.")
-            
-            if st.button(f"✨ '{target_stock}' 실시간 심층 리포트 생성", use_container_width=True):
-                if not client:
-                    st.error("AI 챗봇용 제미나이 API 키가 설정되지 않았습니다.")
-                else:
-                    with st.spinner(f"구글 검색으로 '{target_stock}'의 매크로 연계 모멘텀을 수집 중입니다..."):
-                        today_str = datetime.now().strftime("%Y년 %m월 %d일")
-                        
-                        prompt = f"""
-                        너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
-                        종목명 '{target_stock}'(섹터: {selected_row.get('섹터', '알수없음')})에 대해 '구글 검색'을 반드시 돌려서 아래 양식으로 밀도 있는 브리핑을 해줘.
-                        
-                        [분석 필수 조건]
-                        단순한 개별 종목 뉴스를 나열하지 마. 현재 진행 중인 **글로벌 매크로 이벤트(미국 금리, 환율 동향, 나스닥/S&P500 등 거시 경제 흐름)가 이 특정 종목이나 소속 섹터에 어떤 영향을 미칠지** 반드시 연계해서 입체적으로 코멘트할 것. 만약 사용자가 놓칠만한 리스크가 있다면 그것도 추가로 짚어줘.
-                        
-                        [출력 양식]
-                        1. 📰 최신 모멘텀 & 핵심 뉴스: 구글 검색을 통해 알아낸 이 종목의 가장 최근(오늘/이번 주) 호재 및 악재 이슈
-                        2. 🌍 글로벌 시황 연계 분석: (필수 작성) 현재 글로벌 매크로 환경이나 해외 동종 업계(Peer) 흐름이 해당 종목에 주는 영향 
-                        3. 💡 수급 및 펀더멘털 평가: PER {selected_row['PER']}, ROE {selected_row['ROE']} 및 기관/외인 수급 강도 분석
-                        4. 🎯 단기 투자 전략 및 리스크 관리: 현재 이격도({selected_row['이격도(%)']}%)를 고려한 매수/보유/관망 의견과 주의해야 할 매크로 변수
-                        """
-                        try:
-                            config = types.GenerateContentConfig(tools=[{"google_search": {}}])
-                            response = client.models.generate_content_stream(
-                                model='gemini-2.5-flash',
-                                contents=prompt,
-                                config=config
-                            )
-                            
-                            st.success("✅ 실시간 검색 및 탑다운 분석 완료!")
-                            def stream_generator():
-                                for chunk in response:
-                                    if chunk.text: yield chunk.text
-                                    
-                            with st.container():
-                                st.write_stream(stream_generator)
-                                
-                        except Exception as e:
-                            st.error(f"분석 중 오류 발생: {e}")
-
-    with tab5:
+    with tab4:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         if not is_vip:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 VIP 전용입니다.")
@@ -343,7 +204,7 @@ else:
                 else: st.info("⏳ 데이터 대기 중")
             else: st.info("⏳ 데이터 대기 중")
 
-    with tab6:
+    with tab5:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
         if not is_vip:
