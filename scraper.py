@@ -43,8 +43,7 @@ def get_target_stock_list():
                     name_tag = tr.select_one('a.tltle')
                     if name_tag:
                         stock_name = name_tag.text
-                        if any(keyword in stock_name for keyword in noise_keywords):
-                            continue
+                        if any(keyword in stock_name for keyword in noise_keywords): continue
                         marcap = safe_float(tds[6].text)
                         if marcap >= 8000:
                             target_list.append({
@@ -56,9 +55,7 @@ def get_target_stock_list():
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 def send_telegram_message(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ 텔레그램 토큰/Chat ID가 없어 알림을 건너뜁니다.")
-        return
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     clean_text = text.replace('**', '*') 
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000], "parse_mode": "Markdown"}
@@ -70,38 +67,28 @@ def send_telegram_message(text):
         print(f"⚠️ 텔레그램 네트워크 에러: {e}")
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V8.2 섹터 태깅 탑재)...")
+    print("🚀 수집기 봇 가동 시작 (V9.0 백테스팅 탑재)...")
     df_target = get_target_stock_list()
     token = get_kis_access_token()
-    headers = {
-        "authorization": f"Bearer {token}", "appkey": KIS_APP_KEY,
-        "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"
-    }
+    headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
     url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
-    if now_kst.hour > 15 or (now_kst.hour == 15 and now_kst.minute >= 40):
-        end_date = now_kst.strftime("%Y%m%d") 
-    else:
-        end_date = (now_kst - timedelta(days=1)).strftime("%Y%m%d") 
+    end_date = now_kst.strftime("%Y%m%d") if now_kst.hour > 15 or (now_kst.hour == 15 and now_kst.minute >= 40) else (now_kst - timedelta(days=1)).strftime("%Y%m%d") 
 
     data_list, history_list = [], []
 
     for i, row in enumerate(df_target.itertuples()):
         code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
-        
-        # 🔥 [V8.2] 네이버 금융에서 개별 종목의 '업종/섹터' 긁어오기
         sector_name = "분류안됨"
         try:
             url_nv = f"https://finance.naver.com/item/main.naver?code={code}"
             res_nv = requests.get(url_nv, headers={'User-Agent': 'Mozilla/5.0'})
             soup_nv = BeautifulSoup(res_nv.text, 'html.parser')
             sector_tag = soup_nv.select_one('div.trade_compare h4.h_sub a')
-            if sector_tag:
-                sector_name = sector_tag.text.strip()
-        except:
-            pass
+            if sector_tag: sector_name = sector_tag.text.strip()
+        except: pass
 
         params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": end_date, "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"}
         try:
@@ -150,25 +137,20 @@ def run_scraper():
             strength_score = (max(-10, min(10, p_str)) * 20.0) + (max(-5, min(5, t_str)) * 15.0) + (max(-5, min(5, pef_str)) * 15.0) + (max(-5, min(5, f_str)) * 10.0)
             streak_score = min(20, pension_streak * 3.0) + min(10, foreign_streak * 1.5)
             fund_score = (10 if row.ROE >= 15 else (5 if row.ROE >= 8 else 0)) + (5 if 0 < row.PER <= 15 else 0)
-
             ai_score = max(0, min(100, int(strength_score + streak_score + fund_score + tech_score)))
 
             data_list.append({
-                '종목명': name, '종목코드': code, '소속': row.소속, 
-                '섹터': sector_name, # 🔥 수집된 섹터 데이터 추가
-                'AI수급점수': ai_score, '현재가': prpr, '등락률': row.등락률, 
-                '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
+                '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
+                '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                 '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                 '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
-        except Exception as e:
-            pass 
+        except: pass 
         time.sleep(0.2) 
 
     df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
-    df_history = pd.DataFrame(history_list)
-    df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
+    pd.DataFrame(history_list).to_csv("history.csv", index=False, encoding='utf-8-sig')
 
     today_date = datetime.now(KST).strftime("%Y-%m-%d")
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
@@ -179,10 +161,55 @@ def run_scraper():
     if os.path.exists(trend_file):
         df_trend_old = pd.read_csv(trend_file)
         df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
-        df_trend_combined = pd.concat([df_trend_old, df_trend_new], ignore_index=True)
-        df_trend_combined.to_csv(trend_file, index=False, encoding='utf-8-sig')
+        pd.concat([df_trend_old, df_trend_new], ignore_index=True).to_csv(trend_file, index=False, encoding='utf-8-sig')
     else:
         df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
+
+    # 🔥 [V9.0] 포트폴리오 수익률 평가 로직 시작
+    portfolio_file = "portfolio.csv"
+    perf_file = "performance_trend.csv"
+    eval_msg = ""
+    
+    if os.path.exists(portfolio_file):
+        try:
+            df_port = pd.read_csv(portfolio_file)
+            returns, eval_details = [], []
+            for _, row in df_port.iterrows():
+                p_stock = row['종목명']
+                p_buy = row['매수가']
+                today_row = df_final[df_final['종목명'] == p_stock]
+                p_sell = today_row.iloc[0]['현재가'] if not today_row.empty else p_buy
+                ret = ((p_sell - p_buy) / p_buy) * 100
+                returns.append(ret)
+                mark = "🔴" if ret > 0 else "🔵" if ret < 0 else "⚫"
+                eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
+            
+            daily_ret = sum(returns) / len(returns) if returns else 0
+            
+            # 누적 수익률 계산 및 저장
+            cum_ret = daily_ret
+            if os.path.exists(perf_file):
+                df_perf = pd.read_csv(perf_file)
+                if not df_perf.empty:
+                    df_perf = df_perf[df_perf['날짜'] != today_date]
+                    cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
+                else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+            else:
+                df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+                
+            new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
+            pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
+            
+            eval_msg = "📝 *[전일 추천 Top 3 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 수익률: {daily_ret:+.2f}%*\n\n"
+        except Exception as e:
+            print(f"포트폴리오 평가 에러: {e}")
+
+    # 내일을 위해 오늘의 Top 3 종가 저장
+    top3_names = df_final.head(3)['종목명'].tolist()
+    top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
+    top3_df['날짜'] = today_date
+    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+    # 🔥 [V9.0] 포트폴리오 로직 끝
 
     if GEMINI_API_KEY:
         try:
@@ -191,42 +218,32 @@ def run_scraper():
             top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
             df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
-            
-            # 🔥 섹터 정보까지 AI에게 넘겨서 훨씬 정교한 시황 분석을 유도
             df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             
             prompt = f"""
             너는 여의도 최고의 탑다운 퀀트 애널리스트야.
             아래는 ETF 노이즈가 제거된 최상위 20개 종목 데이터야.
-            
             {df_merged.to_string(index=False)}
-
-            다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
-            (🚨주의: 제목은 쓰지 말고, 바로 '1. 🌐 글로벌 매크로' 본문부터 시작해!)
-            
-            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 오늘 시장에 큰 영향을 미친 글로벌 뉴스(미국 증시, 금리 등)를 상세히 짚어줘.
-            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서, 오늘 외인/기관의 자금이 어느 업종(테마)에 집중되었는지 핵심을 짚어줘.
+            다음 순서로 전문가 수준의 마감 리포트를 작성해 줘. (제목은 쓰지 말고 1번부터 시작해)
+            1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 시장에 큰 영향을 미친 글로벌 뉴스를 상세히 짚어줘.
+            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서, 외인/기관 자금이 어느 업종에 집중되었는지 핵심을 짚어줘.
             3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 거시적 환경에 맞는 이유를 작성.
             """
             
             response = model.generate_content(prompt)
             today_str = datetime.now(KST).strftime("%Y년 %m월 %d일")
-            
-            report_body = f"## 🌐 여의도 탑다운 퀀트 애널리스트 마감 리포트 ({today_str})\n\n{response.text}"
             with open("report.md", "w", encoding="utf-8") as f:
-                f.write(report_body)
+                f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 마감 리포트 ({today_str})\n\n{response.text}")
                 
-            top3_str = ", ".join(top_N_names[:3])
+            top3_str = ", ".join(top3_names)
             
-            # 🚨 [커스텀 필요] 아래 변수 안의 주소를 대표님의 실제 스트림릿 주소로 꼭 바꿔주세요!
+            # 🚨 [커스텀 필요] 아래 주소를 대표님의 스트림릿 주소로 바꿔주세요!
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
-            tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+            tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n{eval_msg}🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
-
-        except Exception as e:
-            print(f"⚠️ AI 리포트 생성 실패: {e}")
+        except Exception as e: print(f"⚠️ AI 리포트 생성 실패: {e}")
 
 if __name__ == "__main__":
     run_scraper()
