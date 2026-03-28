@@ -6,6 +6,9 @@ import yfinance as yf
 from gtts import gTTS
 import io
 import google.generativeai as genai
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 st.title("🏛️ DeepAlpha 퀀트 터미널")
@@ -33,15 +36,32 @@ def get_macro_data():
         except: macro_info[name] = None
     return macro_info
 
+# 🔥 [V13.0] 실시간 주요 뉴스 크롤러 탑재
+@st.cache_data(ttl=1800)
+def get_realtime_news():
+    try:
+        res = requests.get("https://finance.naver.com/news/mainnews.naver", headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(res.text, 'html.parser')
+        news_tags = soup.select('.articleSubject a')
+        headlines = [tag.text.strip() for tag in news_tags[:5]]
+        return "\n".join([f"- {h}" for h in headlines])
+    except:
+        return "- 주요 뉴스 수집 지연"
+
 macro_data = get_macro_data()
+realtime_news = get_realtime_news() # 뉴스 수집 실행
+
 ticker_style = """<style>.ticker-wrap { width: 100%; overflow-x: auto; white-space: nowrap; background-color: #1E1E2E; padding: 12px 15px; border-radius: 8px; border: 1px solid #333; margin-bottom: 20px; -webkit-overflow-scrolling: touch; } .ticker-wrap::-webkit-scrollbar { display: none; } .ticker-item { display: inline-block; margin-right: 30px; font-size: 15px; font-family: 'Inter', sans-serif; }</style>"""
 ticker_html = f"<div class='ticker-wrap'>{ticker_style}"
+macro_summary_text = "" # AI에게 먹여줄 매크로 텍스트 요약본
+
 for name, data in macro_data.items():
     if data:
         color = "#FF3333" if data['change'] > 0 else "#0066FF" if data['change'] < 0 else "#888888"
         arrow = "▲" if data['change'] > 0 else "▼" if data['change'] < 0 else "-"
         val_str = f"{data['value']:,.1f}원" if "환율" in name else (f"{data['value']:.2f}" if "국채" in name or "VIX" in name else f"{data['value']:,.2f}")
         ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <b>{val_str}</b> <span style='color: {color}; font-weight: bold;'>{arrow} {abs(data['change_pct']):.2f}%</span></div>"
+        macro_summary_text += f"{name}: {val_str} ({arrow} {abs(data['change_pct']):.2f}%)\n"
     else: ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <span style='color: #888888;'>데이터 지연</span></div>"
 ticker_html += "</div>"
 st.markdown(ticker_html, unsafe_allow_html=True)
@@ -135,14 +155,6 @@ else:
                     st.markdown("##### 📊 주체별 순매수 대금 (백만 원)")
                     st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
 
-        st.markdown("---")
-        st.markdown(f"##### 🎢 과거 AI 점수 트렌드 ({st.session_state.selected_stock})")
-        if os.path.exists("score_trend.csv"):
-            df_trend = pd.read_csv("score_trend.csv")
-            df_stock_trend = df_trend[df_trend['종목명'] == st.session_state.selected_stock].sort_values('날짜')
-            if not df_stock_trend.empty and len(df_stock_trend) >= 2:
-                st.altair_chart(alt.Chart(df_stock_trend).mark_line(color='#E74C3C', point=True).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('AI수급점수:Q', scale=alt.Scale(domain=[0, 100]), title=None)).properties(height=200), use_container_width=True)
-
     with tab4:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         if os.path.exists("performance_trend.csv"):
@@ -153,7 +165,6 @@ else:
             else: st.info("⏳ 데이터 대기 중")
         else: st.info("⏳ 데이터 대기 중")
 
-    # 🔥 [V12.2] 타이핑 이펙트(Streaming)가 적용된 챗봇
     with tab5:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
@@ -182,8 +193,8 @@ else:
                 st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 통화정책이나 글로벌 이슈와 어떤 연관성이 있는지 분석해줘."
             if col2.button(f"🏆 {top_stock} 매크로 분석", use_container_width=True):
                 st.session_state.trigger_prompt = f"오늘 수급 1위인 '{top_stock}'의 매력 포인트를 설명해주고, 이 종목에 영향을 줄 수 있는 해외 지수나 환율 동향을 함께 코멘트해줘."
-            if col3.button("🌍 전체 탑다운 뷰", use_container_width=True):
-                st.session_state.trigger_prompt = "현재 글로벌 매크로 환경(미국 국채금리, 기술주 흐름 등)을 바탕으로 오늘 우리 증시의 전체적인 기관/외인 수급 흐름을 총평해줘."
+            if col3.button("🌍 오늘의 글로벌 뉴스 요약", use_container_width=True):
+                st.session_state.trigger_prompt = "방금 수집한 실시간 금융 뉴스와 매크로 데이터를 바탕으로, 오늘 글로벌 시장의 핵심 이슈를 요약해줘."
 
             user_input = st.chat_input("종목명이나 궁금한 시황을 입력하세요...")
             prompt = st.session_state.pop("trigger_prompt", user_input)
@@ -193,37 +204,44 @@ else:
                 with chat_container:
                     st.chat_message("user", avatar="👤").write(prompt)
 
+                # 🔥 [V13.0 핵심] AI에게 오늘 날짜, 실시간 지수, 뉴스를 강제로 주입!
+                today_str = datetime.now().strftime("%Y년 %m월 %d일")
                 context_data = df_summary.head(20).to_string(index=False)
+                
                 system_prompt = f"""
                 너는 'DeepAlpha'의 수석 퀀트 애널리스트야.
-                아래는 오늘 시장에서 AI 알고리즘으로 추출한 상위 20개 종목의 수급/기술적 데이터야.
+                오늘은 {today_str}이야. 절대 과거 시점이라고 말하지 마.
+                
+                [1. 실시간 매크로 지표]
+                {macro_summary_text}
+                
+                [2. 실시간 주요 금융 뉴스]
+                {realtime_news}
+                
+                [3. 오늘의 주도주 수급/기술적 데이터]
                 {context_data}
                 
                 사용자의 질문: {prompt}
                 
                 [핵심 지시사항]
-                1. 주어진 데이터를 바탕으로 정확하게 답변할 것.
-                2. 종목이나 섹터를 분석할 때는 반드시 '미국 기준금리, 나스닥/S&P500 지수 흐름, 환율' 등 글로벌 매크로 이벤트와 연결지어서 큰 그림(Top-Down)의 뷰를 함께 제시할 것.
+                1. 제공된 [실시간 주요 금융 뉴스]와 [실시간 매크로 지표]를 적극 활용해서 대답해.
+                2. 글로벌 이벤트(미국 시장, 금리, 유가 등)가 국내 주도주 섹터에 미치는 영향을 연결 지어서 전문가처럼 설명해.
                 """
 
-                # 🔥 [V12.2 핵심] AI의 답변을 통째로 받지 않고 스트리밍(stream=True)으로 받아옵니다.
                 with chat_container:
                     with st.chat_message("assistant", avatar="🏛️"):
                         try:
                             response = model.generate_content(system_prompt, stream=True)
                             
-                            # 스트림릿의 st.write_stream에 넘겨주기 위한 생성기(Generator) 함수
                             def stream_generator():
                                 for chunk in response:
                                     if chunk.text:
                                         yield chunk.text
                                         
-                            # 타자 치듯 촤르르륵 출력되는 마법의 함수!
                             bot_reply = st.write_stream(stream_generator)
                             
                         except Exception as e:
                             bot_reply = f"앗, 분석 중 에러가 발생했습니다: {e}"
                             st.write(bot_reply)
 
-                    # 최종 완성된 답변을 세션에 저장하여 다음 새로고침 때도 남아있게 합니다.
                     st.session_state.messages.append({"role": "assistant", "content": bot_reply})
