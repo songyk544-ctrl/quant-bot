@@ -36,8 +36,8 @@ jobs:
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
-          # 🔥 [V9.0] 포트폴리오 백테스트용 CSV 파일 2개가 추가되었습니다!
-          git add data.csv history.csv report.md score_trend.csv portfolio.csv performance_trend.csv
+          # 🔥 [수정] 파일 이름을 일일이 적지 않고 "있는 CSV 다 담아!"로 유연하게 변경 (*.csv 사용)
+          git add *.csv report.md
           
           git commit -m "🤖 수급 데이터 갱신, AI 리포트 및 포트폴리오 성적 업데이트 완료" || exit 0
           git push
