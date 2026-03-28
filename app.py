@@ -11,18 +11,15 @@ from datetime import datetime
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
-# --- 🔥 [V17.0] 공용 블러(Blur) 페이월 함수 ---
 def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
     st.markdown(f"""
     <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
-        <!-- 흐릿하게 보이는 가짜 백그라운드 콘텐츠 -->
         <div style="filter: blur(8px); opacity: 0.4; pointer-events: none; user-select: none;">
             <h4 style="color: #888;">████████ 데이터 분석 및 리포트</h4>
             <p>██████████████████████████████████████████████████████</p>
             <p>████████████████████████████████████</p>
             <div style="height: 150px; background: linear-gradient(90deg, #333 0%, #222 50%, #333 100%); border-radius: 10px; margin-top: 10px;"></div>
         </div>
-        <!-- 중앙에 떠오르는 고급스러운 자물쇠 오버레이 -->
         <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: rgba(20, 20, 30, 0.85); padding: 30px; border-radius: 15px; border: 1px solid #FFD700; box-shadow: 0 10px 30px rgba(255, 215, 0, 0.15); width: 85%; backdrop-filter: blur(5px);">
             <h2 style="margin:0; color:#FFD700; font-weight: 800; letter-spacing: 1px;">🔒 PREMIUM ONLY</h2>
             <p style="color:#FFF; margin-top:15px; font-size: 1.1em; font-weight: bold;">{message}</p>
@@ -31,7 +28,6 @@ def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다.")
     </div>
     """, unsafe_allow_html=True)
 
-# 사이드바 VIP 로그인 로직
 VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
 st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
@@ -115,7 +111,6 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 이름 다시 길게 원상복구
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["🌍 매크로 인사이트", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
     with tab1:
@@ -129,7 +124,6 @@ else:
             except: st.error("오디오 생성 중 오류가 발생했습니다.")
             st.markdown("---")
             
-            # 🔥 [탭 1 블러 로직] 무료 회원은 첫 250글자만 보여주고 짜르기
             if is_vip:
                 st.markdown(report_content)
             else:
@@ -172,13 +166,18 @@ else:
         
         st.subheader(f"💡 {target_stock} [{selected_row.get('섹터', '분류안됨')}]")
         
-        # 🔥 [탭 3 블러 로직] 6위 이하 종목 차트 차단
         if not is_vip and target_stock not in free_tier_stocks:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
         else:
-            st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
-            tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
-            st.write(f"- **기술적 위치:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
+            # 🔥 [V18.0] 1. 상단 핵심 지표 요약 (Metrics Board)
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("🏆 종합 AI 점수", f"{selected_row['AI수급점수']}점", f"모멘텀 {selected_row['랭킹추세']}")
+            col_m2.metric("💰 시가총액", f"{selected_row['시가총액']:,.0f}억")
+            col_m3.metric("📊 PER / ROE", f"{selected_row['PER']:.1f} / {selected_row['ROE']:.1f}%")
+            
+            tech_status = "🟢최적 매수" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴리스크 관리" if selected_row['이격도(%)'] < 95 else "⚫추세 추종")
+            col_m4.metric("📈 20일선 이격도", f"{selected_row['이격도(%)']}%", tech_status, delta_color="off")
+            
             st.markdown("---")
             
             if not df_history.empty:
@@ -191,13 +190,54 @@ else:
                     col1, col2 = st.columns(2)
                     color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
                     with col1:
+                        st.markdown("##### 📈 20일 종가 추이")
                         st.altair_chart(alt.Chart(target_hist).mark_line(color='#1C83E1', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
                     with col2:
+                        st.markdown("##### 📊 주체별 순매수 대금 (백만 원)")
                         st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
+
+            st.markdown("---")
+            
+            # 🔥 [V18.0] 2. 실시간 AI 개별 종목 심층 분석 (구글 검색 탑재)
+            st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단")
+            st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 뉴스와 모멘텀을 즉시 분석합니다.")
+            
+            if st.button(f"✨ '{target_stock}' 실시간 심층 리포트 생성", use_container_width=True):
+                if not client:
+                    st.error("API 키가 설정되지 않았습니다.")
+                else:
+                    with st.spinner(f"구글 검색으로 '{target_stock}'의 최신 뉴스 및 모멘텀을 수집 중입니다..."):
+                        today_str = datetime.now().strftime("%Y년 %m월 %d일")
+                        prompt = f"""
+                        너는 여의도 최고의 퀀트 애널리스트야. 오늘은 {today_str}이야.
+                        종목명 '{target_stock}'(섹터: {selected_row.get('섹터', '알수없음')})에 대해 '구글 검색'을 반드시 돌려서 아래 양식으로 밀도 있는 브리핑을 해줘.
+                        
+                        1. 📰 최신 모멘텀 & 핵심 뉴스: 구글 검색을 통해 알아낸 이 종목의 가장 최근(오늘 또는 이번 주)의 호재/악재 이슈
+                        2. 💡 수급 및 펀더멘털 평가: PER {selected_row['PER']}, ROE {selected_row['ROE']} 지표와 최근 기관/외인 수급 관점에서의 매력도
+                        3. 🎯 단기 투자 전략: 현재 시점에서의 매수/보유/관망 의견과 주의점
+                        """
+                        try:
+                            config = types.GenerateContentConfig(tools=[{"google_search": {}}])
+                            response = client.models.generate_content_stream(
+                                model='gemini-2.5-flash',
+                                contents=prompt,
+                                config=config
+                            )
+                            
+                            st.success("✅ 실시간 검색 및 분석 완료!")
+                            def stream_generator():
+                                for chunk in response:
+                                    if chunk.text: yield chunk.text
+                                    
+                            # 예쁜 상자 안에 리포트 출력
+                            with st.container():
+                                st.write_stream(stream_generator)
+                                
+                        except Exception as e:
+                            st.error(f"분석 중 오류 발생: {e}")
 
     with tab4:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
-        # 🔥 [탭 4 블러 로직] 무료 회원은 수익률 열람 불가
         if not is_vip:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 VIP 전용입니다.")
         else:
@@ -212,7 +252,6 @@ else:
     with tab5:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
-        # 🔥 [탭 5 블러 로직] 무료 회원은 챗봇 기능 전면 차단
         if not is_vip:
             show_premium_paywall("실시간 AI 퀀트 애널리스트와의 1:1 무제한 질의응답은 VIP 전용입니다.")
         else:
