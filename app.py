@@ -2,13 +2,60 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import os
+import yfinance as yf  # 🔥 야후 파이낸스 라이브러리 추가
 
 # 1. 브라우저 탭 이름 & 아이콘
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
-# 2. 메인 타이틀 & 서브타이틀 (세련된 한국어로 변경)
+# 2. 메인 타이틀 & 서브타이틀
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
+
+# 🔥 [V8.0] 글로벌 매크로 전광판 데이터 수집 (캐싱 적용)
+@st.cache_data(ttl=1800) # 30분마다 갱신 (서버 부하 방지 및 속도 최적화)
+def get_macro_data():
+    tickers = {
+        "🇺🇸 S&P 500": "^GSPC",
+        "🚀 나스닥 (NASDAQ)": "^IXIC",
+        "💵 원/달러 환율": "KRW=X",
+        "📉 미 국채 10년물": "^TNX"
+    }
+    macro_info = {}
+    for name, ticker in tickers.items():
+        try:
+            t = yf.Ticker(ticker)
+            hist = t.history(period="5d")
+            if len(hist) >= 2:
+                current = hist['Close'].iloc[-1]
+                prev = hist['Close'].iloc[-2]
+                change = current - prev
+                change_pct = (change / prev) * 100
+                macro_info[name] = {"value": current, "change": change, "change_pct": change_pct}
+            else:
+                macro_info[name] = None
+        except:
+            macro_info[name] = None
+    return macro_info
+
+# 🔥 [V8.0] 매크로 위젯 화면 출력
+macro_data = get_macro_data()
+st.markdown("### 🌐 Global Macro Dashboard")
+cols = st.columns(4)
+for col, (name, data) in zip(cols, macro_data.items()):
+    if data:
+        if "환율" in name:
+            val_str = f"{data['value']:,.1f}원"
+        elif "국채" in name:
+            val_str = f"{data['value']:.3f}%"
+        else:
+            val_str = f"{data['value']:,.2f}"
+        
+        # Streamlit 내장 metric 위젯 사용 (전일 대비 상승/하락 자동 색상 적용)
+        col.metric(label=name, value=val_str, delta=f"{data['change']:.2f} ({data['change_pct']:.2f}%)")
+    else:
+        col.metric(label=name, value="데이터 지연", delta="-")
+        
+st.markdown("---")
 
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
@@ -43,7 +90,7 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 3. 탭 이름 한국어로 직관적이고 엣지있게
+    # 3. 탭 구성
     tab1, tab2, tab3 = st.tabs([
         "📊 시장 수급 스크리너", 
         f"📈 개별 종목 정밀 분석", 
@@ -72,7 +119,6 @@ else:
                                              "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%",
                                              "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
-        # 4. 표 컬럼 이름 깔끔한 한국어로 변경
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
             column_config={
@@ -104,7 +150,6 @@ else:
         st.subheader(f"💡 {st.session_state.selected_stock} : 수급 및 기술적 분석")
         st.write(f"- **종합 AI 점수:** **{selected_row['AI수급점수']} / 100** (전일대비 모멘텀: {selected_row['랭킹추세']})")
         
-        # 5. 진단 멘트를 세련된 트레이딩 용어로 (한국어)
         tech_status = "🟢 최적 매수 구간" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴 리스크 관리 구간" if selected_row['이격도(%)'] < 95 else "⚫ 추세 추종 구간")
         st.write(f"- **기술적 위치:** 20일선 이격도 {selected_row['이격도(%)']}% ({tech_status}) / 5일 손바뀜 {selected_row['손바뀜(%)']}%")
         
