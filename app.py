@@ -3,13 +3,10 @@ import pandas as pd
 import altair as alt
 import os
 import yfinance as yf
-import io
-import requests
-import base64
 from google import genai
 from google.genai import types
 from datetime import datetime
-import plotly.express as px  # 🔥 [V20.0] 히트맵 차트를 위한 라이브러리 추가
+import plotly.express as px
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -48,54 +45,10 @@ st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫
 
 # --- AI API 설정 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
-tts_api_key = st.secrets.get("GOOGLE_TTS_API_KEY", os.environ.get("GOOGLE_TTS_API_KEY"))
 
 if gemini_key:
     client = genai.Client(api_key=gemini_key)
 else: client = None
-
-# [V19.2] 글자 수 제한을 무시하는 깍둑썰기(Chunking) 오디오 생성 함수 (유지)
-@st.cache_data(show_spinner=False)
-def generate_audio_premium(text):
-    if not tts_api_key:
-        print("⚠️ 에러: TTS API 키가 없습니다.")
-        return None
-        
-    url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={tts_api_key}"
-    headers = {"Content-Type": "application/json; charset=utf-8"}
-    
-    chunk_size = 1000
-    text_chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-    combined_audio = b""
-    
-    for i, chunk in enumerate(text_chunks):
-        data = {
-            "input": {"text": chunk},
-            "voice": {
-                "languageCode": "ko-KR", 
-                # 👇 찾아내신 구글의 최신 LLM 기반 음성 모델로 업그레이드!
-                # (구글 콘솔의 '음성 목록'에서 마음에 드는 Chirp 목소리 이름을 넣으시면 됩니다. 통상적으로 아래와 같은 형식을 띱니다.)
-                "name": "ko-KR-Chirp3-HD-Sulafat" 
-            },
-            "audioConfig": {
-                "audioEncoding": "MP3"
-            }
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, json=data)
-            if response.status_code == 200:
-                audio_base64 = response.json().get("audioContent")
-                if audio_base64:
-                    combined_audio += base64.b64decode(audio_base64)
-            else:
-                print(f"⚠️ 구글 TTS API 거절됨 (조각 {i+1}): {response.text}")
-                return None
-        except Exception as e:
-            print(f"⚠️ 통신 에러 발생: {e}")
-            return None
-            
-    return combined_audio
 
 @st.cache_data(ttl=1800)
 def get_macro_data():
@@ -153,32 +106,22 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 [V20.0 핵심] 탭이 6개로 늘어났습니다! (2번째에 섹터 히트맵 추가)
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
+    # 🔥 [오디오 제거 완료] 군더더기 없이 리포트 텍스트만 깔끔하게 출력
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
         if os.path.exists("report.md"):
             with open("report.md", "r", encoding="utf-8") as f: report_content = f.read()
             
             if is_vip:
-                st.markdown("##### 🎧 프리미엄 시황 라디오 듣기")
-                clean_text = report_content.replace("#", "").replace("*", "").replace("-", " ").replace("🌐", "").replace("🌪️", "").replace("🎯", "")
-                
-                audio_data = generate_audio_premium(clean_text)
-                if audio_data:
-                    st.audio(audio_data, format="audio/mp3")
-                else:
-                    st.error("오디오 생성 중 오류가 발생했습니다. 사이드바의 API키를 확인해주세요.")
-                st.markdown("---")
                 st.markdown(report_content)
             else:
                 teaser_text = report_content[:250] + "...\n\n"
                 st.markdown(teaser_text)
-                show_premium_paywall("심층 매크로 분석 리포트 전문과 프리미엄 아나운서 오디오는 VIP 전용입니다.")
+                show_premium_paywall("심층 매크로 분석 리포트 전문은 VIP 전용입니다.")
         else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
-    # 🔥 [V20.0 핵심] 2번째 탭: 섹터 히트맵(Treemap)
     with tab2:
         st.subheader("🗺️ 시가총액 & 수급 섹터 히트맵")
         st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
@@ -187,25 +130,21 @@ else:
             show_premium_paywall("전체 시장의 섹터별 자금 흐름을 조망하는 히트맵 분석은 VIP 전용입니다.")
         else:
             if not df_summary.empty:
-                # 데이터 전처리: 결측치 제거 및 숫자로 확실히 변환
                 df_hm = df_summary.copy()
                 df_hm['섹터'] = df_hm['섹터'].fillna("기타")
                 df_hm['시가총액'] = pd.to_numeric(df_hm['시가총액'], errors='coerce').fillna(0)
                 df_hm['등락률'] = pd.to_numeric(df_hm['등락률'], errors='coerce').fillna(0)
                 
-                # 히트맵(Treemap) 그리기
                 fig = px.treemap(
                     df_hm,
                     path=[px.Constant("국내 증시 주요 섹터"), '섹터', '종목명'],
                     values='시가총액',
                     color='등락률',
-                    # 🟦 파란색(하락) -> ⬛ 검은색(보합) -> 🟥 빨간색(상승) (한국 증시 패치)
                     color_continuous_scale=['#0066FF', '#1E1E2E', '#FF3333'], 
                     color_continuous_midpoint=0,
                     custom_data=['등락률', 'AI수급점수']
                 )
                 
-                # 호버(마우스 오버) 텍스트 및 박스 디자인 다듬기
                 fig.update_traces(
                     texttemplate="<b>%{label}</b><br>%{customdata[0]:.2f}%",
                     hovertemplate="<b>%{label}</b><br>시가총액: %{value:,.0f}억<br>등락률: %{customdata[0]:.2f}%<br>AI점수: %{customdata[1]}점<extra></extra>",
@@ -216,14 +155,13 @@ else:
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                     height=550,
-coloraxis_showscale=False  # 🔥 이 한 줄이 컬러맵을 없앱니다!
+                    coloraxis_showscale=False
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # 기존의 수급 스크리너는 탭 3으로 밀려납니다.
     with tab3:
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
         def color_fluctuation(val):
