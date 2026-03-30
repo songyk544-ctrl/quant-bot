@@ -3,7 +3,7 @@ name: Quant Data Scraper
 on:
   schedule:
     # 매주 월~금, 한국 시간 오후 4시 30분 (UTC 기준 07:30)에 자동 실행
-    - cron: '30 7 * * 1-5'
+    - cron: '37 7 * * 1-5'
   workflow_dispatch: 
 
 jobs:
