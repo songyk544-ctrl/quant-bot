@@ -186,43 +186,60 @@ def run_scraper():
     else:
         df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
 
+   
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
     eval_msg = ""
-    
+    is_already_updated_today = False  # 🔥 오늘 이미 봇이 돌았는지 확인하는 방어막
+
     if os.path.exists(portfolio_file):
         try:
             df_port = pd.read_csv(portfolio_file)
-            returns, eval_details = [], []
-            for _, row in df_port.iterrows():
-                p_stock = row['종목명']
-                p_buy = row['매수가']
-                today_row = df_final[df_final['종목명'] == p_stock]
-                p_sell = today_row.iloc[0]['현재가'] if not today_row.empty else p_buy
-                ret = ((p_sell - p_buy) / p_buy) * 100
-                returns.append(ret)
-                mark = "🔴" if ret > 0 else "🔵" if ret < 0 else "⚫"
-                eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
-            
-            daily_ret = sum(returns) / len(returns) if returns else 0
-            cum_ret = daily_ret
-            if os.path.exists(perf_file):
-                df_perf = pd.read_csv(perf_file)
-                if not df_perf.empty:
-                    df_perf = df_perf[df_perf['날짜'] != today_date]
-                    cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
-                else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-            else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+            last_date = str(df_port['날짜'].iloc[0]) if not df_port.empty and '날짜' in df_port.columns else ""
+
+            # 🚨 [핵심 방어막] 오늘 이미 계산했으면 평가를 건너뜁니다.
+            if last_date == today_date:
+                is_already_updated_today = True
+                print("💡 오늘 이미 포트폴리오가 갱신되었습니다. 수익률 0% 덮어쓰기를 방지합니다.")
+            else:
+                returns, eval_details = [], []
+                for _, row in df_port.iterrows():
+                    p_stock = row['종목명']
+                    p_buy = row['매수가']
+                    today_row = df_final[df_final['종목명'] == p_stock]
+                    p_sell = today_row.iloc[0]['현재가'] if not today_row.empty else p_buy
+                    ret = ((p_sell - p_buy) / p_buy) * 100
+                    returns.append(ret)
+                    mark = "🔴" if ret > 0 else "🔵" if ret < 0 else "⚫"
+                    eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
                 
-            new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
-            pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
-            eval_msg = "📝 *[전일 추천 Top 3 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 수익률: {daily_ret:+.2f}%*\n\n"
+                daily_ret = sum(returns) / len(returns) if returns else 0
+                cum_ret = daily_ret
+                if os.path.exists(perf_file):
+                    df_perf = pd.read_csv(perf_file)
+                    if not df_perf.empty:
+                        df_perf = df_perf[df_perf['날짜'] != today_date]
+                        cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
+                    else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+                else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+                    
+                new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
+                pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
+                eval_msg = "📝 *[전일 추천 Top 3 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 수익률: {daily_ret:+.2f}%*\n\n"
         except: pass
 
-    top3_names = df_final.head(3)['종목명'].tolist()
-    top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
-    top3_df['날짜'] = today_date
-    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+    # 🔥 오늘 처음 도는 경우에만 새 종목으로 교체!
+    if not is_already_updated_today:
+        top3_names = df_final.head(3)['종목명'].tolist()
+        top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
+        top3_df['날짜'] = today_date
+        top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+    else:
+        # 이미 돌았다면 기존 포트폴리오 유지 (텔레그램 전송용)
+        top3_names = df_port['종목명'].tolist() if 'df_port' in locals() and not df_port.empty else df_final.head(3)['종목명'].tolist()
+
+  
+
 
     if GEMINI_API_KEY:
         try:
