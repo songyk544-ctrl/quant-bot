@@ -10,7 +10,7 @@ import plotly.express as px
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
-# 고급스러운 블러(Blur) 페이월 UI 함수
+# --- 🔥 고급스러운 블러(Blur) 페이월 UI 함수 ---
 def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
     st.markdown(f"""
     <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
@@ -28,6 +28,7 @@ def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다.")
     </div>
     """, unsafe_allow_html=True)
 
+# --- 사이드바 VIP 로그인 로직 ---
 VIP_CODE = "ALPHA2026"
 st.sidebar.markdown("## 💎 프리미엄 멤버십")
 st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
@@ -108,7 +109,7 @@ else:
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
 
-    # 🔥 [오디오 제거 완료] 군더더기 없이 리포트 텍스트만 깔끔하게 출력
+    # --- 탭 1: 매크로 인사이트 ---
     with tab1:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
         if os.path.exists("report.md"):
@@ -122,6 +123,7 @@ else:
                 show_premium_paywall("심층 매크로 분석 리포트 전문은 VIP 전용입니다.")
         else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
+    # --- 탭 2: 섹터 히트맵 ---
     with tab2:
         st.subheader("🗺️ 시가총액 & 수급 섹터 히트맵")
         st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
@@ -155,14 +157,20 @@ else:
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                     height=550,
-                    coloraxis_showscale=False
+                    coloraxis_showscale=False # 컬러맵 제거
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("데이터 대기 중입니다.")
 
+    # --- 탭 3: 수급 스크리너 (토글 추가 완료) ---
     with tab3:
+        # 우측 상단 토글 버튼
+        col_t1, col_t2 = st.columns([0.6, 0.4])
+        with col_t2:
+            show_advanced = st.toggle("🔍 상세 수급/지표 보기", value=False)
+
         def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
         def color_fluctuation(val):
             if pd.isna(val): return 'color: gray;'
@@ -176,10 +184,15 @@ else:
 
         styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
+        # 토글 상태에 따른 컬럼 제어
+        base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
+        advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
+        current_columns = base_columns + advanced_columns if show_advanced else base_columns
+
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
             column_config={"_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("모멘텀"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")},
-            column_order=["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "시가총액", "소속"],
+            column_order=current_columns,
             hide_index=False, use_container_width=True, height=250 if not is_vip else 600
         )
         if event.selection.rows: 
@@ -189,6 +202,7 @@ else:
         if not is_vip:
             show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
+    # --- 탭 4: 종목 분석 ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         target_stock = st.session_state.selected_stock
@@ -269,6 +283,7 @@ else:
                         except Exception as e:
                             st.error(f"분석 중 오류 발생: {e}")
 
+    # --- 탭 5: 백테스트 ---
     with tab5:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         if not is_vip:
@@ -282,6 +297,7 @@ else:
                 else: st.info("⏳ 데이터 대기 중")
             else: st.info("⏳ 데이터 대기 중")
 
+    # --- 탭 6: 챗봇 ---
     with tab6:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
         
