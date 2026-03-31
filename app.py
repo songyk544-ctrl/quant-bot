@@ -100,7 +100,8 @@ else:
             yday_data.columns = ['종목명', '전일_순위']
             df_summary = pd.merge(df_summary, yday_data, on='종목명', how='left')
             df_summary['전일_순위'] = df_summary['전일_순위'].fillna(df_summary['현재_순위'])
-            df_summary['랭킹추세'] = (df_summary['전일_순위'] - df_summary['현재_순위']).apply(lambda x: f"🔺{int(x)}" if x > 0 else (f"🔻{abs(int(x))}" if x < 0 else "-"))
+            # 🔥 [수정 1] 이모지 대신 일반 텍스트 화살표 사용
+            df_summary['랭킹추세'] = (df_summary['전일_순위'] - df_summary['현재_순위']).apply(lambda x: f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-"))
         else: df_summary['랭킹추세'] = "-"
     else: df_summary['랭킹추세'] = "-"
 
@@ -114,7 +115,7 @@ else:
         st.subheader("📰 오늘의 Top-Down 매크로 리포트")
         if os.path.exists("report.md"):
             with open("report.md", "r", encoding="utf-8") as f: report_content = f.read()
-            
+
             if is_vip:
                 st.markdown(report_content)
             else:
@@ -127,7 +128,7 @@ else:
     with tab2:
         st.subheader("🗺️ 시가총액 & 수급 섹터 히트맵")
         st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
-        
+
         if not is_vip:
             show_premium_paywall("전체 시장의 섹터별 자금 흐름을 조망하는 히트맵 분석은 VIP 전용입니다.")
         else:
@@ -136,7 +137,7 @@ else:
                 df_hm['섹터'] = df_hm['섹터'].fillna("기타")
                 df_hm['시가총액'] = pd.to_numeric(df_hm['시가총액'], errors='coerce').fillna(0)
                 df_hm['등락률'] = pd.to_numeric(df_hm['등락률'], errors='coerce').fillna(0)
-                
+
                 fig = px.treemap(
                     df_hm,
                     path=[px.Constant("국내 증시 주요 섹터"), '섹터', '종목명'],
@@ -146,7 +147,7 @@ else:
                     color_continuous_midpoint=0,
                     custom_data=['등락률', 'AI수급점수']
                 )
-                
+
                 fig.update_traces(
                     texttemplate="<b>%{label}</b><br>%{customdata[0]:.2f}%",
                     hovertemplate="<b>%{label}</b><br>시가총액: %{value:,.0f}억<br>등락률: %{customdata[0]:.2f}%<br>AI점수: %{customdata[1]}점<extra></extra>",
@@ -159,7 +160,7 @@ else:
                     height=550,
                     coloraxis_showscale=False # 컬러맵 제거
                 )
-                
+
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("데이터 대기 중입니다.")
@@ -176,13 +177,21 @@ else:
             if pd.isna(val): return 'color: gray;'
             if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
             return 'color: gray;'
+            
+        # 🔥 [수정 2] 모멘텀 전용 색상 함수 (상승은 빨강, 하락은 파랑)
+        def color_momentum(val):
+            if isinstance(val, str):
+                if '▲' in val: return 'color: #FF3333; font-weight: bold;'
+                elif '▼' in val: return 'color: #0066FF; font-weight: bold;'
+            return 'color: gray;'
 
         if is_vip:
             df_display = df_summary.set_index('종목명')
         else:
             df_display = df_summary.head(5).set_index('종목명')
 
-        styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
+        # 🔥 [수정 3] styled_df에 color_momentum 적용
+        styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).map(color_momentum, subset=['랭킹추세']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
         # 토글 상태에 따른 컬럼 제어
         base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
@@ -207,9 +216,9 @@ else:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         target_stock = st.session_state.selected_stock
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
-        
+
         st.subheader(f"💡 {target_stock} [{selected_row.get('섹터', '분류안됨')}]")
-        
+
         if not is_vip and target_stock not in free_tier_stocks:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
         else:
@@ -217,19 +226,19 @@ else:
             col_m1.metric("🏆 종합 AI 점수", f"{selected_row['AI수급점수']}점", f"모멘텀 {selected_row['랭킹추세']}")
             col_m2.metric("💰 시가총액", f"{selected_row['시가총액']:,.0f}억")
             col_m3.metric("📊 PER / ROE", f"{selected_row['PER']:.1f} / {selected_row['ROE']:.1f}%")
-            
+
             tech_status = "🟢최적 매수" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴리스크 관리" if selected_row['이격도(%)'] < 95 else "⚫추세 추종")
             col_m4.metric("📈 20일선 이격도", f"{selected_row['이격도(%)']}%", tech_status, delta_color="off")
-            
+
             st.markdown("---")
-            
+
             if not df_history.empty:
                 target_hist = df_history[df_history['종목명'] == target_stock].copy()
                 if not target_hist.empty:
                     target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
                     target_hist = target_hist.sort_values('일자')
                     target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d')
-                    
+
                     col1, col2 = st.columns(2)
                     color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#FF4B4B', '#1C83E1', '#F1C40F', '#83C9FF'])
                     with col1:
@@ -240,17 +249,17 @@ else:
                         st.altair_chart(alt.Chart(target_hist.melt(id_vars=['일자_표시'], value_vars=['외인', '연기금', '투신', '사모'], var_name='투자자', value_name='금액')).mark_bar().encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('금액:Q', title=None), color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')), order=alt.Order('투자자:N', sort='descending')).properties(height=280), use_container_width=True)
 
             st.markdown("---")
-            
+
             st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단")
             st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 및 글로벌 시황 연계 분석을 제공합니다.")
-            
+
             if st.button(f"✨ '{target_stock}' 실시간 심층 리포트 생성", use_container_width=True):
                 if not client:
                     st.error("AI 챗봇용 제미나이 API 키가 설정되지 않았습니다.")
                 else:
                     with st.spinner(f"구글 검색으로 '{target_stock}'의 매크로 연계 모멘텀을 수집 중입니다..."):
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
-                        
+
                         prompt = f"""
                         너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
                         종목명 '{target_stock}'(섹터: {selected_row.get('섹터', '알수없음')})에 대해 '구글 검색'을 반드시 돌려서 아래 양식으로 밀도 있는 브리핑을 해줘.
@@ -271,15 +280,15 @@ else:
                                 contents=prompt,
                                 config=config
                             )
-                            
+
                             st.success("✅ 실시간 검색 및 탑다운 분석 완료!")
                             def stream_generator():
                                 for chunk in response:
                                     if chunk.text: yield chunk.text
-                                    
+
                             with st.container():
                                 st.write_stream(stream_generator)
-                                
+
                         except Exception as e:
                             st.error(f"분석 중 오류 발생: {e}")
 
@@ -300,7 +309,7 @@ else:
     # --- 탭 6: 챗봇 ---
     with tab6:
         st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
-        
+
         if not is_vip:
             show_premium_paywall("실시간 AI 퀀트 애널리스트와의 1:1 무제한 질의응답은 VIP 전용입니다.")
         else:
@@ -324,7 +333,7 @@ else:
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.caption("🔍 실시간 데이터 기반 추천 질문 (클릭 시 자동 분석)")
                 col1, col2, col3 = st.columns(3)
-                
+
                 if col1.button(f"🔥 {top_sector} 섹터 동향", use_container_width=True):
                     st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 최신 이슈와 어떤 연관성이 있는지 검색해서 분석해줘."
                 if col2.button(f"🏆 {top_stock} 매크로 분석", use_container_width=True):
@@ -341,7 +350,7 @@ else:
                         st.chat_message("user", avatar="👤").write(prompt)
 
                     today_str = datetime.now().strftime("%Y년 %m월 %d일")
-                    
+
                     context_data = df_summary.head(20).to_string(index=False)
                     system_prompt = f"""
                     너는 'DeepAlpha'의 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
@@ -369,14 +378,14 @@ else:
                                     contents=system_prompt,
                                     config=config
                                 )
-                                
+
                                 def stream_generator():
                                     for chunk in response:
                                         if chunk.text:
                                             yield chunk.text
-                                            
+
                                 bot_reply = st.write_stream(stream_generator)
-                                
+
                             except Exception as e:
                                 bot_reply = f"앗, 구글 검색 및 분석 중 에러가 발생했습니다: {e}"
                                 st.write(bot_reply)
