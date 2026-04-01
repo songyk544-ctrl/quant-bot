@@ -92,7 +92,6 @@ df_summary, df_history = load_data()
 if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다.")
 else:
-    # 🔥 [수정 1] 공동 1등 제거 로직 (method='first' 로 강제 차등 순위 부여)
     df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='first', ascending=False).astype(int)
     
     if os.path.exists("score_trend.csv"):
@@ -169,7 +168,6 @@ else:
 
     # --- 탭 3: 수급 스크리너 (프리미엄 하이브리드 UI) ---
     with tab3:
-        # 🔥 [수정 3] 라디오 버튼 대신 세련된 '세그먼트(버튼) 컨트롤' 도입
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
             
@@ -204,14 +202,18 @@ else:
                 f_str = f"{float(row['외인강도(%)']):.1f}%"
                 p_str = f"{float(row['연기금강도(%)']):.1f}%"
                 
-                # 🔥 [수정 2] 순위 뱃지 적용 및 디자인 고도화
+                # 🔥 [수정 1] 순위 변동 기호에 색상 적용
+                rc_color = "#FF4B4B" if "▲" in rank_chg else ("#1C83E1" if "▼" in rank_chg else "#888888")
+                
+                # 🔥 [수정 2] 순위 뱃지에 white-space: nowrap 추가, 폰트 축소 / 순위 변동을 배지 옆으로 이동 / 점수 표기 간소화
                 card_html = f"""
 <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
-<div style="display: flex; flex-direction: column; gap: 6px;">
-<div style="display: flex; align-items: center; gap: 8px;">
-<span style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.75em; font-weight: 800; padding: 3px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🏆 {rank}위</span>
-<span style="font-size: 1.2em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
+<div style="display: flex; flex-direction: column; gap: 8px;">
+<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+<span style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.7em; font-weight: 800; padding: 4px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); white-space: nowrap;">🏆 {rank}위</span>
+<span style="font-size: 0.8em; font-weight: bold; color: {rc_color}; white-space: nowrap;">{rank_chg}</span>
+<span style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
 </div>
 <div><span style="font-size: 0.75em; color: #AAA; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span></div>
 </div>
@@ -221,7 +223,7 @@ else:
 </div>
 </div>
 <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #DDD; background: #181825; padding: 10px; border-radius: 8px; align-items: center; flex-wrap: wrap; gap: 8px;">
-<div>⚡ AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b> <span style="font-size:0.9em; color:#888;">({rank_chg})</span></div>
+<div>⚡ AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b></div>
 <div>🔴외인 <b style="color:#FF4B4B;">{f_str}</b> <span style="color:#444;">|</span> 🔵기금 <b style="color:#1C83E1;">{p_str}</b></div>
 </div>
 </div>
