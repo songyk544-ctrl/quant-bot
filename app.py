@@ -167,7 +167,6 @@ else:
 
     # --- 탭 3: 수급 스크리너 (하이브리드 뷰 탑재) ---
     with tab3:
-        # 🔥 사용자 맞춤형 뷰 스위칭 UI
         view_mode = st.radio("UI 스타일을 선택하세요", ["📱 모바일 카드 뷰 (가독성 100%)", "📊 데이터 표 뷰 (상세 비교/정렬)"], horizontal=True, label_visibility="collapsed")
         
         df_display = df_summary if is_vip else df_summary.head(5)
@@ -175,9 +174,9 @@ else:
         if "카드" in view_mode:
             st.caption("✨ 직관적인 모바일 카드 뷰입니다. 상세 분석은 '종목 분석' 탭의 검색창을 이용해주세요.")
             
-            # 🔥 [최적화 마법] 200개 카드를 단 하나의 HTML 텍스트로 미리 조립해서 속도 저하 원천 차단!
-            cards_html = "<div style='padding: 5px;'>"
+            html_lines = []
             for idx, row in df_display.iterrows():
+                rank = int(row['현재_순위'])
                 name = row['종목명']
                 sector = row['섹터'] if pd.notna(row['섹터']) else "분류안됨"
                 price = f"{row['현재가']:,.0f}"
@@ -189,34 +188,34 @@ else:
                 f_str = f"{float(row['외인강도(%)']):.1f}%"
                 p_str = f"{float(row['연기금강도(%)']):.1f}%"
                 
-                cards_html += f"""
-                <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                        <div>
-                            <span style="font-size: 1.15em; font-weight: 800; color: #FFF;">{name}</span>
-                            <span style="font-size: 0.75em; color: #AAA; margin-left: 8px; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span>
-                        </div>
-                        <div style="text-align: right;">
-                            <span style="font-size: 1.1em; font-weight: 700; color: #FFF;">{price}원</span><br>
-                            <span style="font-size: 0.9em; font-weight: 800; color: {chg_color};">{chg_str}</span>
-                        </div>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #DDD; background: #181825; padding: 10px; border-radius: 8px; align-items: center;">
-                        <div>🏆 AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b> <span style="font-size:0.9em; color:#888;">({rank_chg})</span></div>
-                        <div>🔴외인 <b style="color:#FF4B4B;">{f_str}</b> &nbsp;|&nbsp; 🔵기금 <b style="color:#1C83E1;">{p_str}</b></div>
-                    </div>
-                </div>
-                """
-            cards_html += "</div>"
+                # 🔥 Streamlit 마크다운 버그 방지를 위해 들여쓰기를 원천 제거한 HTML 문자열
+                card_html = f"""
+<div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<div style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{rank}위. {name}</div>
+<div><span style="font-size: 0.75em; color: #AAA; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span></div>
+</div>
+<div style="text-align: right; min-width: 80px;">
+<div style="font-size: 1.1em; font-weight: 700; color: #FFF;">{price}원</div>
+<div style="font-size: 0.9em; font-weight: 800; color: {chg_color};">{chg_str}</div>
+</div>
+</div>
+<div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #DDD; background: #181825; padding: 10px; border-radius: 8px; align-items: center; flex-wrap: wrap; gap: 8px;">
+<div>🏆 AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b> <span style="font-size:0.9em; color:#888;">({rank_chg})</span></div>
+<div>🔴외인 <b style="color:#FF4B4B;">{f_str}</b> <span style="color:#444;">|</span> 🔵기금 <b style="color:#1C83E1;">{p_str}</b></div>
+</div>
+</div>
+"""
+                html_lines.append(card_html.strip())
             
-            # 조립된 HTML을 한 번에 렌더링
-            st.markdown(cards_html, unsafe_allow_html=True)
+            cards_container_html = f"<div style='padding: 5px;'>{''.join(html_lines)}</div>"
+            st.markdown(cards_container_html, unsafe_allow_html=True)
             
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
                 
         else:
-            # 기존의 데이터 표(Table) 뷰
             col_t1, col_t2 = st.columns([0.6, 0.4])
             with col_t2:
                 show_advanced = st.toggle("🔍 상세 수급/지표 보기", value=False)
