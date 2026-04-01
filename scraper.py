@@ -21,7 +21,8 @@ def get_kis_access_token():
     url = f"{URL_BASE}/oauth2/tokenP"
     body = {"grant_type": "client_credentials", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET}
     res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body))
-    return res.json().get("access_token")
+    token = res.json().get("access_token")
+    return token
 
 def safe_float(text):
     try: return float(text.replace(',', '').replace('%', '').strip())
@@ -87,7 +88,6 @@ def get_live_macro_and_news():
     
     return macro_str, news_str
 
-# 🔥 RSI(상대강도지수) 계산 함수
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50.0
@@ -108,18 +108,27 @@ def calculate_rsi(prices, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def run_scraper():
-    # 🔥 [V29.0 핵심] 시작 시 VIX 지수 체크하여 장세 판단
     try:
         vix_hist = yf.Ticker("^VIX").history(period="1d")
         current_vix = float(vix_hist['Close'].iloc[-1])
     except:
-        current_vix = 15.0 # 조회 실패 시 기본값(평온) 부여
+        current_vix = 15.0 
     
     regime = "공포/하락장 방어 모드" if current_vix >= 20 else "평온/강세장 공격 모드"
-    print(f"🚀 수집기 봇 가동 시작 (V29.0 다이내믹 퀀트)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    print(f"🚀 수집기 봇 가동 시작 (V29.2 다이내믹 퀀트 & 안전장치 탑재)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
     
     df_target = get_target_stock_list()
+    print(f"📊 네이버 금융 대상 종목 수집 완료: {len(df_target)}개")
+    
+    if df_target.empty:
+        print("🚨 네이버 크롤링 실패 (0개 수집) - 깃허브 IP 차단 의심")
+        
     token = get_kis_access_token()
+    if token:
+        print("✅ 한투 API 토큰 발급 성공!")
+    else:
+        print("🚨 한투 API 토큰 발급 실패! (API 키 오류 또는 자정 점검 시간)")
+
     headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
     url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
@@ -190,51 +199,27 @@ def run_scraper():
             else:
                 vol_surge = 0
 
-            # ---------------------------------------------------------------------
-            # 🔥 VIX 연동 다이내믹 100점 만점 알고리즘 적용
-            # ---------------------------------------------------------------------
-            
-            # [1. 공통 뼈대] 수급 매집 강도 및 빈도 (총 40점 고정)
             raw_str_sum = (p_str * 3) + (f_str * 2) + (t_str * 1) + (pef_str * 1)
-            strength_score = max(0, min(25, raw_str_sum * 5)) # 매집 강도 최대 25점
-            streak_score = min(15, (pension_streak * 1.5) + (foreign_streak * 1.0)) # 매수 빈도 최대 15점
-            supply_score = strength_score + streak_score # 고정 수급 점수 (최대 40점)
+            strength_score = max(0, min(25, raw_str_sum * 5))
+            streak_score = min(15, (pension_streak * 1.5) + (foreign_streak * 1.0))
+            supply_score = strength_score + streak_score
 
             if current_vix < 20:
-                # 🔵 시나리오 A: 평온/강세장 (공격 스윙 모드)
-                # 모멘텀에 40점 몰빵, 차트 타점 15점, 펀더멘털 방어 5점
-                
-                # 모멘텀 (최대 40점)
                 v_score = 25 if vol_surge >= 200 else (15 if vol_surge >= 150 else (5 if vol_surge >= 100 else (-10 if vol_surge < 50 else 0)))
                 r_score = 15 if 55 <= rsi_val <= 70 else (5 if 50 <= rsi_val < 55 else (-5 if rsi_val > 75 else -10))
                 momentum_score = v_score + r_score
-                
-                # 차트 타점 (최대 15점)
                 tech_score = 15 if 101 <= gap_20 <= 108 else (-20 if gap_20 < 95 else (-10 if gap_20 > 115 else 0))
-                
-                # 펀더멘털 (최대 5점)
                 fund_score = 5 if (row.ROE >= 5 and 0 < row.PER <= 50) else 0
-                
             else:
-                # 🔴 시나리오 B: 공포/하락장 (우량주 방어 모드)
-                # 펀더멘털에 30점 몰빵, 차트 방어 타점 20점, 모멘텀 비중 10점 축소
-                
-                # 펀더멘털 (최대 30점)
                 roe_score = 15 if row.ROE >= 15 else (10 if row.ROE >= 10 else (5 if row.ROE >= 5 else 0))
                 per_score = 15 if 0 < row.PER <= 10 else (10 if 0 < row.PER <= 15 else (5 if 0 < row.PER <= 20 else 0))
                 fund_score = roe_score + per_score
-                
-                # 차트 타점 (최대 20점) - 하락장 특화 (너무 뜬 종목 배제)
                 tech_score = 20 if 98 <= gap_20 <= 103 else (10 if 95 <= gap_20 < 98 else (-20 if gap_20 > 110 else 0))
-                
-                # 모멘텀 (최대 10점) - 거래량 휩소 방지
                 v_score = 5 if vol_surge >= 150 else 0
                 r_score = 5 if 50 <= rsi_val <= 60 else 0
                 momentum_score = v_score + r_score
 
-            # 최종 AI 수급 점수 산출
             ai_score = max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score)))
-            # ---------------------------------------------------------------------
 
             data_list.append({
                 '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
@@ -245,6 +230,13 @@ def run_scraper():
             })
         except: pass 
         time.sleep(0.2) 
+
+    # 🔥 [핵심 방어막] 데이터 0개 수집 시 크래시 방지 및 알림 전송
+    if not data_list:
+        error_msg = "🚨 **[DeepAlpha 봇 에러 알림]**\n데이터 수집 목록이 비어 있어 분석을 중단합니다.\n- 네이버 금융 크롤링 차단 또는 한투 API 서버 점검이 원인일 수 있습니다.\n- 조치: Actions 스케줄을 오전이나 오후 4시로 변경해 보세요."
+        print("❌ 에러: 데이터 수집 0건. 프로그램을 안전하게 종료합니다.")
+        send_telegram_message(error_msg)
+        return
 
     df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
@@ -361,7 +353,6 @@ def run_scraper():
                 
             top3_str = ", ".join(top3_names)
             
-            # 🚨 [커스텀 필요] 스트림릿 주소 변경 잊지 마세요!
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
             tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *오늘의 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
