@@ -92,7 +92,9 @@ df_summary, df_history = load_data()
 if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다.")
 else:
-    df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='min', ascending=False).astype(int)
+    # 🔥 [수정 1] 공동 1등 제거 로직 (method='first' 로 강제 차등 순위 부여)
+    df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='first', ascending=False).astype(int)
+    
     if os.path.exists("score_trend.csv"):
         df_trend = pd.read_csv("score_trend.csv")
         dates = sorted(df_trend['날짜'].unique(), reverse=True)
@@ -165,13 +167,27 @@ else:
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # --- 탭 3: 수급 스크리너 (하이브리드 뷰 탑재) ---
+    # --- 탭 3: 수급 스크리너 (프리미엄 하이브리드 UI) ---
     with tab3:
-        view_mode = st.radio("UI 스타일을 선택하세요", ["📱 모바일 카드 뷰 (가독성 100%)", "📊 데이터 표 뷰 (상세 비교/정렬)"], horizontal=True, label_visibility="collapsed")
+        # 🔥 [수정 3] 라디오 버튼 대신 세련된 '세그먼트(버튼) 컨트롤' 도입
+        if "view_mode" not in st.session_state:
+            st.session_state.view_mode = "card"
+            
+        col_v1, col_v2, col_v3 = st.columns([1, 1, 2])
+        with col_v1:
+            if st.button("📱 모바일 카드 뷰", use_container_width=True, type="primary" if st.session_state.view_mode == "card" else "secondary"):
+                st.session_state.view_mode = "card"
+                st.rerun()
+        with col_v2:
+            if st.button("📊 데이터 표 뷰", use_container_width=True, type="primary" if st.session_state.view_mode == "table" else "secondary"):
+                st.session_state.view_mode = "table"
+                st.rerun()
+        
+        st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
         
         df_display = df_summary if is_vip else df_summary.head(5)
 
-        if "카드" in view_mode:
+        if st.session_state.view_mode == "card":
             st.caption("✨ 직관적인 모바일 카드 뷰입니다. 상세 분석은 '종목 분석' 탭의 검색창을 이용해주세요.")
             
             html_lines = []
@@ -188,12 +204,15 @@ else:
                 f_str = f"{float(row['외인강도(%)']):.1f}%"
                 p_str = f"{float(row['연기금강도(%)']):.1f}%"
                 
-                # 🔥 Streamlit 마크다운 버그 방지를 위해 들여쓰기를 원천 제거한 HTML 문자열
+                # 🔥 [수정 2] 순위 뱃지 적용 및 디자인 고도화
                 card_html = f"""
 <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
 <div style="display: flex; flex-direction: column; gap: 6px;">
-<div style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{rank}위. {name}</div>
+<div style="display: flex; align-items: center; gap: 8px;">
+<span style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.75em; font-weight: 800; padding: 3px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🏆 {rank}위</span>
+<span style="font-size: 1.2em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
+</div>
 <div><span style="font-size: 0.75em; color: #AAA; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span></div>
 </div>
 <div style="text-align: right; min-width: 80px;">
@@ -202,7 +221,7 @@ else:
 </div>
 </div>
 <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #DDD; background: #181825; padding: 10px; border-radius: 8px; align-items: center; flex-wrap: wrap; gap: 8px;">
-<div>🏆 AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b> <span style="font-size:0.9em; color:#888;">({rank_chg})</span></div>
+<div>⚡ AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b> <span style="font-size:0.9em; color:#888;">({rank_chg})</span></div>
 <div>🔴외인 <b style="color:#FF4B4B;">{f_str}</b> <span style="color:#444;">|</span> 🔵기금 <b style="color:#1C83E1;">{p_str}</b></div>
 </div>
 </div>
