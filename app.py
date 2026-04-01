@@ -100,7 +100,6 @@ else:
             yday_data.columns = ['종목명', '전일_순위']
             df_summary = pd.merge(df_summary, yday_data, on='종목명', how='left')
             df_summary['전일_순위'] = df_summary['전일_순위'].fillna(df_summary['현재_순위'])
-            # 🔥 [수정 1] 이모지 대신 일반 텍스트 화살표 사용
             df_summary['랭킹추세'] = (df_summary['전일_순위'] - df_summary['현재_순위']).apply(lambda x: f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-"))
         else: df_summary['랭킹추세'] = "-"
     else: df_summary['랭킹추세'] = "-"
@@ -158,16 +157,15 @@ else:
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                     height=550,
-                    coloraxis_showscale=False # 컬러맵 제거
+                    coloraxis_showscale=False 
                 )
 
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # --- 탭 3: 수급 스크리너 (토글 추가 완료) ---
+    # --- 탭 3: 수급 스크리너 ---
     with tab3:
-        # 우측 상단 토글 버튼
         col_t1, col_t2 = st.columns([0.6, 0.4])
         with col_t2:
             show_advanced = st.toggle("🔍 상세 수급/지표 보기", value=False)
@@ -178,7 +176,6 @@ else:
             if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
             return 'color: gray;'
             
-        # 🔥 [수정 2] 모멘텀 전용 색상 함수 (상승은 빨강, 하락은 파랑)
         def color_momentum(val):
             if isinstance(val, str):
                 if '▲' in val: return 'color: #FF3333; font-weight: bold;'
@@ -190,17 +187,16 @@ else:
         else:
             df_display = df_summary.head(5).set_index('종목명')
 
-        # 🔥 [수정 3] styled_df에 color_momentum 적용
         styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).map(color_momentum, subset=['랭킹추세']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
-        # 토글 상태에 따른 컬럼 제어
         base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
         advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
         current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
-            column_config={"_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("모멘텀"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")},
+            # 🔥 [수정] 랭킹추세의 컬럼명을 '모멘텀'에서 '순위변동'으로 변경하여 직관성 확보
+            column_config={"_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("순위변동"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")},
             column_order=current_columns,
             hide_index=False, use_container_width=True, height=250 if not is_vip else 600
         )
@@ -214,7 +210,16 @@ else:
     # --- 탭 4: 종목 분석 ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
-        target_stock = st.session_state.selected_stock
+        stock_list = df_summary['종목명'].tolist()
+        
+        # 🔥 [수정] 탭 4 내에 종목 검색용 드롭다운(Selectbox) 추가
+        if "selected_stock" not in st.session_state or st.session_state.selected_stock not in stock_list:
+            st.session_state.selected_stock = stock_list[0]
+            
+        selected_stock = st.selectbox("🔍 분석할 종목을 검색/선택하세요", options=stock_list, index=stock_list.index(st.session_state.selected_stock))
+        st.session_state.selected_stock = selected_stock
+        target_stock = selected_stock
+        
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
 
         st.subheader(f"💡 {target_stock} [{selected_row.get('섹터', '분류안됨')}]")
@@ -223,12 +228,25 @@ else:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
         else:
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric("🏆 종합 AI 점수", f"{selected_row['AI수급점수']}점", f"모멘텀 {selected_row['랭킹추세']}")
+            # 🔥 [수정] AI 점수와 함께 전체 순위 표시
+            col_m1.metric(f"🏆 AI 점수 (전체 {int(selected_row['현재_순위'])}위)", f"{selected_row['AI수급점수']}점", f"순위 변동: {selected_row['랭킹추세']}")
             col_m2.metric("💰 시가총액", f"{selected_row['시가총액']:,.0f}억")
             col_m3.metric("📊 PER / ROE", f"{selected_row['PER']:.1f} / {selected_row['ROE']:.1f}%")
 
             tech_status = "🟢최적 매수" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴리스크 관리" if selected_row['이격도(%)'] < 95 else "⚫추세 추종")
             col_m4.metric("📈 20일선 이격도", f"{selected_row['이격도(%)']}%", tech_status, delta_color="off")
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # 🔥 [수정] 수급 주체별 매수 비중과 연속 매수일수 표시 행 추가
+            st.markdown("##### 🛒 주체별 1개월 수급 강도 및 연속 매수")
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            
+            # 외인/연기금은 연속매수 데이터가 있으므로 delta 텍스트에 연속일수 표시
+            col_s1.metric("🔴 외인 강도", f"{selected_row['외인강도(%)']}%", f"{int(selected_row['외인연속'])}일 연속 순매수" if selected_row['외인연속'] > 0 else "연속매수 없음", delta_color="off")
+            col_s2.metric("🔵 연기금 강도", f"{selected_row['연기금강도(%)']}%", f"{int(selected_row['연기금연속'])}일 연속 순매수" if selected_row['연기금연속'] > 0 else "연속매수 없음", delta_color="off")
+            col_s3.metric("🟡 투신 강도", f"{selected_row['투신강도(%)']}%")
+            col_s4.metric("🟣 사모 강도", f"{selected_row['사모강도(%)']}%")
 
             st.markdown("---")
 
@@ -301,8 +319,51 @@ else:
             if os.path.exists("performance_trend.csv"):
                 df_perf = pd.read_csv("performance_trend.csv")
                 if not df_perf.empty:
-                    st.metric(label="현재 누적 수익률", value=f"{df_perf['누적수익률'].iloc[-1]:+.2f}%", delta=f"전일 대비 {df_perf['일간수익률'].iloc[-1]:+.2f}%")
-                    st.altair_chart(alt.Chart(df_perf).mark_area(color=alt.Gradient(gradient='linear', stops=[alt.GradientStop(color='#E74C3C', offset=0), alt.GradientStop(color='transparent', offset=1)], x1=1, x2=1, y1=1, y2=0), line={'color': '#E74C3C'}).encode(x=alt.X('날짜:O', axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('누적수익률:Q', title="누적 수익률 (%)")).properties(height=300), use_container_width=True)
+                    
+                    # 🔥 [수정] 화살표 버그 픽스: 문자열을 제외하고 순수 수익률 '숫자'만 넣어서 Streamlit이 부호를 자동 인식하게 처리
+                    st.metric(
+                        label="현재 포트폴리오 누적 수익률", 
+                        value=f"{df_perf['누적수익률'].iloc[-1]:+.2f}%", 
+                        delta=f"{float(df_perf['일간수익률'].iloc[-1]):.2f}%" # 여기서 +,- 부호에 맞춰 자동으로 정상 화살표가 뜹니다!
+                    )
+                    
+                    # 🔥 [수정] 코스피 지수 크롤링 및 백테스트 오버랩 로직 추가
+                    try:
+                        kospi_hist = yf.Ticker('^KS11').history(period="1y")
+                        if not kospi_hist.empty:
+                            kospi_hist.index = kospi_hist.index.tz_localize(None).normalize()
+                            df_perf['날짜_dt'] = pd.to_datetime(df_perf['날짜'])
+
+                            kospi_rets = []
+                            base_k = None
+                            for d in df_perf['날짜_dt']:
+                                k_sub = kospi_hist[kospi_hist.index <= d]
+                                if not k_sub.empty:
+                                    val = float(k_sub['Close'].iloc[-1])
+                                    if base_k is None: base_k = val
+                                    ret = ((val - base_k) / base_k) * 100
+                                    kospi_rets.append(ret)
+                                else:
+                                    kospi_rets.append(0)
+                        else:
+                            kospi_rets = [0] * len(df_perf)
+                    except:
+                        kospi_rets = [0] * len(df_perf)
+                        
+                    df_perf['KOSPI 누적수익률'] = kospi_rets
+                    df_perf['날짜_표시'] = pd.to_datetime(df_perf['날짜']).dt.strftime('%m/%d')
+                    
+                    # 차트를 그리기 위해 데이터 프레임 형태 변환 (Melt)
+                    df_melt = df_perf.melt(id_vars=['날짜_표시'], value_vars=['누적수익률', 'KOSPI 누적수익률'], var_name='포트폴리오', value_name='수익률(%)')
+                    
+                    # 빨간색(우리 봇)과 회색(코스피)으로 비교 차트 생성
+                    base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
+                        x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
+                        y=alt.Y('수익률(%):Q', title="누적 수익률 (%)"),
+                        color=alt.Color('포트폴리오:N', scale=alt.Scale(domain=['누적수익률', 'KOSPI 누적수익률'], range=['#E74C3C', '#AAAAAA']), legend=alt.Legend(title=None, orient='bottom'))
+                    ).properties(height=300)
+
+                    st.altair_chart(base_chart, use_container_width=True)
                 else: st.info("⏳ 데이터 대기 중")
             else: st.info("⏳ 데이터 대기 중")
 
