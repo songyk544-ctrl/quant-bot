@@ -35,26 +35,40 @@ def safe_api_float(val):
 def get_target_stock_list():
     target_list = []
     noise_keywords = ['KODEX', 'TIGER', 'RISE', 'ACE', 'KBSTAR', 'HANARO', 'KOSEF', 'SOL', 'PLUS', 'ARIRANG', 'ETN', '스팩', '인버스', '레버리지', 'CD금리', 'KOFR']
+    
+    # 🔥 [핵심 픽스] 강력한 스텔스 헤더 적용 (진짜 윈도우 크롬 브라우저인 척 위장)
+    custom_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
+    
     for sosok, market_name in [(0, 'KOSPI'), (1, 'KOSDAQ')]:
         for page in range(1, 7): 
             url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
-            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for tr in soup.select('table.type_2 tbody tr'):
-                tds = tr.select('td')
-                if len(tds) > 11:
-                    name_tag = tr.select_one('a.tltle')
-                    if name_tag:
-                        stock_name = name_tag.text
-                        if any(keyword in stock_name for keyword in noise_keywords): continue
-                        marcap = safe_float(tds[6].text)
-                        if marcap >= 8000:
-                            target_list.append({
-                                '종목명': stock_name, '종목코드': name_tag['href'].split('code=')[-1], 
-                                '소속': market_name, '현재가': int(safe_float(tds[2].text)),
-                                '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
-                                'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text)
-                            })
+            try:
+                res = requests.get(url, headers=custom_headers, timeout=10)
+                soup = BeautifulSoup(res.text, 'html.parser')
+                for tr in soup.select('table.type_2 tbody tr'):
+                    tds = tr.select('td')
+                    if len(tds) > 11:
+                        name_tag = tr.select_one('a.tltle')
+                        if name_tag:
+                            stock_name = name_tag.text
+                            if any(keyword in stock_name for keyword in noise_keywords): continue
+                            marcap = safe_float(tds[6].text)
+                            if marcap >= 8000:
+                                target_list.append({
+                                    '종목명': stock_name, '종목코드': name_tag['href'].split('code=')[-1], 
+                                    '소속': market_name, '현재가': int(safe_float(tds[2].text)),
+                                    '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
+                                    'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text)
+                                })
+            except Exception as e: 
+                print(f"⚠️ 네이버 금융 파싱 에러 (페이지 {page}): {e}")
+            
+            # 🔥 [핵심 픽스] 네이버가 봇 공격으로 오해하지 않도록 페이지마다 0.5초씩 매너 있게 대기
+            time.sleep(0.5) 
+            
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
 def send_telegram_message(text):
@@ -115,14 +129,11 @@ def run_scraper():
         current_vix = 15.0 
     
     regime = "공포/하락장 방어 모드" if current_vix >= 20 else "평온/강세장 공격 모드"
-    print(f"🚀 수집기 봇 가동 시작 (V29.3 무결점 동기화 버전)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    print(f"🚀 수집기 봇 가동 시작 (V29.4 IP차단 우회 스텔스 모드 탑재)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
     
     df_target = get_target_stock_list()
     print(f"📊 네이버 금융 대상 종목 수집 완료: {len(df_target)}개")
     
-    if df_target.empty:
-        print("🚨 네이버 크롤링 실패 (0개 수집) - 깃허브 IP 차단 의심")
-        
     token = get_kis_access_token()
     if token:
         print("✅ 한투 API 토큰 발급 성공!")
@@ -245,8 +256,6 @@ def run_scraper():
 
     today_date = now_kst.strftime("%Y-%m-%d")
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
-    
-    # 🔥 [중요 픽스 1] 랭킹 추세 오류를 막기 위해 app.py와 동일하게 method='first' 적용!
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='first', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
 
@@ -313,8 +322,6 @@ def run_scraper():
             top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
             df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
-            
-            # 🔥 [중요 픽스 2] AI 리포트 프롬프트에 RSI와 거래급증(%) 데이터를 넘겨주어 AI 분석력 극대화!
             df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             
