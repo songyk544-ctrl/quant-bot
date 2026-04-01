@@ -87,7 +87,7 @@ def get_live_macro_and_news():
     
     return macro_str, news_str
 
-# 🔥 [신규 추가] RSI(상대강도지수) 계산 함수
+# 🔥 RSI(상대강도지수) 계산 함수
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50.0
@@ -108,7 +108,16 @@ def calculate_rsi(prices, period=14):
     return 100.0 - (100.0 / (1.0 + rs))
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V15.0 구글검색 Grounding 탑재)...")
+    # 🔥 [V29.0 핵심] 시작 시 VIX 지수 체크하여 장세 판단
+    try:
+        vix_hist = yf.Ticker("^VIX").history(period="1d")
+        current_vix = float(vix_hist['Close'].iloc[-1])
+    except:
+        current_vix = 15.0 # 조회 실패 시 기본값(평온) 부여
+    
+    regime = "공포/하락장 방어 모드" if current_vix >= 20 else "평온/강세장 공격 모드"
+    print(f"🚀 수집기 봇 가동 시작 (V29.0 다이내믹 퀀트)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    
     df_target = get_target_stock_list()
     token = get_kis_access_token()
     headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
@@ -134,14 +143,14 @@ def run_scraper():
             res = requests.get(url_kis, headers=headers, params=params)
             f_amt_sum, p_amt_sum, t_amt_sum, pef_amt_sum = 0, 0, 0, 0
             foreign_streak, pension_streak, f_buying, p_buying = 0, 0, True, True  
-            closes, volumes, vol_tr_sum_5d = [], [], 0 # 🔥 volumes 리스트 추가
+            closes, volumes, vol_tr_sum_5d = [], [], 0
 
             if res.status_code == 200 and res.json().get('rt_cd') == "0":
                 daily_list = res.json().get('output2', [])
                 if daily_list:
                     for idx, daily in enumerate(daily_list[:20]): 
                         close_prc = safe_api_float(daily.get('stck_clpr'))
-                        vol = safe_api_float(daily.get('acml_vol')) # 🔥 당일 거래량 확보
+                        vol = safe_api_float(daily.get('acml_vol'))
                         closes.append(close_prc)
                         volumes.append(vol)
                         
@@ -172,37 +181,66 @@ def run_scraper():
             ma20 = sum(closes) / len(closes) if closes else prpr
             gap_20, marcap_won = (prpr / ma20) * 100 if ma20 else 100, marcap * 100_000_000 
             f_str, p_str, t_str, pef_str = [(amt / marcap_won) * 100 if marcap_won else 0 for amt in (f_amt_sum, p_amt_sum, t_amt_sum, pef_amt_sum)]
-            turnover_rate = (vol_tr_sum_5d / marcap_won) * 100 if marcap_won else 0 
             
-            # 🔥 [신규 모멘텀 로직 1] RSI 14일 추세 점수
-            rsi_val = calculate_rsi(closes[::-1]) # 시간순으로 뒤집어서 계산
-            rsi_score = 15 if 55 <= rsi_val <= 70 else (5 if 50 <= rsi_val < 55 else (-5 if rsi_val > 75 else -10))
-
-            # 🔥 [신규 모멘텀 로직 2] 거래량 급증 (최근 5일 평균 대비 당일 거래량 비율)
+            rsi_val = calculate_rsi(closes[::-1])
             if len(volumes) > 1:
-                past_vols = volumes[1:6] # 전일부터 5일간
+                past_vols = volumes[1:6]
                 avg_vol = sum(past_vols) / len(past_vols) if past_vols else 0
                 vol_surge = (volumes[0] / avg_vol * 100) if avg_vol > 0 else 0
             else:
                 vol_surge = 0
-            vol_score = 20 if vol_surge >= 200 else (10 if vol_surge >= 150 else (-10 if vol_surge < 50 else 0))
 
-            momentum_score = rsi_score + vol_score # 🔥 모멘텀 점수 합산
-
-            tech_score = 15 if 101 <= gap_20 <= 108 else (-20 if gap_20 < 95 else (-10 if gap_20 > 115 else 0))
-            if turnover_rate >= 10: tech_score += 15
-            strength_score = (max(-10, min(10, p_str)) * 20.0) + (max(-5, min(5, t_str)) * 15.0) + (max(-5, min(5, pef_str)) * 15.0) + (max(-5, min(5, f_str)) * 10.0)
-            streak_score = min(20, pension_streak * 3.0) + min(10, foreign_streak * 1.5)
-            fund_score = (10 if row.ROE >= 15 else (5 if row.ROE >= 8 else 0)) + (5 if 0 < row.PER <= 15 else 0)
+            # ---------------------------------------------------------------------
+            # 🔥 VIX 연동 다이내믹 100점 만점 알고리즘 적용
+            # ---------------------------------------------------------------------
             
-            # 🔥 AI 점수에 momentum_score 최종 반영
-            ai_score = max(0, min(100, int(strength_score + streak_score + fund_score + tech_score + momentum_score)))
+            # [1. 공통 뼈대] 수급 매집 강도 및 빈도 (총 40점 고정)
+            raw_str_sum = (p_str * 3) + (f_str * 2) + (t_str * 1) + (pef_str * 1)
+            strength_score = max(0, min(25, raw_str_sum * 5)) # 매집 강도 최대 25점
+            streak_score = min(15, (pension_streak * 1.5) + (foreign_streak * 1.0)) # 매수 빈도 최대 15점
+            supply_score = strength_score + streak_score # 고정 수급 점수 (최대 40점)
+
+            if current_vix < 20:
+                # 🔵 시나리오 A: 평온/강세장 (공격 스윙 모드)
+                # 모멘텀에 40점 몰빵, 차트 타점 15점, 펀더멘털 방어 5점
+                
+                # 모멘텀 (최대 40점)
+                v_score = 25 if vol_surge >= 200 else (15 if vol_surge >= 150 else (5 if vol_surge >= 100 else (-10 if vol_surge < 50 else 0)))
+                r_score = 15 if 55 <= rsi_val <= 70 else (5 if 50 <= rsi_val < 55 else (-5 if rsi_val > 75 else -10))
+                momentum_score = v_score + r_score
+                
+                # 차트 타점 (최대 15점)
+                tech_score = 15 if 101 <= gap_20 <= 108 else (-20 if gap_20 < 95 else (-10 if gap_20 > 115 else 0))
+                
+                # 펀더멘털 (최대 5점)
+                fund_score = 5 if (row.ROE >= 5 and 0 < row.PER <= 50) else 0
+                
+            else:
+                # 🔴 시나리오 B: 공포/하락장 (우량주 방어 모드)
+                # 펀더멘털에 30점 몰빵, 차트 방어 타점 20점, 모멘텀 비중 10점 축소
+                
+                # 펀더멘털 (최대 30점)
+                roe_score = 15 if row.ROE >= 15 else (10 if row.ROE >= 10 else (5 if row.ROE >= 5 else 0))
+                per_score = 15 if 0 < row.PER <= 10 else (10 if 0 < row.PER <= 15 else (5 if 0 < row.PER <= 20 else 0))
+                fund_score = roe_score + per_score
+                
+                # 차트 타점 (최대 20점) - 하락장 특화 (너무 뜬 종목 배제)
+                tech_score = 20 if 98 <= gap_20 <= 103 else (10 if 95 <= gap_20 < 98 else (-20 if gap_20 > 110 else 0))
+                
+                # 모멘텀 (최대 10점) - 거래량 휩소 방지
+                v_score = 5 if vol_surge >= 150 else 0
+                r_score = 5 if 50 <= rsi_val <= 60 else 0
+                momentum_score = v_score + r_score
+
+            # 최종 AI 수급 점수 산출
+            ai_score = max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score)))
+            # ---------------------------------------------------------------------
 
             data_list.append({
                 '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
                 '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                 '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
-                'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1), # 앱 연동을 위해 CSV에 데이터 저장
+                'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
                 '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
         except: pass 
@@ -226,19 +264,17 @@ def run_scraper():
         pd.concat([df_trend_old, df_trend_new], ignore_index=True).to_csv(trend_file, index=False, encoding='utf-8-sig')
     else:
         df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
-
    
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
     eval_msg = ""
-    is_already_updated_today = False  # 🔥 오늘 이미 봇이 돌았는지 확인하는 방어막
+    is_already_updated_today = False
 
     if os.path.exists(portfolio_file):
         try:
             df_port = pd.read_csv(portfolio_file)
             last_date = str(df_port['날짜'].iloc[0]) if not df_port.empty and '날짜' in df_port.columns else ""
 
-            # 🚨 [핵심 방어막] 오늘 이미 계산했으면 평가를 건너뜁니다.
             if last_date == today_date:
                 is_already_updated_today = True
                 print("💡 오늘 이미 포트폴리오가 갱신되었습니다. 수익률 0% 덮어쓰기를 방지합니다.")
@@ -269,18 +305,13 @@ def run_scraper():
                 eval_msg = "📝 *[전일 추천 Top 3 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 수익률: {daily_ret:+.2f}%*\n\n"
         except: pass
 
-    # 🔥 오늘 처음 도는 경우에만 새 종목으로 교체!
     if not is_already_updated_today:
         top3_names = df_final.head(3)['종목명'].tolist()
         top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
         top3_df['날짜'] = today_date
         top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
     else:
-        # 이미 돌았다면 기존 포트폴리오 유지 (텔레그램 전송용)
         top3_names = df_port['종목명'].tolist() if 'df_port' in locals() and not df_port.empty else df_final.head(3)['종목명'].tolist()
-
-  
-
 
     if GEMINI_API_KEY:
         try:
@@ -297,6 +328,7 @@ def run_scraper():
             
             prompt = f"""
             너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야. 절대 과거 시점이라고 말하지 마.
+            현재 VIX 지수는 {current_vix:.2f}로 {regime} 모드로 포트폴리오가 구성되었어.
             
             [1. 파이썬이 수집한 매크로 지표]
             {macro_str}
@@ -315,7 +347,6 @@ def run_scraper():
             텔레그램 메신저로 전송될 내용이므로 마크다운 표(Table, '|' 기호 등)는 절대 사용하지 마.
             """
             
-            # 🔥 [V15.0 핵심] 텔레그램 봇 리포트 생성에도 구글 검색 켜기!
             config = types.GenerateContentConfig(
                 tools=[{"google_search": {}}]
             )
@@ -333,7 +364,7 @@ def run_scraper():
             # 🚨 [커스텀 필요] 스트림릿 주소 변경 잊지 마세요!
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
-            tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n\n{eval_msg}🏆 *오늘의 수급 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+            tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {today_str}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *오늘의 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
         except Exception as e: print(f"⚠️ AI 리포트 생성 실패: {e}")
 
