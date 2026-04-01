@@ -87,6 +87,26 @@ def get_live_macro_and_news():
     
     return macro_str, news_str
 
+# 🔥 [신규 추가] RSI(상대강도지수) 계산 함수
+def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return 50.0
+    diffs = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+    gains = [d if d > 0 else 0 for d in diffs]
+    losses = [-d if d < 0 else 0 for d in diffs]
+    
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    for i in range(period, len(diffs)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
 def run_scraper():
     print("🚀 수집기 봇 가동 시작 (V15.0 구글검색 Grounding 탑재)...")
     df_target = get_target_stock_list()
@@ -114,21 +134,24 @@ def run_scraper():
             res = requests.get(url_kis, headers=headers, params=params)
             f_amt_sum, p_amt_sum, t_amt_sum, pef_amt_sum = 0, 0, 0, 0
             foreign_streak, pension_streak, f_buying, p_buying = 0, 0, True, True  
-            closes, vol_tr_sum_5d = [], 0 
+            closes, volumes, vol_tr_sum_5d = [], [], 0 # 🔥 volumes 리스트 추가
 
             if res.status_code == 200 and res.json().get('rt_cd') == "0":
                 daily_list = res.json().get('output2', [])
                 if daily_list:
                     for idx, daily in enumerate(daily_list[:20]): 
                         close_prc = safe_api_float(daily.get('stck_clpr'))
+                        vol = safe_api_float(daily.get('acml_vol')) # 🔥 당일 거래량 확보
                         closes.append(close_prc)
+                        volumes.append(vol)
+                        
                         f_amt = safe_api_float(daily.get('frgn_ntby_qty')) * close_prc
                         p_amt = safe_api_float(daily.get('fund_ntby_qty')) * close_prc
                         t_amt = safe_api_float(daily.get('ivtr_ntby_qty')) * close_prc
                         pef_amt = safe_api_float(daily.get('pe_fund_ntby_vol')) * close_prc
                         
                         f_amt_sum += f_amt; p_amt_sum += p_amt; t_amt_sum += t_amt; pef_amt_sum += pef_amt
-                        if idx < 5: vol_tr_sum_5d += (safe_api_float(daily.get('acml_vol')) * close_prc)
+                        if idx < 5: vol_tr_sum_5d += (vol * close_prc)
 
                         history_list.append({
                             '종목명': name, '일자': daily.get('stck_bsop_date', ''),
@@ -151,17 +174,35 @@ def run_scraper():
             f_str, p_str, t_str, pef_str = [(amt / marcap_won) * 100 if marcap_won else 0 for amt in (f_amt_sum, p_amt_sum, t_amt_sum, pef_amt_sum)]
             turnover_rate = (vol_tr_sum_5d / marcap_won) * 100 if marcap_won else 0 
             
+            # 🔥 [신규 모멘텀 로직 1] RSI 14일 추세 점수
+            rsi_val = calculate_rsi(closes[::-1]) # 시간순으로 뒤집어서 계산
+            rsi_score = 15 if 55 <= rsi_val <= 70 else (5 if 50 <= rsi_val < 55 else (-5 if rsi_val > 75 else -10))
+
+            # 🔥 [신규 모멘텀 로직 2] 거래량 급증 (최근 5일 평균 대비 당일 거래량 비율)
+            if len(volumes) > 1:
+                past_vols = volumes[1:6] # 전일부터 5일간
+                avg_vol = sum(past_vols) / len(past_vols) if past_vols else 0
+                vol_surge = (volumes[0] / avg_vol * 100) if avg_vol > 0 else 0
+            else:
+                vol_surge = 0
+            vol_score = 20 if vol_surge >= 200 else (10 if vol_surge >= 150 else (-10 if vol_surge < 50 else 0))
+
+            momentum_score = rsi_score + vol_score # 🔥 모멘텀 점수 합산
+
             tech_score = 15 if 101 <= gap_20 <= 108 else (-20 if gap_20 < 95 else (-10 if gap_20 > 115 else 0))
             if turnover_rate >= 10: tech_score += 15
             strength_score = (max(-10, min(10, p_str)) * 20.0) + (max(-5, min(5, t_str)) * 15.0) + (max(-5, min(5, pef_str)) * 15.0) + (max(-5, min(5, f_str)) * 10.0)
             streak_score = min(20, pension_streak * 3.0) + min(10, foreign_streak * 1.5)
             fund_score = (10 if row.ROE >= 15 else (5 if row.ROE >= 8 else 0)) + (5 if 0 < row.PER <= 15 else 0)
-            ai_score = max(0, min(100, int(strength_score + streak_score + fund_score + tech_score)))
+            
+            # 🔥 AI 점수에 momentum_score 최종 반영
+            ai_score = max(0, min(100, int(strength_score + streak_score + fund_score + tech_score + momentum_score)))
 
             data_list.append({
                 '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
                 '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                 '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
+                'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1), # 앱 연동을 위해 CSV에 데이터 저장
                 '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
             })
         except: pass 
