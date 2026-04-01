@@ -115,7 +115,7 @@ def run_scraper():
         current_vix = 15.0 
     
     regime = "공포/하락장 방어 모드" if current_vix >= 20 else "평온/강세장 공격 모드"
-    print(f"🚀 수집기 봇 가동 시작 (V29.2 다이내믹 퀀트 & 안전장치 탑재)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    print(f"🚀 수집기 봇 가동 시작 (V29.3 무결점 동기화 버전)...\n🌍 현재 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
     
     df_target = get_target_stock_list()
     print(f"📊 네이버 금융 대상 종목 수집 완료: {len(df_target)}개")
@@ -231,7 +231,6 @@ def run_scraper():
         except: pass 
         time.sleep(0.2) 
 
-    # 🔥 [핵심 방어막] 데이터 0개 수집 시 크래시 방지 및 알림 전송
     if not data_list:
         error_msg = "🚨 **[DeepAlpha 봇 에러 알림]**\n데이터 수집 목록이 비어 있어 분석을 중단합니다.\n- 네이버 금융 크롤링 차단 또는 한투 API 서버 점검이 원인일 수 있습니다.\n- 조치: Actions 스케줄을 오전이나 오후 4시로 변경해 보세요."
         print("❌ 에러: 데이터 수집 0건. 프로그램을 안전하게 종료합니다.")
@@ -246,7 +245,9 @@ def run_scraper():
 
     today_date = now_kst.strftime("%Y-%m-%d")
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
-    df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
+    
+    # 🔥 [중요 픽스 1] 랭킹 추세 오류를 막기 위해 app.py와 동일하게 method='first' 적용!
+    df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='first', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
 
     trend_file = "score_trend.csv"
@@ -312,7 +313,9 @@ def run_scraper():
             top_N_names = df_final.head(20)['종목명'].tolist()
             latest_date = df_history['일자'].max()
             df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
-            df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
+            
+            # 🔥 [중요 픽스 2] AI 리포트 프롬프트에 RSI와 거래급증(%) 데이터를 넘겨주어 AI 분석력 극대화!
+            df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
             df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
             
             macro_str, news_str = get_live_macro_and_news()
@@ -328,13 +331,13 @@ def run_scraper():
             [2. 파이썬이 수집한 금융 속보]
             {news_str}
             
-            [3. 최상위 20개 종목 수급 데이터]
+            [3. 최상위 20개 종목 수급 및 모멘텀 데이터]
             {df_merged.to_string(index=False)}
 
             다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
             1. 🌐 글로벌 매크로 & 실시간 이벤트 브리핑: 제공된 지표와 더불어 '구글 검색'을 적극 활용하여 오늘 시장을 움직인 가장 중요한 글로벌 뉴스를 브리핑해줘.
-            2. 🌪️ 국내 증시 섹터 및 당일 수급 동향: '섹터' 열을 분석해서 자금 쏠림 현상을 짚어줘.
-            3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 [구글 검색으로 찾은 테마 이슈]와 맞물리는 추천 이유를 작성해.
+            2. 🌪️ 국내 증시 섹터 및 당일 수급/모멘텀 동향: 데이터 표의 'RSI'와 '거래급증(%)'을 적극적으로 참고해서, 시장의 자금이 강하게 쏠리며 폭발하고 있는 섹터를 짚어줘.
+            3. 🎯 내일의 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 [구글 검색으로 찾은 테마 이슈]와 수급/모멘텀 데이터를 맞물려 추천 이유를 작성해.
 [🚨 절대 엄수 사항 - 출력 포맷]
             텔레그램 메신저로 전송될 내용이므로 마크다운 표(Table, '|' 기호 등)는 절대 사용하지 마.
             """
