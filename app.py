@@ -7,6 +7,7 @@ from google import genai
 from google.genai import types
 from datetime import datetime
 import plotly.express as px
+import streamlit.components.v1 as components # 🔥 [V25.0] 자바스크립트 주입용 라이브러리 추가
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -193,9 +194,27 @@ else:
         advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
         current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
+        # 🔥 컬럼이 널뛰기 하지 않도록 width 너비를 명시적으로 꽉 잡아줍니다.
         event = st.dataframe(
             styled_df, on_select="rerun", selection_mode="single-row",
-            column_config={"_index": st.column_config.TextColumn("종목명", width="small"), "섹터": st.column_config.Column("테마/섹터"), "랭킹추세": st.column_config.Column("순위변동"), "AI수급점수": st.column_config.NumberColumn("🏆 AI점수"), "현재가": st.column_config.Column("현재가(원)"), "등락률": st.column_config.Column("등락(%)"), "외인강도(%)": st.column_config.Column("외인(1M)"), "연기금강도(%)": st.column_config.Column("연기금(1M)"), "이격도(%)": st.column_config.Column("이격도(20D)"), "손바뀜(%)": st.column_config.Column("손바뀜(5D)"), "투신강도(%)": st.column_config.Column("투신(1M)"), "사모강도(%)": st.column_config.Column("사모(1M)"), "외인연속": st.column_config.NumberColumn("외인연속", format="%d일"), "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일"), "시가총액": st.column_config.Column("시총(억)"), "소속": st.column_config.Column("시장")},
+            column_config={
+                "_index": st.column_config.TextColumn("종목명", width="small"), 
+                "섹터": st.column_config.Column("테마/섹터", width="medium"), 
+                "랭킹추세": st.column_config.Column("순위변동", width="small"), 
+                "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small"), 
+                "현재가": st.column_config.Column("현재가(원)", width="small"), 
+                "등락률": st.column_config.Column("등락(%)", width="small"), 
+                "외인강도(%)": st.column_config.Column("외인(1M)", width="small"), 
+                "연기금강도(%)": st.column_config.Column("연기금(1M)", width="small"), 
+                "이격도(%)": st.column_config.Column("이격도(20D)", width="small"), 
+                "손바뀜(%)": st.column_config.Column("손바뀜(5D)", width="small"), 
+                "투신강도(%)": st.column_config.Column("투신(1M)", width="small"), 
+                "사모강도(%)": st.column_config.Column("사모(1M)", width="small"), 
+                "외인연속": st.column_config.NumberColumn("외인연속", format="%d일", width="small"), 
+                "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일", width="small"), 
+                "시가총액": st.column_config.Column("시총(억)", width="small"), 
+                "소속": st.column_config.Column("시장", width="small")
+            },
             column_order=current_columns,
             hide_index=False, use_container_width=True, height=250 if not is_vip else 600
         )
@@ -238,7 +257,6 @@ else:
             st.markdown("##### 🛒 주체별 1개월 수급 강도 및 연속 매수")
             col_s1, col_s2, col_s3, col_s4 = st.columns(4)
             
-            # 🔥 [수정 1] 수급 강도 소수점 1자리로 포맷팅
             col_s1.metric("🔴 외인 강도", f"{float(selected_row['외인강도(%)']):.1f}%", f"{int(selected_row['외인연속'])}일 연속 순매수" if selected_row['외인연속'] > 0 else "연속매수 없음", delta_color="off")
             col_s2.metric("🔵 연기금 강도", f"{float(selected_row['연기금강도(%)']):.1f}%", f"{int(selected_row['연기금연속'])}일 연속 순매수" if selected_row['연기금연속'] > 0 else "연속매수 없음", delta_color="off")
             col_s3.metric("🟡 투신 강도", f"{float(selected_row['투신강도(%)']):.1f}%")
@@ -306,7 +324,7 @@ else:
                         except Exception as e:
                             st.error(f"분석 중 오류 발생: {e}")
 
-    # --- 탭 5: 백테스트 (KOSPI 벤치마크 & 영점 조절 추가) ---
+    # --- 탭 5: 백테스트 ---
     with tab5:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         if not is_vip:
@@ -315,24 +333,17 @@ else:
             if os.path.exists("performance_trend.csv"):
                 df_perf = pd.read_csv("performance_trend.csv")
                 if not df_perf.empty:
-                    
-                    # 데이터 준비 및 날짜 파싱
                     df_perf['날짜_dt'] = pd.to_datetime(df_perf['날짜'])
                     min_date = df_perf['날짜_dt'].min().date()
                     max_date = df_perf['날짜_dt'].max().date()
                     
-                    # 🔥 [수정 3] 영점 조절용 날짜 선택기 추가
                     selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
-                    
-                    # 선택된 날짜 이후 데이터 필터링
                     df_filtered = df_perf[df_perf['날짜_dt'].dt.date >= selected_start_date].copy()
                     
                     if not df_filtered.empty:
-                        # 포트폴리오 누적수익률 0점 조절
                         base_port_ret = df_filtered.iloc[0]['누적수익률']
                         df_filtered['조정_포트수익률'] = df_filtered['누적수익률'] - base_port_ret
                         
-                        # KOSPI 지수 데이터 연동 및 0점 조절
                         try:
                             kospi_hist = yf.Ticker('^KS11').history(period="1y")
                             kospi_hist.index = kospi_hist.index.tz_localize(None).normalize()
@@ -353,7 +364,6 @@ else:
                         except:
                             df_filtered['KOSPI 누적수익률'] = 0
                         
-                        # 지표 (Metric) 출력부
                         col_b1, col_b2 = st.columns(2)
                         current_port_ret = df_filtered['조정_포트수익률'].iloc[-1]
                         current_kospi_ret = df_filtered['KOSPI 누적수익률'].iloc[-1]
@@ -365,24 +375,14 @@ else:
                             port_daily_diff = 0.0
                             kospi_daily_diff = 0.0
 
-                        # 🔥 [수정 2] KOSPI 지수 메트릭 동시 노출
-                        col_b1.metric(
-                            label="🏆 DeepAlpha 누적 수익률", 
-                            value=f"{current_port_ret:+.2f}%", 
-                            delta=f"{port_daily_diff:.2f}" # 화살표 버그 방지를 위해 % 기호는 제거하고 숫자만 전달
-                        )
-                        col_b2.metric(
-                            label="📉 KOSPI 누적 수익률", 
-                            value=f"{current_kospi_ret:+.2f}%", 
-                            delta=f"{kospi_daily_diff:.2f}"
-                        )
+                        col_b1.metric(label="🏆 DeepAlpha 누적 수익률", value=f"{current_port_ret:+.2f}%", delta=f"{port_daily_diff:.2f}")
+                        col_b2.metric(label="📉 KOSPI 누적 수익률", value=f"{current_kospi_ret:+.2f}%", delta=f"{kospi_daily_diff:.2f}")
                         
                         st.markdown("<br>", unsafe_allow_html=True)
                         
                         df_filtered['날짜_표시'] = df_filtered['날짜_dt'].dt.strftime('%m/%d')
                         df_melt = df_filtered.melt(id_vars=['날짜_표시'], value_vars=['조정_포트수익률', 'KOSPI 누적수익률'], var_name='포트폴리오', value_name='수익률(%)')
                         
-                        # 포트폴리오는 빨간색, KOSPI는 회색 선으로 오버랩
                         base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
                             x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
                             y=alt.Y('수익률(%):Q', title="누적 수익률 (%)"),
@@ -480,3 +480,17 @@ else:
                                 st.write(bot_reply)
 
                         st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+
+# 🔥 [V25.0 핵심] 모바일 화면 편의성을 위한 '맨 위로 가기' JS 플로팅 버튼 주입
+components.html(
+    """
+    <script>
+    const btn = window.parent.document.createElement('button');
+    btn.innerHTML = '⬆';
+    btn.style.cssText = 'position:fixed; bottom:25px; right:20px; width:45px; height:45px; border-radius:50%; background-color:#1C83E1; color:white; font-size:20px; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); cursor:pointer; z-index:99999; display:flex; align-items:center; justify-content:center;';
+    btn.onclick = function() { window.parent.scrollTo({top:0, behavior:'smooth'}); };
+    window.parent.document.body.appendChild(btn);
+    </script>
+    """,
+    height=0, width=0
+)
