@@ -7,7 +7,7 @@ from google import genai
 from google.genai import types
 from datetime import datetime
 import plotly.express as px
-import streamlit.components.v1 as components # 🔥 [V25.0] 자바스크립트 주입용 라이브러리 추가
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -165,65 +165,111 @@ else:
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # --- 탭 3: 수급 스크리너 ---
+    # --- 탭 3: 수급 스크리너 (하이브리드 뷰 탑재) ---
     with tab3:
-        col_t1, col_t2 = st.columns([0.6, 0.4])
-        with col_t2:
-            show_advanced = st.toggle("🔍 상세 수급/지표 보기", value=False)
+        # 🔥 사용자 맞춤형 뷰 스위칭 UI
+        view_mode = st.radio("UI 스타일을 선택하세요", ["📱 모바일 카드 뷰 (가독성 100%)", "📊 데이터 표 뷰 (상세 비교/정렬)"], horizontal=True, label_visibility="collapsed")
+        
+        df_display = df_summary if is_vip else df_summary.head(5)
 
-        def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
-        def color_fluctuation(val):
-            if pd.isna(val): return 'color: gray;'
-            if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
-            return 'color: gray;'
+        if "카드" in view_mode:
+            st.caption("✨ 직관적인 모바일 카드 뷰입니다. 상세 분석은 '종목 분석' 탭의 검색창을 이용해주세요.")
             
-        def color_momentum(val):
-            if isinstance(val, str):
-                if '▲' in val: return 'color: #FF3333; font-weight: bold;'
-                elif '▼' in val: return 'color: #0066FF; font-weight: bold;'
-            return 'color: gray;'
-
-        if is_vip:
-            df_display = df_summary.set_index('종목명')
+            # 🔥 [최적화 마법] 200개 카드를 단 하나의 HTML 텍스트로 미리 조립해서 속도 저하 원천 차단!
+            cards_html = "<div style='padding: 5px;'>"
+            for idx, row in df_display.iterrows():
+                name = row['종목명']
+                sector = row['섹터'] if pd.notna(row['섹터']) else "분류안됨"
+                price = f"{row['현재가']:,.0f}"
+                chg = float(row['등락률'])
+                chg_color = "#FF4B4B" if chg > 0 else "#1C83E1" if chg < 0 else "#AAAAAA"
+                chg_str = f"▲ {chg:.2f}%" if chg > 0 else f"▼ {abs(chg):.2f}%" if chg < 0 else "0.00%"
+                ai_score = int(row['AI수급점수'])
+                rank_chg = row['랭킹추세']
+                f_str = f"{float(row['외인강도(%)']):.1f}%"
+                p_str = f"{float(row['연기금강도(%)']):.1f}%"
+                
+                cards_html += f"""
+                <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <div>
+                            <span style="font-size: 1.15em; font-weight: 800; color: #FFF;">{name}</span>
+                            <span style="font-size: 0.75em; color: #AAA; margin-left: 8px; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="font-size: 1.1em; font-weight: 700; color: #FFF;">{price}원</span><br>
+                            <span style="font-size: 0.9em; font-weight: 800; color: {chg_color};">{chg_str}</span>
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #DDD; background: #181825; padding: 10px; border-radius: 8px; align-items: center;">
+                        <div>🏆 AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b> <span style="font-size:0.9em; color:#888;">({rank_chg})</span></div>
+                        <div>🔴외인 <b style="color:#FF4B4B;">{f_str}</b> &nbsp;|&nbsp; 🔵기금 <b style="color:#1C83E1;">{p_str}</b></div>
+                    </div>
+                </div>
+                """
+            cards_html += "</div>"
+            
+            # 조립된 HTML을 한 번에 렌더링
+            st.markdown(cards_html, unsafe_allow_html=True)
+            
+            if not is_vip:
+                show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
+                
         else:
-            df_display = df_summary.head(5).set_index('종목명')
+            # 기존의 데이터 표(Table) 뷰
+            col_t1, col_t2 = st.columns([0.6, 0.4])
+            with col_t2:
+                show_advanced = st.toggle("🔍 상세 수급/지표 보기", value=False)
 
-        styled_df = df_display.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).map(color_momentum, subset=['랭킹추세']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
+            def color_score(val): return f'color: {"#E74C3C" if val >= 80 else "#F1C40F" if val >= 60 else "gray"}; font-weight: bold;'
+            def color_fluctuation(val):
+                if pd.isna(val): return 'color: gray;'
+                if isinstance(val, (int, float)): return 'color: #FF3333; font-weight: bold;' if val > 0 else ('color: #0066FF; font-weight: bold;' if val < 0 else 'color: gray;')
+                return 'color: gray;'
+                
+            def color_momentum(val):
+                if isinstance(val, str):
+                    if '▲' in val: return 'color: #FF3333; font-weight: bold;'
+                    elif '▼' in val: return 'color: #0066FF; font-weight: bold;'
+                return 'color: gray;'
 
-        base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
-        advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
-        current_columns = base_columns + advanced_columns if show_advanced else base_columns
+            df_display_table = df_display.set_index('종목명')
 
-        # 🔥 컬럼이 널뛰기 하지 않도록 width 너비를 명시적으로 꽉 잡아줍니다.
-        event = st.dataframe(
-            styled_df, on_select="rerun", selection_mode="single-row",
-            column_config={
-                "_index": st.column_config.TextColumn("종목명", width="small"), 
-                "섹터": st.column_config.Column("테마/섹터", width="medium"), 
-                "랭킹추세": st.column_config.Column("순위변동", width="small"), 
-                "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small"), 
-                "현재가": st.column_config.Column("현재가(원)", width="small"), 
-                "등락률": st.column_config.Column("등락(%)", width="small"), 
-                "외인강도(%)": st.column_config.Column("외인(1M)", width="small"), 
-                "연기금강도(%)": st.column_config.Column("연기금(1M)", width="small"), 
-                "이격도(%)": st.column_config.Column("이격도(20D)", width="small"), 
-                "손바뀜(%)": st.column_config.Column("손바뀜(5D)", width="small"), 
-                "투신강도(%)": st.column_config.Column("투신(1M)", width="small"), 
-                "사모강도(%)": st.column_config.Column("사모(1M)", width="small"), 
-                "외인연속": st.column_config.NumberColumn("외인연속", format="%d일", width="small"), 
-                "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일", width="small"), 
-                "시가총액": st.column_config.Column("시총(억)", width="small"), 
-                "소속": st.column_config.Column("시장", width="small")
-            },
-            column_order=current_columns,
-            hide_index=False, use_container_width=True, height=250 if not is_vip else 600
-        )
-        if event.selection.rows: 
-            selected_name = df_display.iloc[event.selection.rows[0]].name
-            st.session_state.selected_stock = selected_name
+            styled_df = df_display_table.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).map(color_momentum, subset=['랭킹추세']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
 
-        if not is_vip:
-            show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
+            base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
+            advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
+            current_columns = base_columns + advanced_columns if show_advanced else base_columns
+
+            event = st.dataframe(
+                styled_df, on_select="rerun", selection_mode="single-row",
+                column_config={
+                    "_index": st.column_config.TextColumn("종목명", width="small"), 
+                    "섹터": st.column_config.Column("테마/섹터", width="medium"), 
+                    "랭킹추세": st.column_config.Column("순위변동", width="small"), 
+                    "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small"), 
+                    "현재가": st.column_config.Column("현재가(원)", width="small"), 
+                    "등락률": st.column_config.Column("등락(%)", width="small"), 
+                    "외인강도(%)": st.column_config.Column("외인(1M)", width="small"), 
+                    "연기금강도(%)": st.column_config.Column("연기금(1M)", width="small"), 
+                    "이격도(%)": st.column_config.Column("이격도(20D)", width="small"), 
+                    "손바뀜(%)": st.column_config.Column("손바뀜(5D)", width="small"), 
+                    "투신강도(%)": st.column_config.Column("투신(1M)", width="small"), 
+                    "사모강도(%)": st.column_config.Column("사모(1M)", width="small"), 
+                    "외인연속": st.column_config.NumberColumn("외인연속", format="%d일", width="small"), 
+                    "연기금연속": st.column_config.NumberColumn("기금연속", format="%d일", width="small"), 
+                    "시가총액": st.column_config.Column("시총(억)", width="small"), 
+                    "소속": st.column_config.Column("시장", width="small")
+                },
+                column_order=current_columns,
+                hide_index=False, use_container_width=True, height=250 if not is_vip else 600
+            )
+            if event.selection.rows: 
+                selected_name = df_display_table.iloc[event.selection.rows[0]].name
+                st.session_state.selected_stock = selected_name
+
+            if not is_vip:
+                show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
     # --- 탭 4: 종목 분석 ---
     with tab4:
@@ -481,7 +527,7 @@ else:
 
                         st.session_state.messages.append({"role": "assistant", "content": bot_reply})
 
-# 🔥 [V25.0 핵심] 모바일 화면 편의성을 위한 '맨 위로 가기' JS 플로팅 버튼 주입
+# 🔥 모바일 편의성을 위한 '맨 위로 가기' 플로팅 버튼 주입
 components.html(
     """
     <script>
