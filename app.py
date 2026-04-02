@@ -7,7 +7,6 @@ from google import genai
 from google.genai import types
 from datetime import datetime
 import plotly.express as px
-import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -166,7 +165,7 @@ else:
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # --- 탭 3: 수급 스크리너 ---
+    # --- 탭 3: 수급 스크리너 (프리미엄 하이브리드 UI) ---
     with tab3:
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
@@ -204,16 +203,17 @@ else:
                 
                 rc_color = "#FF4B4B" if "▲" in rank_chg else ("#1C83E1" if "▼" in rank_chg else "#888888")
                 
+                # 🔥 [수정] 카드 뷰에서도 섹터를 종목명 옆 세련된 배지 형태로 변경
                 card_html = f"""
 <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
 <div style="display: flex; flex-direction: column; gap: 8px;">
-<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
 <span style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.7em; font-weight: 800; padding: 4px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); white-space: nowrap;">🏆 {rank}위</span>
 <span style="font-size: 0.8em; font-weight: bold; color: {rc_color}; white-space: nowrap;">{rank_chg}</span>
 <span style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
+<span style="background-color: #2A2A35; border: 1px solid #444; color: #DDD; font-size: 0.7em; font-weight: bold; padding: 3px 10px; border-radius: 15px; white-space: nowrap;">{sector}</span>
 </div>
-<div><span style="font-size: 0.75em; color: #AAA; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span></div>
 </div>
 <div style="text-align: right; min-width: 80px;">
 <div style="font-size: 1.1em; font-weight: 700; color: #FFF;">{price}원</div>
@@ -289,7 +289,7 @@ else:
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    # --- 탭 4: 종목 분석 (UX 혁신) ---
+    # --- 탭 4: 종목 분석 ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
@@ -297,39 +297,18 @@ else:
         if "selected_stock" not in st.session_state or st.session_state.selected_stock not in stock_list:
             st.session_state.selected_stock = stock_list[0]
             
-        # 🔥 모바일 키보드 팝업 방지 UX 혁신 (빠른 버튼 + 숨겨진 검색)
-        st.markdown("##### 🚀 빠른 주도주 선택")
-        st.caption("버튼을 누르면 키보드 팝업 없이 즉각 분석 탭으로 이동합니다.")
+        selected_stock = st.selectbox("🔍 분석할 종목을 검색/선택하세요", options=stock_list, index=stock_list.index(st.session_state.selected_stock))
+        st.session_state.selected_stock = selected_stock
+        target_stock = selected_stock
         
-        # 1위~5위 버튼 생성
-        top5_stocks = stock_list[:5]
-        cols = st.columns(5)
-        for i, stock in enumerate(top5_stocks):
-            if cols[i].button(stock, use_container_width=True, type="primary" if st.session_state.selected_stock == stock else "secondary"):
-                st.session_state.selected_stock = stock
-                st.rerun()
-                
-        # 하위 순위 종목 검색용 드롭다운은 토글 안으로 은폐
-        with st.expander("🔍 6위 이하 전체 리스트에서 찾기 / 직접 검색하기"):
-            selected_from_box = st.selectbox(
-                "종목명을 입력하거나 선택하세요", 
-                options=stock_list, 
-                index=stock_list.index(st.session_state.selected_stock),
-                label_visibility="collapsed"
-            )
-            if selected_from_box != st.session_state.selected_stock:
-                st.session_state.selected_stock = selected_from_box
-                st.rerun()
-                
-        target_stock = st.session_state.selected_stock
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
-        sector_name = selected_row.get('섹터', '분류안됨')
 
-        # 🔥 섹터명 고급스러운 뱃지(Pill) 디자인 적용
+        # 🔥 [수정] 대괄호 형태의 섹터를 세련된 둥근 뱃지 형태로 변경
+        sector_name = selected_row.get('섹터', '분류안됨')
         st.markdown(f"""
-        <div style="display: flex; align-items: center; margin-top: 15px; margin-bottom: 20px;">
-            <h2 style="margin: 0; padding-right: 12px; color: #FFFFFF;">💡 {target_stock}</h2>
-            <span style="background: linear-gradient(135deg, #1C83E1, #0A58A3); color: white; padding: 4px 14px; border-radius: 20px; font-size: 0.9em; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
+            <h3 style="margin: 0; padding: 0;">💡 {target_stock}</h3>
+            <span style="background: linear-gradient(135deg, #1C83E1, #0056b3); color: white; font-size: 0.85em; font-weight: 600; padding: 5px 14px; border-radius: 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
                 {sector_name}
             </span>
         </div>
@@ -574,17 +553,3 @@ else:
                                 st.write(bot_reply)
 
                         st.session_state.messages.append({"role": "assistant", "content": bot_reply})
-
-# 🔥 모바일 편의성을 위한 '맨 위로 가기' 플로팅 버튼 주입
-components.html(
-    """
-    <script>
-    const btn = window.parent.document.createElement('button');
-    btn.innerHTML = '⬆';
-    btn.style.cssText = 'position:fixed; bottom:25px; right:20px; width:45px; height:45px; border-radius:50%; background-color:#1C83E1; color:white; font-size:20px; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); cursor:pointer; z-index:99999; display:flex; align-items:center; justify-content:center;';
-    btn.onclick = function() { window.parent.scrollTo({top:0, behavior:'smooth'}); };
-    window.parent.document.body.appendChild(btn);
-    </script>
-    """,
-    height=0, width=0
-)
