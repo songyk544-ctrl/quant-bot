@@ -166,7 +166,7 @@ else:
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # --- 탭 3: 수급 스크리너 (프리미엄 하이브리드 UI) ---
+    # --- 탭 3: 수급 스크리너 ---
     with tab3:
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
@@ -202,10 +202,8 @@ else:
                 f_str = f"{float(row['외인강도(%)']):.1f}%"
                 p_str = f"{float(row['연기금강도(%)']):.1f}%"
                 
-                # 🔥 [수정 1] 순위 변동 기호에 색상 적용
                 rc_color = "#FF4B4B" if "▲" in rank_chg else ("#1C83E1" if "▼" in rank_chg else "#888888")
                 
-                # 🔥 [수정 2] 순위 뱃지에 white-space: nowrap 추가, 폰트 축소 / 순위 변동을 배지 옆으로 이동 / 점수 표기 간소화
                 card_html = f"""
 <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
@@ -291,7 +289,7 @@ else:
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    # --- 탭 4: 종목 분석 ---
+    # --- 탭 4: 종목 분석 (UX 혁신) ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
@@ -299,13 +297,43 @@ else:
         if "selected_stock" not in st.session_state or st.session_state.selected_stock not in stock_list:
             st.session_state.selected_stock = stock_list[0]
             
-        selected_stock = st.selectbox("🔍 분석할 종목을 검색/선택하세요", options=stock_list, index=stock_list.index(st.session_state.selected_stock))
-        st.session_state.selected_stock = selected_stock
-        target_stock = selected_stock
+        # 🔥 모바일 키보드 팝업 방지 UX 혁신 (빠른 버튼 + 숨겨진 검색)
+        st.markdown("##### 🚀 빠른 주도주 선택")
+        st.caption("버튼을 누르면 키보드 팝업 없이 즉각 분석 탭으로 이동합니다.")
         
+        # 1위~5위 버튼 생성
+        top5_stocks = stock_list[:5]
+        cols = st.columns(5)
+        for i, stock in enumerate(top5_stocks):
+            if cols[i].button(stock, use_container_width=True, type="primary" if st.session_state.selected_stock == stock else "secondary"):
+                st.session_state.selected_stock = stock
+                st.rerun()
+                
+        # 하위 순위 종목 검색용 드롭다운은 토글 안으로 은폐
+        with st.expander("🔍 6위 이하 전체 리스트에서 찾기 / 직접 검색하기"):
+            selected_from_box = st.selectbox(
+                "종목명을 입력하거나 선택하세요", 
+                options=stock_list, 
+                index=stock_list.index(st.session_state.selected_stock),
+                label_visibility="collapsed"
+            )
+            if selected_from_box != st.session_state.selected_stock:
+                st.session_state.selected_stock = selected_from_box
+                st.rerun()
+                
+        target_stock = st.session_state.selected_stock
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
+        sector_name = selected_row.get('섹터', '분류안됨')
 
-        st.subheader(f"💡 {target_stock} [{selected_row.get('섹터', '분류안됨')}]")
+        # 🔥 섹터명 고급스러운 뱃지(Pill) 디자인 적용
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; margin-top: 15px; margin-bottom: 20px;">
+            <h2 style="margin: 0; padding-right: 12px; color: #FFFFFF;">💡 {target_stock}</h2>
+            <span style="background: linear-gradient(135deg, #1C83E1, #0A58A3); color: white; padding: 4px 14px; border-radius: 20px; font-size: 0.9em; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
+                {sector_name}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
 
         if not is_vip and target_stock not in free_tier_stocks:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
