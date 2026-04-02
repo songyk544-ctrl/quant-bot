@@ -98,7 +98,8 @@ def get_target_stock_list():
                                 target_list.append({
                                     '종목명': stock_name, '종목코드': name_tag['href'].split('code=')[-1], 
                                     '소속': market_name, '현재가': int(safe_float(tds[2].text)),
-                                    '등락률': safe_float(tds[4].text), '시가총액': int(marcap)
+                                    '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
+                                    'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text) # 🔥 대시보드용 부활
                                 })
             except Exception as e: print(f"⚠️ 네이버 금융 파싱 에러: {e}")
             time.sleep(0.5) 
@@ -145,7 +146,7 @@ def run_scraper():
         current_vix = 15.0 
     
     regime = "공포/하락장 (방어수 우대)" if current_vix >= 25 else "평온/강세장 (공격수 우대)"
-    print(f"🚀 수집기 봇 가동 시작 (V32.0 백테스트 완벽 정산 모델)...\n🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    print(f"🚀 수집기 봇 가동 시작 (V32.1 대시보드 렌더링 픽스)...\n🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
     
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
     today_date = now_kst.strftime("%Y-%m-%d")
@@ -163,6 +164,9 @@ def run_scraper():
                 row_dict['현재가'] = live_info.iloc[0]['현재가']
                 row_dict['등락률'] = live_info.iloc[0]['등락률']
                 row_dict['시가총액'] = live_info.iloc[0]['시가총액']
+                # 🔥 망가진 CSV라도 실시간으로 PER/ROE를 채워넣어 대시보드 자가 치유
+                row_dict['PER'] = live_info.iloc[0]['PER']
+                row_dict['ROE'] = live_info.iloc[0]['ROE']
 
             new_score = calculate_dynamic_score(
                 f_str=row_dict.get('외인강도(%)', 0), p_str=row_dict.get('연기금강도(%)', 0),
@@ -257,7 +261,7 @@ def run_scraper():
                     '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
-                    '시가총액': marcap
+                    '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE # 🔥 대시보드용 부활
                 })
             except: pass 
             time.sleep(0.2) 
@@ -282,11 +286,10 @@ def run_scraper():
         else:
             df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
        
-    # 🔥 [백테스트 핵심 수정] 장중에는 가계산(출력)만, 장 마감 후에만 데이터 저장!
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
     eval_msg = ""
-    top3_names = df_final.head(3)['종목명'].tolist() # 오늘의 신규 픽 (텔레그램 송출용)
+    top3_names = df_final.head(3)['종목명'].tolist() 
 
     if os.path.exists(portfolio_file):
         try:
@@ -307,7 +310,6 @@ def run_scraper():
             daily_ret = sum(returns) / len(returns) if returns else 0
 
             if is_eod_updated:
-                # [장 마감 후] 성적 최종 박제 및 포트폴리오 교체
                 eval_msg = "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
                 
                 if last_date != today_date:
@@ -330,18 +332,15 @@ def run_scraper():
                 else:
                     print("💡 [EOD] 오늘 이미 포트폴리오가 갱신되었습니다.")
             else:
-                # [장중] 실시간 수익률 중계 (저장 안함)
                 eval_msg = "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
                 print("⚡ [장중] 포트폴리오 실시간 수익률만 계산 (저장 생략).")
         except Exception as e: print(f"⚠️ 포트폴리오 처리 에러: {e}")
     else:
-        # 최초 실행 시 포트폴리오 파일 생성
         if is_eod_updated:
             top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
             top3_df['날짜'] = today_date
             top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
 
-    # --- 공통 텔레그램 발송 및 AI 리포트 ---
     if GEMINI_API_KEY:
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
@@ -387,7 +386,6 @@ def run_scraper():
             top3_str = ", ".join(top3_names)
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
-            # 장중(가계산)인지, 마감(최종)인지 명확하게 표기
             timing_tag = "[장중 실시간 브리핑]" if not is_eod_updated else "[장 마감 수급 요약]"
             tg_message = f"🔔 *{timing_tag}*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *오늘의 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
