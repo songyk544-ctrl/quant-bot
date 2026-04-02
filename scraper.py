@@ -47,6 +47,7 @@ def calculate_rsi(prices, period=14):
     if avg_loss == 0: return 100.0
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
+# 🔥 우리가 만든 VIX 동적 스위칭 & 모멘텀 로직
 def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, current_vix):
     if current_vix < 25:
         raw_str_sum = (t_str * 3) + (pef_str * 3) + (f_str * 2) + (p_str * 1)
@@ -99,9 +100,9 @@ def get_target_stock_list():
                                     '종목명': stock_name, '종목코드': name_tag['href'].split('code=')[-1], 
                                     '소속': market_name, '현재가': int(safe_float(tds[2].text)),
                                     '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
-                                    'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text) # 🔥 대시보드용 부활
+                                    'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text)
                                 })
-            except Exception as e: print(f"⚠️ 네이버 금융 파싱 에러: {e}")
+            except: pass
             time.sleep(0.5) 
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
@@ -136,6 +137,7 @@ def get_live_macro_and_news():
     return macro_str, news_str
 
 def run_scraper():
+    print("🚀 수집기 봇 가동 시작 (V36.0 파이널: 캐시 완벽 제어 및 로직 무한 테스트 허용)...")
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     
@@ -145,26 +147,42 @@ def run_scraper():
     except:
         current_vix = 15.0 
     
-    regime = "공포/하락장 (방어수 우대)" if current_vix >= 25 else "평온/강세장 (공격수 우대)"
-    print(f"🚀 수집기 봇 가동 시작 (V32.1 대시보드 렌더링 픽스)...\n🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
-    
+    regime = "공포/하락장 (연기금 방어수 우대)" if current_vix >= 25 else "평온/강세장 (투신/사모 공격수 우대)"
+    print(f"🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
+    target_kis_date = now_kst.strftime("%Y%m%d") if is_eod_updated else (now_kst - timedelta(days=1)).strftime("%Y%m%d")
     today_date = now_kst.strftime("%Y-%m-%d")
-    
-    if not is_eod_updated and os.path.exists("data.csv"):
-        print("⚡ [Fast-Track 모드] 실시간 주가 갱신 및 랭킹 산출을 진행합니다.")
-        df_target = get_target_stock_list()
-        df_saved = pd.read_csv("data.csv")
+
+    # 🔥 [5번 항목] 판단 기준: history.csv의 가장 최근 날짜가 타겟 날짜와 일치하는가?
+    already_fetched_kis = False
+    if os.path.exists("history.csv"):
+        try:
+            df_hist_check = pd.read_csv("history.csv")
+            if not df_hist_check.empty and '일자' in df_hist_check.columns:
+                latest_kis_date = str(df_hist_check['일자'].max()).replace("-", "")
+                if latest_kis_date == target_kis_date:
+                    already_fetched_kis = True
+        except: pass
+
+    # ==========================================
+    # 1. 슈퍼 캐시 모드 (한투 API 무한 호출 방지)
+    # ==========================================
+    if already_fetched_kis and os.path.exists("data.csv"):
+        print(f"⚡ [슈퍼 캐시 모드] 기준일({target_kis_date}) 수급 데이터 존재 확인. KIS API를 스킵합니다.")
+        
+        # 로직 변경을 테스트 중이므로 VIX 및 랭킹 점수는 '무조건' 재계산
+        df_target = get_target_stock_list() # 네이버에서 실시간 가격/PER/ROE 새로 당겨옴
+        df_final = pd.read_csv("data.csv")
         
         updated_rows = []
-        for _, row in df_saved.iterrows():
+        for idx, row in df_final.iterrows():
             row_dict = row.to_dict()
             live_info = df_target[df_target['종목명'] == row_dict['종목명']]
             if not live_info.empty:
                 row_dict['현재가'] = live_info.iloc[0]['현재가']
                 row_dict['등락률'] = live_info.iloc[0]['등락률']
                 row_dict['시가총액'] = live_info.iloc[0]['시가총액']
-                # 🔥 망가진 CSV라도 실시간으로 PER/ROE를 채워넣어 대시보드 자가 치유
                 row_dict['PER'] = live_info.iloc[0]['PER']
                 row_dict['ROE'] = live_info.iloc[0]['ROE']
 
@@ -177,17 +195,21 @@ def run_scraper():
             )
             row_dict['AI수급점수'] = new_score
             updated_rows.append(row_dict)
-            
+
         df_final = pd.DataFrame(updated_rows).sort_values('AI수급점수', ascending=False)
         df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
         
+        eval_msg = "⚡ (슈퍼 캐시 모드로 재산출된 랭킹입니다.)\n\n"
+            
+    # ==========================================
+    # 2. 풀 파싱 모드 (하루에 한 번만 실행됨)
+    # ==========================================
     else:
-        print("📥 [Full-Parsing 모드] 장 마감 KIS 수급 데이터를 전체 수집합니다.")
+        print("📥 [풀 파싱 모드] 새로운 수급 데이터를 KIS API로부터 수집합니다.")
         df_target = get_target_stock_list()
         token = get_kis_access_token()
         headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
         url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
-        end_date = now_kst.strftime("%Y%m%d") if is_eod_updated else (now_kst - timedelta(days=1)).strftime("%Y%m%d") 
 
         data_list, history_list = [], []
 
@@ -200,7 +222,7 @@ def run_scraper():
                 if sector_tag: sector_name = sector_tag.text.strip()
             except: pass
 
-            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": end_date, "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"}
+            params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": target_kis_date, "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"}
             
             try:
                 res = requests.get(url_kis, headers=headers, params=params, timeout=5)
@@ -261,7 +283,7 @@ def run_scraper():
                     '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
-                    '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE # 🔥 대시보드용 부활
+                    '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
                 })
             except: pass 
             time.sleep(0.2) 
@@ -274,21 +296,26 @@ def run_scraper():
         df_history = pd.DataFrame(history_list)
         df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
 
-        df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
-        df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='first', ascending=False).astype(int)
-        df_trend_new['날짜'] = today_date
+        eval_msg = ""
+    
+    # 공통: 순위 트렌드 업데이트 (항상 최신 로직 기반)
+    df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
+    df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
+    df_trend_new['날짜'] = today_date
 
-        trend_file = "score_trend.csv"
-        if os.path.exists(trend_file):
-            df_trend_old = pd.read_csv(trend_file)
-            df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
-            pd.concat([df_trend_old, df_trend_new], ignore_index=True).to_csv(trend_file, index=False, encoding='utf-8-sig')
-        else:
-            df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
-       
+    trend_file = "score_trend.csv"
+    if os.path.exists(trend_file):
+        df_trend_old = pd.read_csv(trend_file)
+        df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
+        pd.concat([df_trend_old, df_trend_new], ignore_index=True).to_csv(trend_file, index=False, encoding='utf-8-sig')
+    else:
+        df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
+
+    # ==========================================
+    # 🔥 [4번 항목] 포트폴리오 무한 덮어쓰기 허용 로직
+    # ==========================================
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
-    eval_msg = ""
     top3_names = df_final.head(3)['종목명'].tolist() 
 
     if os.path.exists(portfolio_file):
@@ -308,43 +335,44 @@ def run_scraper():
                 eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
             
             daily_ret = sum(returns) / len(returns) if returns else 0
+            cum_ret = daily_ret
+            
+            # 오늘자 실시간 성적 갱신
+            if os.path.exists(perf_file):
+                df_perf = pd.read_csv(perf_file)
+                if not df_perf.empty:
+                    df_perf = df_perf[df_perf['날짜'] != today_date] # 중복 방지 (기존 오늘치 삭제)
+                    cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
+                else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+            else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+                
+            new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
+            pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
 
             if is_eod_updated:
-                eval_msg = "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
+                eval_msg += "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
                 
-                if last_date != today_date:
-                    cum_ret = daily_ret
-                    if os.path.exists(perf_file):
-                        df_perf = pd.read_csv(perf_file)
-                        if not df_perf.empty:
-                            df_perf = df_perf[df_perf['날짜'] != today_date]
-                            cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
-                        else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-                    else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-                        
-                    new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
-                    pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
-                    
-                    top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
-                    top3_df['날짜'] = today_date
-                    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
-                    print("💡 [EOD] 포트폴리오 최종 정산 및 종목 교체 완료.")
-                else:
-                    print("💡 [EOD] 오늘 이미 포트폴리오가 갱신되었습니다.")
+                # 🔥 잠금 해제: 마감 후 테스트 시마다 '계속' 최신 로직 픽으로 포트폴리오 덮어쓰기
+                top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
+                top3_df['날짜'] = today_date
+                top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+                print("💡 [EOD] 로직 테스트 허용: 최신 산출된 Top 3로 포트폴리오를 덮어썼습니다.")
             else:
-                eval_msg = "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
-                print("⚡ [장중] 포트폴리오 실시간 수익률만 계산 (저장 생략).")
-        except Exception as e: print(f"⚠️ 포트폴리오 처리 에러: {e}")
+                eval_msg += "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
+        except: pass
     else:
+        # 최초 생성
         if is_eod_updated:
             top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
             top3_df['날짜'] = today_date
             top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
 
+    # ==========================================
+    # 텔레그램 발송 및 AI 리포트
+    # ==========================================
     if GEMINI_API_KEY:
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
-            
             top_N_names = df_final.head(20)['종목명'].tolist()
             if os.path.exists("history.csv"):
                 df_history = pd.read_csv("history.csv")
@@ -367,12 +395,12 @@ def run_scraper():
             [2. 금융 속보]
             {news_str}
             
-            [3. 최상위 20개 종목 수급 및 모멘텀 데이터]
+            [3. 최상위 20개 종목 수급 및 모멘텀 동향]
             {df_merged.to_string(index=False)}
 
             다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
             1. 🌐 글로벌 매크로 브리핑: 구글 검색을 활용하여 오늘 시장을 움직인 뉴스를 요약해.
-            2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%)을 참고하여 쏠림 현상을 분석해.
+            2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%) 및 수급 점수를 참고하여 쏠림 현상을 분석해.
             3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 구글 검색 이슈와 맞물려 설명해.
 [🚨 절대 엄수 사항] 텔레그램 전송용이므로 마크다운 표(Table)는 절대 사용하지 마.
             """
@@ -381,13 +409,13 @@ def run_scraper():
             response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt, config=config)
             
             with open("report.md", "w", encoding="utf-8") as f:
-                f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 마감 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
+                f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
                 
             top3_str = ", ".join(top3_names)
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
-            timing_tag = "[장중 실시간 브리핑]" if not is_eod_updated else "[장 마감 수급 요약]"
-            tg_message = f"🔔 *{timing_tag}*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *오늘의 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+            timing_tag = "[수급 퀀트 리포트 (테스트 중)]"
+            tg_message = f"🔔 *{timing_tag}*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *최신 로직 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
             send_telegram_message(tg_message)
         except Exception as e: print(f"⚠️ AI 리포트 생성 실패: {e}")
 
