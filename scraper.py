@@ -47,47 +47,51 @@ def calculate_rsi(prices, period=14):
     if avg_loss == 0: return 100.0
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-# 🔥 [핵심 3번] 하락장에서만 '추세'와 '좀비' 족쇄를 채우도록 분리!
-def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, current_vix):
+# 🔥 [핵심 수정] 하락장에 펀더멘털 복구 및 적자기업(알지노믹스 등) 철퇴 로직 추가
+def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, per_val, roe_val, current_vix):
     
     if current_vix < 25:
-        # 🚀 상승장: 폭발적 모멘텀 (족쇄 완전 해제)
-        zombie_penalty = 0 # 상승장엔 좀비 검사 안 함
+        # 🚀 상승장: 폭발적 모멘텀 (족쇄 완전 해제, 펀더멘털 무시)
+        zombie_penalty = 0 
+        fund_score = 0
         
         raw_str_sum = (t_str * 3) + (pef_str * 3) + (f_str * 2) + (p_str * 1)
         strength_score = max(0, min(20, raw_str_sum * 2))
         streak_score = max(0, min(10, (foreign_streak * 1.0) + (pension_streak * 0.5)))
-        supply_score = strength_score + streak_score
+        supply_score = strength_score + streak_score # 최대 30점
 
         turnover_score = 20 if turnover_rate >= 10 else (10 if turnover_rate >= 5 else 0)
         v_score = 10 if vol_surge >= 150 else 0
         r_score = 15 if 60 <= rsi_val <= 85 else (5 if 50 <= rsi_val < 60 else 0)
-        momentum_score = turnover_score + v_score + r_score
+        momentum_score = turnover_score + v_score + r_score # 최대 45점
 
-        # 상승장 타점: 추세 묻지 않고 20일선 돌파/눌림 허용
-        tech_score = 25 if 102 <= gap_20 <= 115 else (10 if 98 <= gap_20 < 102 else 0)
+        tech_score = 25 if 102 <= gap_20 <= 115 else (10 if 98 <= gap_20 < 102 else 0) # 최대 25점
         
     else:
-        # 🛡️ 하락장: 1주 5% 목표 안전 스윙 (족쇄 가동)
-        zombie_penalty = -30 if turnover_rate < 1.5 else 0 # 🔥 하락장에선 거래량 말른 놈 퇴출
+        # 🛡️ 하락장: 안전 스윙 (펀더멘털 방어력 30점 포함)
+        zombie_penalty = -30 if turnover_rate < 1.5 else 0 
         
         raw_str_sum = (p_str * 4) + (f_str * 2) + (t_str * 0.5) + (pef_str * 0.5)
-        strength_score = max(0, min(25, raw_str_sum * 3))
-        streak_score = max(0, min(15, (pension_streak * 2.0) + (foreign_streak * 0.5)))
-        supply_score = strength_score + streak_score
+        strength_score = max(0, min(20, raw_str_sum * 3))
+        streak_score = max(0, min(10, (pension_streak * 1.5) + (foreign_streak * 0.5)))
+        supply_score = strength_score + streak_score # 최대 30점
 
         turnover_score = 5 if turnover_rate >= 3 else 0
         v_score = 5 if vol_surge >= 100 else 0
         r_score = 10 if 45 <= rsi_val <= 60 else 0
-        momentum_score = turnover_score + v_score + r_score
+        momentum_score = turnover_score + v_score + r_score # 최대 20점
 
-        # 🔥 하락장 타점: 이격도 98~108에 들어오더라도 20일선이 반드시 꺾이지 않았어야 점수 부여!
         if is_ma20_rising:
-            tech_score = 40 if 98 <= gap_20 <= 103 else (20 if 103 < gap_20 <= 108 else 0)
+            tech_score = 20 if 98 <= gap_20 <= 103 else (10 if 103 < gap_20 <= 108 else 0) # 최대 20점
         else:
-            tech_score = -20 # 하락장 + 역배열 = 떨어지는 칼날 (가차없이 -20점)
+            tech_score = -20 
 
-    return max(0, min(100, int(supply_score + momentum_score + tech_score + zombie_penalty)))
+        # 🔥 하락장 전용 펀더멘털 검증 및 적자 철퇴
+        fund_score = (15 if roe_val >= 15 else (10 if roe_val >= 8 else 0)) + (15 if 0 < per_val <= 15 else 0)
+        if per_val <= 0: 
+            fund_score -= 20 # 적자 기업 강력 감점
+
+    return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score + zombie_penalty)))
 
 def get_target_stock_list():
     target_list = []
@@ -152,7 +156,7 @@ def get_live_macro_and_news():
     return macro_str, news_str
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V38.1 진(眞) 지킬앤하이드 로직 & 캐시 강제 리셋)...")
+    print("🚀 수집기 봇 가동 시작 (V38.2 파이널: 적자기업 철퇴 & 펀더멘털 복구)...")
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     
@@ -162,7 +166,7 @@ def run_scraper():
     except:
         current_vix = 15.0 
     
-    regime = "공포/하락장 (안전제일 눌림목 스윙)" if current_vix >= 25 else "평온/강세장 (핫섹터 폭발적 모멘텀)"
+    regime = "공포/하락장 (안전제일 눌림목 & 펀더멘털 방어)" if current_vix >= 25 else "평온/강세장 (핫섹터 폭발적 모멘텀)"
     print(f"🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
 
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
@@ -179,7 +183,6 @@ def run_scraper():
                     already_fetched_kis = True
         except: pass
 
-    # 🔥 [핵심 2번] 데이터에 '추세상승' 컬럼이 없다면 캐시를 무효화하고 API를 강제 호출합니다!
     force_full_parse = False
     if os.path.exists("data.csv"):
         df_check = pd.read_csv("data.csv")
@@ -225,7 +228,9 @@ def run_scraper():
                 gap_20=new_gap, foreign_streak=row_dict.get('외인연속', 0),
                 pension_streak=row_dict.get('연기금연속', 0), 
                 turnover_rate=row_dict.get('손바뀜(%)', 0), 
-                is_ma20_rising=is_ma20_rising_flag, current_vix=current_vix
+                is_ma20_rising=is_ma20_rising_flag, 
+                per_val=row_dict.get('PER', 0), roe_val=row_dict.get('ROE', 0), # 🔥 펀더멘털 주입
+                current_vix=current_vix
             )
             row_dict['AI수급점수'] = new_score
             updated_rows.append(row_dict)
@@ -236,7 +241,7 @@ def run_scraper():
         eval_msg = "⚡ (슈퍼 캐시 모드로 재산출된 랭킹입니다.)\n\n"
             
     # ==========================================
-    # 2. 풀 파싱 모드 (캐시 무효화 시 강제 진입)
+    # 2. 풀 파싱 모드
     # ==========================================
     else:
         print("📥 [풀 파싱 모드] 새로운 수급 데이터 및 추세 정보를 KIS API로부터 수집합니다.")
@@ -316,7 +321,7 @@ def run_scraper():
                 else:
                     is_ma20_rising = gap_20 >= 100 
 
-                ai_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, current_vix)
+                ai_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, row.PER, row.ROE, current_vix)
 
                 data_list.append({
                     '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
@@ -339,7 +344,6 @@ def run_scraper():
 
         eval_msg = ""
     
-    # 랭킹 트렌드 업데이트
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
@@ -353,7 +357,7 @@ def run_scraper():
         df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
 
     # ==========================================
-    # 백테스트 정산
+    # 백테스트 정산 로직
     # ==========================================
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
