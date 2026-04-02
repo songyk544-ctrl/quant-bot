@@ -47,10 +47,8 @@ def calculate_rsi(prices, period=14):
     if avg_loss == 0: return 100.0
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-# 🔥 [핵심 로직] VIX 연동 스마트 머니 스위칭 스코어링 함수
 def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, current_vix):
     if current_vix < 25:
-        # 🟢 평온/강세장: 투신/사모 (공격수) 중심
         raw_str_sum = (t_str * 3) + (pef_str * 3) + (f_str * 2) + (p_str * 1)
         strength_score = max(0, min(25, raw_str_sum * 3))
         streak_score = max(0, min(15, (foreign_streak * 1.5) + (pension_streak * 1.0)))
@@ -62,13 +60,11 @@ def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, ga
 
         tech_score = 20 if 101 <= gap_20 <= 108 else (-20 if gap_20 < 95 else 0)
     else:
-        # 🔴 공포/하락장: 연기금 (방어수) 중심
         raw_str_sum = (p_str * 4) + (f_str * 2) + (t_str * 0.5) + (pef_str * 0.5)
         strength_score = max(0, min(25, raw_str_sum * 4))
         streak_score = max(0, min(15, (pension_streak * 2.0) + (foreign_streak * 0.5)))
         supply_score = strength_score + streak_score
 
-        # 스윙 모멘텀은 유지하되 이격도는 더 보수적으로
         v_score = 20 if vol_surge >= 200 else (15 if vol_surge >= 150 else (10 if vol_surge >= 100 else 0))
         r_score = 20 if 55 <= rsi_val <= 70 else (10 if 50 <= rsi_val < 55 else 0)
         momentum_score = v_score + r_score
@@ -149,19 +145,29 @@ def run_scraper():
         current_vix = 15.0 
     
     regime = "공포/하락장 (방어수 우대)" if current_vix >= 25 else "평온/강세장 (공격수 우대)"
-    print(f"🚀 수집기 봇 가동 시작 (V31.0 스마트 퀀트)...\n🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    print(f"🚀 수집기 봇 가동 시작 (V31.1 실시간 주가 Fast-Track)...\n🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
     
-    # 🔥 [핵심 기능] Fast-Track 캐시 모드 (오후 3시 40분 이전에는 KIS API 호출 완전 생략)
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
     today_date = now_kst.strftime("%Y-%m-%d")
     
     if not is_eod_updated and os.path.exists("data.csv"):
-        print("⚡ [Fast-Track 모드] 아직 기관 수급 마감 전(15:40 이전)입니다. API 호출을 생략하고 기존 수급 데이터에 실시간 VIX만 반영하여 점수를 재계산합니다.")
+        print("⚡ [Fast-Track 모드] 실시간 주가(현재가/등락률) 갱신을 위해 네이버 시세만 빠르게 수집합니다...")
+        
+        # 🔥 [핵심 픽스] 실시간 주가 및 등락률을 얻기 위해 네이버 크롤링은 수행! (약 6초 소요)
+        df_target = get_target_stock_list()
         df_saved = pd.read_csv("data.csv")
         
         updated_rows = []
         for _, row in df_saved.iterrows():
             row_dict = row.to_dict()
+            
+            # 실시간 가격과 등락률을 최신 데이터로 덮어쓰기
+            live_info = df_target[df_target['종목명'] == row_dict['종목명']]
+            if not live_info.empty:
+                row_dict['현재가'] = live_info.iloc[0]['현재가']
+                row_dict['등락률'] = live_info.iloc[0]['등락률']
+                row_dict['시가총액'] = live_info.iloc[0]['시가총액']
+
             new_score = calculate_dynamic_score(
                 f_str=row_dict.get('외인강도(%)', 0),
                 p_str=row_dict.get('연기금강도(%)', 0),
@@ -181,10 +187,9 @@ def run_scraper():
         df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
         
         top3_names = df_final.head(3)['종목명'].tolist()
-        eval_msg = "⚡ (Fast-Track 모드로 산출된 오전 장중 실시간 VIX 반영 순위입니다.)\n\n"
+        eval_msg = "⚡ (Fast-Track 모드로 산출된 오전 장중 실시간 순위입니다.)\n\n"
         
     else:
-        # 정상 EOD (마감) 크롤링 모드
         df_target = get_target_stock_list()
         token = get_kis_access_token()
         headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
@@ -335,7 +340,6 @@ def run_scraper():
         else:
             top3_names = df_port['종목명'].tolist() if 'df_port' in locals() and not df_port.empty else df_final.head(3)['종목명'].tolist()
 
-    # --- 공통 텔레그램 발송 및 AI 리포트 ---
     if GEMINI_API_KEY:
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
