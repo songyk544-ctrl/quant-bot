@@ -47,38 +47,47 @@ def calculate_rsi(prices, period=14):
     if avg_loss == 0: return 100.0
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-# 🔥 [핵심 업데이트] 장세에 따라 펀더멘털(PER/ROE) 개입 여부 스위칭
-def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, per_val, roe_val, current_vix):
+# 🔥 [핵심 3번] 하락장에서만 '추세'와 '좀비' 족쇄를 채우도록 분리!
+def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, current_vix):
+    
     if current_vix < 25:
-        # ☀️ 상승장 (펀더멘털 무시, 순수 모멘텀 폭발력)
-        raw_str_sum = (t_str * 3) + (pef_str * 3) + (f_str * 2) + (p_str * 1)
-        strength_score = max(0, min(25, raw_str_sum * 3))
-        streak_score = max(0, min(15, (foreign_streak * 1.5) + (pension_streak * 1.0)))
-        supply_score = strength_score + streak_score
-
-        v_score = 20 if vol_surge >= 200 else (15 if vol_surge >= 150 else (10 if vol_surge >= 100 else 0))
-        r_score = 20 if 55 <= rsi_val <= 70 else (10 if 50 <= rsi_val < 55 else 0)
-        momentum_score = v_score + r_score
-
-        tech_score = 20 if 101 <= gap_20 <= 108 else (-20 if gap_20 < 95 else 0)
-        fund_score = 0 # 상승장에서는 펀더멘털 점수 배제
-    else:
-        # 🥶 하락장 (펀더멘털 30점 부활, 연기금 방어력 우대)
-        raw_str_sum = (p_str * 4) + (f_str * 2) + (t_str * 0.5) + (pef_str * 0.5)
-        strength_score = max(0, min(20, raw_str_sum * 4)) # 점수 비중 축소
-        streak_score = max(0, min(10, (pension_streak * 2.0) + (foreign_streak * 0.5)))
-        supply_score = strength_score + streak_score
-
-        v_score = 10 if vol_surge >= 200 else (5 if vol_surge >= 100 else 0)
-        r_score = 10 if 50 <= rsi_val <= 60 else 0
-        momentum_score = v_score + r_score
-
-        tech_score = 20 if 98 <= gap_20 <= 105 else (-20 if gap_20 > 110 else 0)
+        # 🚀 상승장: 폭발적 모멘텀 (족쇄 완전 해제)
+        zombie_penalty = 0 # 상승장엔 좀비 검사 안 함
         
-        # 하락장 방어용 우량주 판별기 작동
-        fund_score = (15 if roe_val >= 15 else (10 if roe_val >= 8 else 0)) + (15 if 0 < per_val <= 15 else 0)
+        raw_str_sum = (t_str * 3) + (pef_str * 3) + (f_str * 2) + (p_str * 1)
+        strength_score = max(0, min(20, raw_str_sum * 2))
+        streak_score = max(0, min(10, (foreign_streak * 1.0) + (pension_streak * 0.5)))
+        supply_score = strength_score + streak_score
 
-    return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score)))
+        turnover_score = 20 if turnover_rate >= 10 else (10 if turnover_rate >= 5 else 0)
+        v_score = 10 if vol_surge >= 150 else 0
+        r_score = 15 if 60 <= rsi_val <= 85 else (5 if 50 <= rsi_val < 60 else 0)
+        momentum_score = turnover_score + v_score + r_score
+
+        # 상승장 타점: 추세 묻지 않고 20일선 돌파/눌림 허용
+        tech_score = 25 if 102 <= gap_20 <= 115 else (10 if 98 <= gap_20 < 102 else 0)
+        
+    else:
+        # 🛡️ 하락장: 1주 5% 목표 안전 스윙 (족쇄 가동)
+        zombie_penalty = -30 if turnover_rate < 1.5 else 0 # 🔥 하락장에선 거래량 말른 놈 퇴출
+        
+        raw_str_sum = (p_str * 4) + (f_str * 2) + (t_str * 0.5) + (pef_str * 0.5)
+        strength_score = max(0, min(25, raw_str_sum * 3))
+        streak_score = max(0, min(15, (pension_streak * 2.0) + (foreign_streak * 0.5)))
+        supply_score = strength_score + streak_score
+
+        turnover_score = 5 if turnover_rate >= 3 else 0
+        v_score = 5 if vol_surge >= 100 else 0
+        r_score = 10 if 45 <= rsi_val <= 60 else 0
+        momentum_score = turnover_score + v_score + r_score
+
+        # 🔥 하락장 타점: 이격도 98~108에 들어오더라도 20일선이 반드시 꺾이지 않았어야 점수 부여!
+        if is_ma20_rising:
+            tech_score = 40 if 98 <= gap_20 <= 103 else (20 if 103 < gap_20 <= 108 else 0)
+        else:
+            tech_score = -20 # 하락장 + 역배열 = 떨어지는 칼날 (가차없이 -20점)
+
+    return max(0, min(100, int(supply_score + momentum_score + tech_score + zombie_penalty)))
 
 def get_target_stock_list():
     target_list = []
@@ -143,7 +152,7 @@ def get_live_macro_and_news():
     return macro_str, news_str
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V37.0 백테스트 보호 & 하락장 펀더멘털 모드)...")
+    print("🚀 수집기 봇 가동 시작 (V38.1 진(眞) 지킬앤하이드 로직 & 캐시 강제 리셋)...")
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     
@@ -153,7 +162,7 @@ def run_scraper():
     except:
         current_vix = 15.0 
     
-    regime = "공포/하락장 (실적 기반 5% 안전스윙)" if current_vix >= 25 else "평온/강세장 (투신/사모 모멘텀 스윙)"
+    regime = "공포/하락장 (안전제일 눌림목 스윙)" if current_vix >= 25 else "평온/강세장 (핫섹터 폭발적 모멘텀)"
     print(f"🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
 
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
@@ -170,32 +179,53 @@ def run_scraper():
                     already_fetched_kis = True
         except: pass
 
+    # 🔥 [핵심 2번] 데이터에 '추세상승' 컬럼이 없다면 캐시를 무효화하고 API를 강제 호출합니다!
+    force_full_parse = False
+    if os.path.exists("data.csv"):
+        df_check = pd.read_csv("data.csv")
+        if '추세상승' not in df_check.columns:
+            force_full_parse = True
+            print("⚠️ 기존 데이터에 [추세상승] 정보가 없습니다. 새로운 로직 적용을 위해 1회 한투 API를 강제 호출합니다.")
+
     # ==========================================
-    # 1. 슈퍼 캐시 모드 (한투 API 스킵)
+    # 1. 슈퍼 캐시 모드
     # ==========================================
-    if already_fetched_kis and os.path.exists("data.csv"):
-        df_target = get_target_stock_list() 
+    if already_fetched_kis and os.path.exists("data.csv") and not force_full_parse:
+        print(f"⚡ [슈퍼 캐시 모드] 기준일({target_kis_date}) 수급 데이터 존재 확인. KIS API를 스킵합니다.")
+        
+        df_target = get_target_stock_list()
         df_final = pd.read_csv("data.csv")
         
         updated_rows = []
         for idx, row in df_final.iterrows():
             row_dict = row.to_dict()
             live_info = df_target[df_target['종목명'] == row_dict['종목명']]
+            
+            old_price = row_dict.get('현재가', 1)
+            old_gap = row_dict.get('이격도(%)', 100)
+            new_gap = old_gap
+            
             if not live_info.empty:
-                row_dict['현재가'] = live_info.iloc[0]['현재가']
+                new_price = live_info.iloc[0]['현재가']
+                new_gap = old_gap * (new_price / old_price) if old_price > 0 else old_gap
+                
+                row_dict['현재가'] = new_price
                 row_dict['등락률'] = live_info.iloc[0]['등락률']
                 row_dict['시가총액'] = live_info.iloc[0]['시가총액']
                 row_dict['PER'] = live_info.iloc[0]['PER']
                 row_dict['ROE'] = live_info.iloc[0]['ROE']
+                row_dict['이격도(%)'] = new_gap
+
+            is_ma20_rising_flag = row_dict.get('추세상승', True)
 
             new_score = calculate_dynamic_score(
                 f_str=row_dict.get('외인강도(%)', 0), p_str=row_dict.get('연기금강도(%)', 0),
                 t_str=row_dict.get('투신강도(%)', 0), pef_str=row_dict.get('사모강도(%)', 0),
                 vol_surge=row_dict.get('거래급증(%)', 0), rsi_val=row_dict.get('RSI', 50),
-                gap_20=row_dict.get('이격도(%)', 100), foreign_streak=row_dict.get('외인연속', 0),
+                gap_20=new_gap, foreign_streak=row_dict.get('외인연속', 0),
                 pension_streak=row_dict.get('연기금연속', 0), 
-                per_val=row_dict.get('PER', 0), roe_val=row_dict.get('ROE', 0), # 🔥 펀더멘털 주입
-                current_vix=current_vix
+                turnover_rate=row_dict.get('손바뀜(%)', 0), 
+                is_ma20_rising=is_ma20_rising_flag, current_vix=current_vix
             )
             row_dict['AI수급점수'] = new_score
             updated_rows.append(row_dict)
@@ -203,10 +233,13 @@ def run_scraper():
         df_final = pd.DataFrame(updated_rows).sort_values('AI수급점수', ascending=False)
         df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
         
+        eval_msg = "⚡ (슈퍼 캐시 모드로 재산출된 랭킹입니다.)\n\n"
+            
     # ==========================================
-    # 2. 풀 파싱 모드
+    # 2. 풀 파싱 모드 (캐시 무효화 시 강제 진입)
     # ==========================================
     else:
+        print("📥 [풀 파싱 모드] 새로운 수급 데이터 및 추세 정보를 KIS API로부터 수집합니다.")
         df_target = get_target_stock_list()
         token = get_kis_access_token()
         headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
@@ -277,13 +310,20 @@ def run_scraper():
                 else:
                     vol_surge = 0
 
-                ai_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, row.PER, row.ROE, current_vix)
+                is_ma20_rising = False
+                if len(closes) >= 20:
+                    is_ma20_rising = closes[0] >= closes[-1]
+                else:
+                    is_ma20_rising = gap_20 >= 100 
+
+                ai_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, current_vix)
 
                 data_list.append({
                     '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
                     '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
+                    '추세상승': is_ma20_rising, 
                     '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
                 })
             except: pass 
@@ -297,6 +337,9 @@ def run_scraper():
         df_history = pd.DataFrame(history_list)
         df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
 
+        eval_msg = ""
+    
+    # 랭킹 트렌드 업데이트
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
@@ -310,62 +353,49 @@ def run_scraper():
         df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
 
     # ==========================================
-    # 🔥 [백테스트 0% 덮어쓰기 버그 완벽 해결]
+    # 백테스트 정산
     # ==========================================
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
     top3_names = df_final.head(3)['종목명'].tolist() 
-    eval_msg = ""
 
     if os.path.exists(portfolio_file):
         try:
             df_port = pd.read_csv(portfolio_file)
-            last_date = str(df_port['날짜'].iloc[0]) if not df_port.empty and '날짜' in df_port.columns else ""
             
-            # 🔥 핵심: 이미 오늘치 갱신을 했으면 '수익률 계산(0%)' 및 '성적 덮어쓰기'를 건너뜁니다!
-            if last_date == today_date:
-                eval_msg = "💡 [테스트 모드] 이미 오늘치 포트폴리오 교체가 완료되어 수익률 변동이 없습니다.\n\n"
-                
-                # 하지만 로직 테스트 중이므로, 새로운 Top 3 종목으로는 계속 업데이트해 줍니다.
-                if is_eod_updated:
-                    top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
-                    top3_df['날짜'] = today_date
-                    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+            returns, eval_details = [], []
+            for _, row in df_port.iterrows():
+                p_stock = row['종목명']
+                p_buy = row['매수가']
+                today_row = df_final[df_final['종목명'] == p_stock]
+                p_sell = today_row.iloc[0]['현재가'] if not today_row.empty else p_buy
+                ret = ((p_sell - p_buy) / p_buy) * 100
+                returns.append(ret)
+                mark = "🔴" if ret > 0 else "🔵" if ret < 0 else "⚫"
+                eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
             
-            else:
-                # 정상적인 수익률 계산 (어제 산 종목 vs 오늘 현재가)
-                returns, eval_details = [], []
-                for _, row in df_port.iterrows():
-                    p_stock = row['종목명']
-                    p_buy = row['매수가']
-                    today_row = df_final[df_final['종목명'] == p_stock]
-                    p_sell = today_row.iloc[0]['현재가'] if not today_row.empty else p_buy
-                    ret = ((p_sell - p_buy) / p_buy) * 100
-                    returns.append(ret)
-                    mark = "🔴" if ret > 0 else "🔵" if ret < 0 else "⚫"
-                    eval_details.append(f"- {p_stock}: {ret:+.2f}% {mark}")
-                
-                daily_ret = sum(returns) / len(returns) if returns else 0
-                cum_ret = daily_ret
-                
-                if os.path.exists(perf_file):
-                    df_perf = pd.read_csv(perf_file)
-                    if not df_perf.empty:
-                        df_perf = df_perf[df_perf['날짜'] != today_date] 
-                        cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
-                    else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+            daily_ret = sum(returns) / len(returns) if returns else 0
+            
+            cum_ret = daily_ret
+            if os.path.exists(perf_file):
+                df_perf = pd.read_csv(perf_file)
+                if not df_perf.empty:
+                    df_perf = df_perf[df_perf['날짜'] != today_date] 
+                    cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
                 else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-                    
-                new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
-                pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
+            else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
+                
+            new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
+            pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
 
-                if is_eod_updated:
-                    eval_msg = "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
-                    top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
-                    top3_df['날짜'] = today_date
-                    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
-                else:
-                    eval_msg = "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
+            if is_eod_updated:
+                eval_msg += "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
+                
+                top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
+                top3_df['날짜'] = today_date
+                top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+            else:
+                eval_msg += "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
         except: pass
     else:
         if is_eod_updated:
@@ -379,10 +409,9 @@ def run_scraper():
     if GEMINI_API_KEY:
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
-            MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             top3_str = ", ".join(top3_names)
-
-            # 장중(캐시 모드)일 때는 무거운 AI 리포트 생략하고 랭킹만 빠르게 전송
+            MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
+            
             if not is_eod_updated:
                 tg_message = f"🔔 *[장중 실시간 브리핑]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *장중 퀀트 픽 Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
@@ -414,7 +443,7 @@ def run_scraper():
 
                 다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
                 1. 🌐 글로벌 매크로 브리핑: 구글 검색을 활용하여 오늘 시장을 움직인 뉴스를 요약해.
-                2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%) 및 수급 점수를 참고하여 쏠림 현상을 분석해.
+                2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%), 손바뀜을 참고하여 시장의 자금이 쏠린 핫섹터를 분석해.
                 3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 구글 검색 이슈와 맞물려 설명해.
     [🚨 절대 엄수 사항] 텔레그램 전송용이므로 마크다운 표(Table)는 절대 사용하지 마.
                 """
@@ -425,7 +454,7 @@ def run_scraper():
                 with open("report.md", "w", encoding="utf-8") as f:
                     f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
                     
-                tg_message = f"🔔 *[장 마감 수급 요약]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *최종 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+                tg_message = f"🔔 *[장 마감 수급 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *최종 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
         except Exception as e: print(f"⚠️ AI 리포트 생성 실패: {e}")
 
