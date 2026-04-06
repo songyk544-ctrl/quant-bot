@@ -47,17 +47,18 @@ def calculate_rsi(prices, period=14):
     if avg_loss == 0: return 100.0
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
-# 🔥 [핵심 수정] 하락장에 펀더멘털 복구 및 적자기업(알지노믹스 등) 철퇴 로직 추가
+# 🔥 [수급 로직 업데이트] 외인 비중 대폭 축소, 기관(투신/사모/연기금) 비중 극대화 (눌림목 최적화)
 def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, per_val, roe_val, current_vix):
     
     if current_vix < 25:
-        # 🚀 상승장: 폭발적 모멘텀 (족쇄 완전 해제, 펀더멘털 무시)
+        # 🚀 상승장: 기관 주도 폭발적 모멘텀
         zombie_penalty = 0 
         fund_score = 0
         
-        raw_str_sum = (t_str * 3) + (pef_str * 3) + (f_str * 2) + (p_str * 1)
+        # 기관(투신4, 사모4, 연기금2)에 압도적 가중치, 외인(0.5)은 보조 지표로 강등
+        raw_str_sum = (t_str * 4) + (pef_str * 4) + (p_str * 2) + (f_str * 0.5)
         strength_score = max(0, min(20, raw_str_sum * 2))
-        streak_score = max(0, min(10, (foreign_streak * 1.0) + (pension_streak * 0.5)))
+        streak_score = max(0, min(10, (pension_streak * 1.5) + (foreign_streak * 0.5)))
         supply_score = strength_score + streak_score # 최대 30점
 
         turnover_score = 20 if turnover_rate >= 10 else (10 if turnover_rate >= 5 else 0)
@@ -68,12 +69,13 @@ def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, ga
         tech_score = 25 if 102 <= gap_20 <= 115 else (10 if 98 <= gap_20 < 102 else 0) # 최대 25점
         
     else:
-        # 🛡️ 하락장: 안전 스윙 (펀더멘털 방어력 30점 포함)
+        # 🛡️ 하락장: 기관 방어 스윙 (연기금 주도, 투신/사모 보조)
         zombie_penalty = -30 if turnover_rate < 1.5 else 0 
         
-        raw_str_sum = (p_str * 4) + (f_str * 2) + (t_str * 0.5) + (pef_str * 0.5)
-        strength_score = max(0, min(20, raw_str_sum * 3))
-        streak_score = max(0, min(10, (pension_streak * 1.5) + (foreign_streak * 0.5)))
+        # 연기금(5) 압도적 방어력, 투신/사모(2) 단가 관리 포착, 외인(0.5) 강등
+        raw_str_sum = (p_str * 5) + (t_str * 2) + (pef_str * 2) + (f_str * 0.5)
+        strength_score = max(0, min(20, raw_str_sum * 2))
+        streak_score = max(0, min(10, (pension_streak * 2.5) + (foreign_streak * 0.5)))
         supply_score = strength_score + streak_score # 최대 30점
 
         turnover_score = 5 if turnover_rate >= 3 else 0
@@ -86,10 +88,9 @@ def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, ga
         else:
             tech_score = -20 
 
-        # 🔥 하락장 전용 펀더멘털 검증 및 적자 철퇴
         fund_score = (15 if roe_val >= 15 else (10 if roe_val >= 8 else 0)) + (15 if 0 < per_val <= 15 else 0)
         if per_val <= 0: 
-            fund_score -= 20 # 적자 기업 강력 감점
+            fund_score -= 20 
 
     return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score + zombie_penalty)))
 
@@ -156,7 +157,7 @@ def get_live_macro_and_news():
     return macro_str, news_str
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V38.2 파이널: 적자기업 철퇴 & 펀더멘털 복구)...")
+    print("🚀 수집기 봇 가동 시작 (V39.0 기관 수급 눌림목 최적화)...")
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     
@@ -229,7 +230,7 @@ def run_scraper():
                 pension_streak=row_dict.get('연기금연속', 0), 
                 turnover_rate=row_dict.get('손바뀜(%)', 0), 
                 is_ma20_rising=is_ma20_rising_flag, 
-                per_val=row_dict.get('PER', 0), roe_val=row_dict.get('ROE', 0), # 🔥 펀더멘털 주입
+                per_val=row_dict.get('PER', 0), roe_val=row_dict.get('ROE', 0), 
                 current_vix=current_vix
             )
             row_dict['AI수급점수'] = new_score
