@@ -454,7 +454,7 @@ def run_scraper():
                 """
                 
                 config = types.GenerateContentConfig(tools=[{"google_search": {}}])
-                response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt, config=config)
+                response = client.models.generate_content(model='gemini-2.5-flash-lite', contents=prompt, config=config)
                 
                 with open("report.md", "w", encoding="utf-8") as f:
                     f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
