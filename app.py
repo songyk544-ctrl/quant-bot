@@ -381,7 +381,7 @@ else:
                         try:
                             config = types.GenerateContentConfig(tools=[{"google_search": {}}])
                             response = client.models.generate_content_stream(
-                                model='gemini-2.5-flash',
+                                model='gemini-2.5-flash-lite',
                                 contents=prompt,
                                 config=config
                             )
@@ -536,7 +536,7 @@ else:
                                     tools=[{"google_search": {}}]
                                 )
                                 response = client.models.generate_content_stream(
-                                    model='gemini-2.5-flash',
+                                    model='gemini-2.5-flash-lite',
                                     contents=system_prompt,
                                     config=config
                                 )
