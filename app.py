@@ -93,31 +93,33 @@ def load_data():
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
 
-# 🔥 [신규 추가] 네이버 증권 뉴스 및 공시 스크래핑 함수
+# 🔥 [수정 완료] 빈 껍데기 공시 로직 제거 & 네이버 통합 뉴스 검색으로 파워업
 @st.cache_data(ttl=600)
-def get_naver_news_and_notice(code):
-    news_list, notice_list = [], []
-    if not code: return news_list, notice_list
-    code_str = str(code).zfill(6)
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+def get_naver_news(stock_name):
+    """네이버 통합 검색을 통해 종목명이 포함된 가장 최신/정확한 뉴스 5개를 긁어옵니다."""
+    news_list = []
+    if not stock_name: return news_list
     
-    # 최신 뉴스 파싱 (iframe)
-    try:
-        res = requests.get(f"https://finance.naver.com/item/news_news.naver?code={code_str}&page=1", headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        titles = soup.select('.title a')
-        for t in titles[:5]: news_list.append(t.text.strip())
-    except: pass
-
-    # 최신 공시 파싱 (iframe)
-    try:
-        res = requests.get(f"https://finance.naver.com/item/news_notice.naver?code={code_str}&page=1", headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        titles = soup.select('.title a')
-        for t in titles[:3]: notice_list.append(t.text.strip())
-    except: pass
+    # 네이버 포털 통합 뉴스 검색 URL (정확도/최신순)
+    url = f"https://search.naver.com/search.naver?where=news&query={stock_name}&sm=tab_opt&sort=0&photo=0&field=0&pd=0&ds=&de=&docid=&related=0&mynews=0&office_type=0&office_section_code=0&news_office_checked=&nso=so%3Ar%2Cp%3Aall"
     
-    return news_list, notice_list
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+    }
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        titles = soup.select('.news_tit')
+        for t in titles[:5]: 
+            title_text = t.get('title') or t.text
+            if title_text and title_text.strip() not in news_list:
+                news_list.append(title_text.strip())
+    except Exception as e:
+        pass
+        
+    return news_list
 
 df_summary, df_history = load_data()
 
@@ -141,7 +143,6 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    # 🔥 챗봇 탭 삭제 및 주도주 매치업 탭 신설
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "⚔️ 주도주 매치업"])
 
     # --- 탭 1: 매크로 인사이트 ---
@@ -327,7 +328,7 @@ else:
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    # --- 탭 4: 종목 분석 (네이버 크롤링 + Gemma 4 심층 분석) ---
+    # --- 탭 4: 종목 분석 (네이버 통합 검색 뉴스 + Gemma 4 심층 분석) ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
@@ -414,27 +415,23 @@ else:
             st.markdown("---")
 
             st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단 (Gemma 4 RAG)")
-            st.caption("파이썬이 긁어온 100% 팩트 뉴스/공시와 데이터를 바탕으로 Gemma 4 31B 모델이 분석합니다. (할루시네이션 원천 차단)")
+            st.caption("파이썬이 긁어온 100% 팩트 뉴스와 데이터를 바탕으로 Gemma 4 31B 모델이 분석합니다. (할루시네이션 원천 차단)")
 
-            if st.button(f"✨ '{target_stock}' 네이버 뉴스/공시 기반 심층 리포트 생성", use_container_width=True):
+            if st.button(f"✨ '{target_stock}' 네이버 뉴스 기반 심층 리포트 생성", use_container_width=True):
                 if not client:
                     st.error("AI용 API 키가 설정되지 않았습니다.")
                 else:
-                    with st.spinner(f"네이버 금융에서 '{target_stock}'의 실시간 뉴스와 공시를 파싱하고 있습니다..."):
-                        news_list, notice_list = get_naver_news_and_notice(target_code)
+                    with st.spinner(f"네이버 통합검색에서 '{target_stock}'의 실시간 뉴스를 파싱하고 있습니다..."):
+                        news_list = get_naver_news(target_stock)
                         
                         st.markdown("###### 📡 수집된 팩트 데이터")
-                        with st.expander("파싱된 최신 뉴스 및 공시 원본 보기"):
-                            st.write("**[최신 뉴스]**")
+                        with st.expander("파싱된 최신 뉴스 원본 보기"):
+                            st.write("**[최신 통합 검색 뉴스]**")
                             for n in news_list: st.caption(f"- {n}")
                             if not news_list: st.caption("최근 뉴스가 없습니다.")
-                            st.write("**[최신 공시]**")
-                            for n in notice_list: st.caption(f"- {n}")
-                            if not notice_list: st.caption("최근 공시가 없습니다.")
                         
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
                         
-                        # 🔥 구글 검색 툴 제거, 오직 주입된 데이터로만 분석하도록 통제된 프롬프트 구성 (글로벌 이벤트 고려 반영)
                         prompt = f"""
                         너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
                         내가 제공하는 아래의 [팩트 데이터]만을 기반으로 종목명 '{target_stock}'(섹터: {sector_name})에 대한 심층 브리핑을 작성해.
@@ -446,20 +443,16 @@ else:
                         - 외국인 강도: {f_str_val:.1f}% (연속 {f_streak}일)
                         - 연기금 강도: {p_str_val:.1f}% (연속 {p_streak}일)
                         
-                        [팩트 데이터: 네이버 최신 뉴스 Top 5]
+                        [팩트 데이터: 네이버 최신 뉴스 검색결과 Top 5]
                         {chr(10).join(news_list) if news_list else "최신 뉴스 없음"}
                         
-                        [팩트 데이터: 최신 전자공시(DART) Top 3]
-                        {chr(10).join(notice_list) if notice_list else "최신 공시 없음"}
-                        
                         [출력 양식]
-                        1. 📰 최신 모멘텀 요약 (뉴스와 공시 기반 핵심 요약)
+                        1. 📰 최신 모멘텀 요약 (뉴스 기반 핵심 요약)
                         2. 🌍 글로벌 시황 연계 분석 (매크로 환경과 종목의 연관성)
                         3. 💡 수급 및 펀더멘털 평가 (PER, ROE, 기관/외인 수급 해석)
                         4. 🎯 단기 투자 전략 및 리스크 관리 (이격도 고려)
                         """
                         try:
-                            # Gemma 4 31B IT 모델 사용 (검색 config 완전 제거)
                             response = client.models.generate_content_stream(
                                 model='gemma-4-31b-it',
                                 contents=prompt
@@ -550,7 +543,7 @@ else:
     # --- 탭 6: 주도주 매치업 (신설) ---
     with tab6:
         st.subheader("⚔️ 주도주 AI 비교 분석 (매치업)")
-        st.caption("선택한 종목들의 네이버 뉴스와 공시, 퀀트 데이터를 파싱하여 Gemma 4 모델이 최적의 스윙 종목을 판정합니다.")
+        st.caption("선택한 종목들의 네이버 뉴스 통합 검색 결과와 퀀트 데이터를 파싱하여 Gemma 4 모델이 최적의 스윙 종목을 판정합니다.")
 
         if not is_vip:
             show_premium_paywall("AI 기반 다중 종목 비교 분석 기능은 VIP 전용입니다.")
@@ -567,8 +560,7 @@ else:
                             matchup_data = []
                             for ms in matchup_stocks:
                                 s_row = df_summary[df_summary['종목명'] == ms].iloc[0]
-                                s_code = safe_get(s_row, '종목코드', '')
-                                n_news, n_notice = get_naver_news_and_notice(s_code)
+                                n_news = get_naver_news(ms)
                                 
                                 matchup_data.append(f"""
                                 === [후보 종목: {ms}] ===
