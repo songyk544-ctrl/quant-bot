@@ -10,7 +10,7 @@ from google.genai import types
 from datetime import datetime
 import plotly.express as px
 import streamlit.components.v1 as components
-import urllib.parse  # 🔥 [추가] 검색어 인코딩을 위한 라이브러리
+import urllib.parse
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -90,44 +90,59 @@ def load_data():
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
     return df_summary, df_hist
 
-# 🔥 [무적 방어 코드] 컬럼이 없을 때 안전하게 기본값을 반환하는 헬퍼 함수
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
 
-# 🔥 [수정 완료] 네이버 통합 뉴스 검색 + 금융 뉴스 우회 파워업 적용
+# 🔥 [신규 추가] 매크로 주요 시황 스크래핑 함수
+@st.cache_data(ttl=1800)
+def get_macro_headline_news():
+    """네이버 금융 메인의 '주요 뉴스' 5개를 긁어옵니다."""
+    headlines = []
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        res = requests.get("https://finance.naver.com/news/mainnews.naver", headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        titles = soup.select('.articleSubject a')
+        for t in titles[:5]:
+            headlines.append(t.text.strip())
+    except:
+        pass
+    return headlines
+
+# 🔥 [업그레이드] 제목 + 요약 본문(Snippet) 동시 추출
 @st.cache_data(ttl=600)
 def get_naver_news(stock_name):
-    """네이버 통합 검색 및 금융 뉴스를 넘나들며 최신 뉴스를 기어코 긁어옵니다."""
+    """네이버 통합 검색에서 뉴스의 '제목'과 '요약 본문'을 함께 긁어옵니다."""
     news_list = []
     if not stock_name: return news_list
     
-    # 1. 한글 검색어 인코딩 (필수)
     encoded_name = urllib.parse.quote(stock_name)
     url = f"https://search.naver.com/search.naver?where=news&query={encoded_name}&sm=tab_opt&sort=0"
     
-    # 2. 봇 차단을 피하기 위한 완벽한 브라우저 위장 헤더
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
         'Referer': 'https://www.naver.com/'
     }
     
     try:
-        # [STEP A] 네이버 메인 포털 통합 뉴스 타격
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        titles = soup.select('.news_tit')
-        for t in titles:
-            title_text = t.get('title') or t.text
-            if title_text and title_text.strip() not in news_list:
-                news_list.append(title_text.strip())
+        news_items = soup.select('.news_wrap.api_ani_send')
+        for item in news_items:
+            tit_tag = item.select_one('.news_tit')
+            desc_tag = item.select_one('.api_txt_lines.dsc_txt_wrap')
+            
+            if tit_tag:
+                title = tit_tag.get('title') or tit_tag.text
+                desc = desc_tag.text if desc_tag else ""
+                full_text = f"제목: {title.strip()} / 핵심내용: {desc.strip()}"
+                if full_text not in news_list:
+                    news_list.append(full_text)
             if len(news_list) >= 5: break
             
-        # [STEP B] 포털에서 막혔거나 뉴스가 없다면? -> 네이버 금융 내부 검색으로 우회 타격
         if not news_list:
-            # 네이버 금융은 옛날 방식인 EUC-KR 인코딩을 씁니다.
             encoded_euckr = urllib.parse.quote(stock_name.encode('euc-kr'))
             fin_url = f"https://finance.naver.com/news/news_search.naver?q={encoded_euckr}"
             res_fin = requests.get(fin_url, headers=headers, timeout=5)
@@ -137,13 +152,12 @@ def get_naver_news(stock_name):
             for t in fin_titles:
                 title_text = t.get('title') or t.text
                 if title_text and title_text.strip() not in news_list:
-                    news_list.append(title_text.strip())
+                    news_list.append(f"제목: {title_text.strip()}")
                 if len(news_list) >= 5: break
                 
     except Exception as e:
         pass
         
-    # 끝까지 못 긁어왔을 때 AI가 헛소리하지 않도록 방어
     if not news_list:
         news_list = ["현재 실시간 뉴스를 불러오지 못했습니다 (최근 특이 뉴스 없음)."]
         
@@ -356,7 +370,7 @@ else:
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    # --- 탭 4: 종목 분석 (네이버 통합 검색 뉴스 + Gemma 4 심층 분석) ---
+    # --- 탭 4: 종목 분석 (네이버 통합 검색 뉴스 + 매크로 시황 융합 RAG) ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
@@ -443,27 +457,32 @@ else:
             st.markdown("---")
 
             st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단 (Gemma 4 RAG)")
-            st.caption("파이썬이 긁어온 100% 팩트 뉴스와 데이터를 바탕으로 Gemma 4 31B 모델이 분석합니다. (할루시네이션 원천 차단)")
+            st.caption("파이썬이 긁어온 100% 팩트 뉴스(시황+종목요약)와 데이터를 바탕으로 Gemma 4 31B 모델이 분석합니다.")
 
-            if st.button(f"✨ '{target_stock}' 네이버 뉴스 기반 심층 리포트 생성", use_container_width=True):
+            if st.button(f"✨ '{target_stock}' 뉴스/시황 기반 심층 리포트 생성", use_container_width=True):
                 if not client:
                     st.error("AI용 API 키가 설정되지 않았습니다.")
                 else:
-                    with st.spinner(f"네이버 통합검색에서 '{target_stock}'의 실시간 뉴스를 파싱하고 있습니다..."):
+                    with st.spinner(f"네이버 금융(거시 시황) 및 통합검색(종목 요약)에서 팩트 데이터를 파싱하고 있습니다..."):
+                        macro_news = get_macro_headline_news()
                         news_list = get_naver_news(target_stock)
                         
                         st.markdown("###### 📡 수집된 팩트 데이터")
-                        with st.expander("파싱된 최신 뉴스 원본 보기"):
-                            st.write("**[최신 통합 검색 뉴스]**")
+                        with st.expander("파싱된 최신 시황 및 종목 뉴스 원본 보기"):
+                            st.write("**[오늘의 주요 시황 뉴스]**")
+                            for mn in macro_news: st.caption(f"- {mn}")
+                            if not macro_news: st.caption("시황 뉴스가 없습니다.")
+                            
+                            st.write("**[최신 통합 검색 뉴스 (종목 요약)]**")
                             for n in news_list: st.caption(f"- {n}")
-                            if not news_list: st.caption("최근 뉴스가 없습니다.")
+                            if not news_list: st.caption("최근 종목 뉴스가 없습니다.")
                         
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
                         
                         prompt = f"""
                         너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
                         내가 제공하는 아래의 [팩트 데이터]만을 기반으로 종목명 '{target_stock}'(섹터: {sector_name})에 대한 심층 브리핑을 작성해.
-                        인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해. 글로벌 정세 및 매크로 환경(미국 금리, 환율 동향 등)이 이 종목이 속한 섹터에 미칠 영향도 반드시 고려해서 코멘트해줘.
+                        인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해. 주요 시황 뉴스를 통해 현재 시장의 분위기를 파악하고, 이것이 해당 종목에 미칠 영향을 반드시 연계해서 분석해.
                         
                         [팩트 데이터: 수급 및 펀더멘털]
                         - PER: {per_val:.1f}, ROE: {roe_val:.1f}%
@@ -471,14 +490,17 @@ else:
                         - 외국인 강도: {f_str_val:.1f}% (연속 {f_streak}일)
                         - 연기금 강도: {p_str_val:.1f}% (연속 {p_streak}일)
                         
-                        [팩트 데이터: 네이버 최신 뉴스 검색결과 Top 5]
-                        {chr(10).join(news_list) if news_list else "최신 뉴스 없음"}
+                        [팩트 데이터: 오늘의 거시 경제/시황 주요 뉴스]
+                        {chr(10).join(macro_news) if macro_news else "시황 뉴스 없음"}
+                        
+                        [팩트 데이터: 네이버 최신 뉴스 검색결과 (제목 및 본문 요약)]
+                        {chr(10).join(news_list) if news_list else "최신 종목 뉴스 없음"}
                         
                         [출력 양식]
-                        1. 📰 최신 모멘텀 요약 (뉴스 기반 핵심 요약)
-                        2. 🌍 글로벌 시황 연계 분석 (매크로 환경과 종목의 연관성)
+                        1. 📰 최신 모멘텀 요약 (종목 뉴스 요약본 기반 구체적 분석)
+                        2. 🌍 매크로 시황 연계 분석 (거시 경제 주요 뉴스와 종목의 연관성 및 방향성)
                         3. 💡 수급 및 펀더멘털 평가 (PER, ROE, 기관/외인 수급 해석)
-                        4. 🎯 단기 투자 전략 및 리스크 관리 (이격도 고려)
+                        4. 🎯 단기 투자 전략 및 리스크 관리 (시장 분위기와 이격도를 종합적으로 고려)
                         """
                         try:
                             response = client.models.generate_content_stream(
@@ -486,7 +508,7 @@ else:
                                 contents=prompt
                             )
 
-                            st.success("✅ Gemma 4 31B RAG 분석 완료!")
+                            st.success("✅ Gemma 4 31B RAG 분석 완료 (Top-Down 융합)!")
                             def stream_generator():
                                 for chunk in response:
                                     if chunk.text: yield chunk.text
@@ -495,7 +517,7 @@ else:
                                 st.write_stream(stream_generator)
 
                         except Exception as e:
-                            st.error(f"분석 중 오류 발생 (API 키 모델 접근 권한이나 서버 상태를 확인하세요): {e}")
+                            st.error(f"분석 중 오류 발생: {e}")
 
     # --- 탭 5: 백테스트 ---
     with tab5:
@@ -571,7 +593,7 @@ else:
     # --- 탭 6: 주도주 매치업 (신설) ---
     with tab6:
         st.subheader("⚔️ 주도주 AI 비교 분석 (매치업)")
-        st.caption("선택한 종목들의 네이버 뉴스 통합 검색 결과와 퀀트 데이터를 파싱하여 Gemma 4 모델이 최적의 스윙 종목을 판정합니다.")
+        st.caption("선택한 종목들의 네이버 뉴스 통합 검색 결과(본문 요약)와 시황, 퀀트 데이터를 파싱하여 Gemma 4 모델이 최적의 스윙 종목을 판정합니다.")
 
         if not is_vip:
             show_premium_paywall("AI 기반 다중 종목 비교 분석 기능은 VIP 전용입니다.")
@@ -584,7 +606,8 @@ else:
                 
                 if len(matchup_stocks) > 1:
                     if st.button("🚀 AI 매치업 시작", use_container_width=True, type="primary"):
-                        with st.spinner("선택된 종목들의 최신 데이터와 뉴스를 긁어오고 있습니다..."):
+                        with st.spinner("선택된 종목들의 최신 데이터와 매크로 시황을 긁어오고 있습니다..."):
+                            macro_news = get_macro_headline_news()
                             matchup_data = []
                             for ms in matchup_stocks:
                                 s_row = df_summary[df_summary['종목명'] == ms].iloc[0]
@@ -594,21 +617,24 @@ else:
                                 === [후보 종목: {ms}] ===
                                 - 섹터: {safe_get(s_row, '섹터', '분류안됨')} / AI점수: {safe_get(s_row, 'AI수급점수', 0)}점
                                 - 이격도: {safe_get(s_row, '이격도(%)', 100)}% / 외국인연속: {safe_get(s_row, '외인연속', 0)}일 / 연기금연속: {safe_get(s_row, '연기금연속', 0)}일
-                                - 최근 뉴스: {', '.join(n_news[:3]) if n_news else '없음'}
+                                - 최근 뉴스 (요약 포함): {chr(10).join(n_news[:3]) if n_news else '없음'}
                                 """)
                             
                             combined_data_str = "\n".join(matchup_data)
                             
                             prompt = f"""
-                            너는 수석 퀀트 애널리스트야. 내가 아래에 제공한 {len(matchup_stocks)}개 종목의 [팩트 데이터]를 꼼꼼히 비교 분석해.
-                            글로벌 매크로 환경을 고려했을 때, 현재 단기 스윙(눌림목 및 수급 모멘텀) 관점에서 어떤 종목이 가장 유리한지 승자를 명확히 판정하고 그 이유를 설명해.
+                            너는 수석 퀀트 애널리스트야. 내가 아래에 제공한 {len(matchup_stocks)}개 종목의 [후보 종목 데이터]를 꼼꼼히 비교 분석해.
+                            또한, [오늘의 주요 시황 뉴스]를 바탕으로 글로벌 매크로 환경을 고려했을 때, 현재 단기 스윙(눌림목 및 수급 모멘텀) 관점에서 어떤 종목이 가장 유리한지 승자를 명확히 판정하고 그 이유를 설명해.
                             
-                            [팩트 데이터]
+                            [팩트 데이터: 오늘의 주요 시황 뉴스]
+                            {chr(10).join(macro_news) if macro_news else "시황 뉴스 없음"}
+                            
+                            [후보 종목 데이터]
                             {combined_data_str}
                             
                             다음 양식으로 답변해줘:
                             🏆 **최종 승자**: (종목명)
-                            🔍 **선정 이유**: (수급, 이격도, 뉴스를 종합하여 3~4줄로 핵심만 요약)
+                            🔍 **선정 이유**: (수급, 이격도, 종목 뉴스 요약 내용, 시황을 종합하여 3~4줄로 핵심만 요약)
                             ⚖️ **탈락 종목 코멘트**: (왜 승자보다 아쉬운지 짧게 분석)
                             """
                             
