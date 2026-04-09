@@ -146,18 +146,27 @@ def get_live_macro_and_news():
                 macro_str += f"- {name}: {curr:.2f} ({change_pct:+.2f}%)\n"
         except: pass
     
+    # 🔥 [기능 업데이트] 네이버 시황 뉴스 제목 + 요약 본문 동시 스크래핑
     news_str = ""
     try:
         res = requests.get("https://finance.naver.com/news/mainnews.naver", headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(res.text, 'html.parser')
-        headlines = [tag.text.strip() for tag in soup.select('.articleSubject a')[:5]]
-        news_str = "\n".join([f"- {h}" for h in headlines])
+        subjects = soup.select('.articleSubject a')
+        summaries = soup.select('.articleSummary')
+        
+        news_list = []
+        for i in range(min(5, len(subjects))):
+            title = subjects[i].text.strip()
+            desc = summaries[i].text.strip() if i < len(summaries) else ""
+            desc = ' '.join(desc.split()) # 불필요한 줄바꿈 및 탭 제거
+            news_list.append(f"제목: {title} / 내용: {desc}")
+        news_str = "\n".join([f"- {n}" for n in news_list])
     except: news_str = "- 뉴스 수집 실패"
     
     return macro_str, news_str
 
 def run_scraper():
-    print("🚀 수집기 봇 가동 시작 (V39.0 기관 수급 눌림목 최적화)...")
+    print("🚀 수집기 봇 가동 시작 (V40.4 기관 수급 눌림목 최적화 & 백테스트 방어)...")
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     
@@ -191,10 +200,13 @@ def run_scraper():
             force_full_parse = True
             print("⚠️ 기존 데이터에 [추세상승] 정보가 없습니다. 새로운 로직 적용을 위해 1회 한투 API를 강제 호출합니다.")
 
+    is_test_mode = False # 🔥 테스트 모드 여부를 감지하는 플래그 설정
+
     # ==========================================
-    # 1. 슈퍼 캐시 모드
+    # 1. 슈퍼 캐시 모드 (테스트 모드)
     # ==========================================
     if already_fetched_kis and os.path.exists("data.csv") and not force_full_parse:
+        is_test_mode = True # KIS API를 스킵하는 테스트 워크플로우임을 확정
         print(f"⚡ [슈퍼 캐시 모드] 기준일({target_kis_date}) 수급 데이터 존재 확인. KIS API를 스킵합니다.")
         
         df_target = get_target_stock_list()
@@ -242,7 +254,7 @@ def run_scraper():
         eval_msg = "⚡ (슈퍼 캐시 모드로 재산출된 랭킹입니다.)\n\n"
             
     # ==========================================
-    # 2. 풀 파싱 모드
+    # 2. 풀 파싱 모드 (정규 수집)
     # ==========================================
     else:
         print("📥 [풀 파싱 모드] 새로운 수급 데이터 및 추세 정보를 KIS API로부터 수집합니다.")
@@ -381,29 +393,32 @@ def run_scraper():
             
             daily_ret = sum(returns) / len(returns) if returns else 0
             
-            cum_ret = daily_ret
-            if os.path.exists(perf_file):
-                df_perf = pd.read_csv(perf_file)
-                if not df_perf.empty:
-                    df_perf = df_perf[df_perf['날짜'] != today_date] 
-                    cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
+            # 🔥 [방어 로직] KIS API를 스킵하는 테스트 모드일 때는 포트폴리오 수익률을 절대 갱신하지 않음
+            if not is_test_mode:
+                cum_ret = daily_ret
+                if os.path.exists(perf_file):
+                    df_perf = pd.read_csv(perf_file)
+                    if not df_perf.empty:
+                        df_perf = df_perf[df_perf['날짜'] != today_date] 
+                        cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
+                    else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
                 else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-            else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-                
-            new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
-            pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
+                    
+                new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
+                pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
 
             if is_eod_updated:
                 eval_msg += "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
                 
-                top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
-                top3_df['날짜'] = today_date
-                top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+                if not is_test_mode:
+                    top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
+                    top3_df['날짜'] = today_date
+                    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
             else:
                 eval_msg += "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
         except: pass
     else:
-        if is_eod_updated:
+        if is_eod_updated and not is_test_mode:
             top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
             top3_df['날짜'] = today_date
             top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
@@ -433,6 +448,7 @@ def run_scraper():
                 
                 macro_str, news_str = get_live_macro_and_news()
                 
+                # 🔥 [기능 업데이트] Google 검색 제거 및 네이버 뉴스 RAG 기반 프롬프트로 재설계
                 prompt = f"""
                 너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
                 현재 VIX 지수는 {current_vix:.2f}로 {regime} 모드로 포트폴리오가 구성되었어.
@@ -440,21 +456,24 @@ def run_scraper():
                 [1. 매크로 지표]
                 {macro_str}
                 
-                [2. 금융 속보]
+                [2. 네이버 금융 주요 뉴스 (제목 및 내용 요약)]
                 {news_str}
                 
                 [3. 최상위 20개 종목 수급 및 모멘텀 동향]
                 {df_merged.to_string(index=False)}
 
                 다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
-                1. 🌐 글로벌 매크로 브리핑: 구글 검색을 활용하여 오늘 시장을 움직인 뉴스를 요약해.
+                1. 🌐 글로벌 매크로 브리핑: 제공된 네이버 금융 주요 뉴스를 활용하여 오늘 시장을 움직인 핵심 이슈를 요약해.
                 2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%), 손바뀜을 참고하여 시장의 자금이 쏠린 핫섹터를 분석해.
-                3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 구글 검색 이슈와 맞물려 설명해.
+                3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 시황 및 수급 모멘텀과 맞물려 설명해. (인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해.)
     [🚨 절대 엄수 사항] 텔레그램 전송용이므로 마크다운 표(Table)는 절대 사용하지 마.
                 """
                 
-                config = types.GenerateContentConfig(tools=[{"google_search": {}}])
-                response = client.models.generate_content(model='gemini-2.5-flash-lite', contents=prompt, config=config)
+                # 🔥 Gemma 4 31B IT 모델 사용 (검색 config 완전 제거)
+                response = client.models.generate_content(
+                    model='gemma-4-31b-it', 
+                    contents=prompt
+                )
                 
                 with open("report.md", "w", encoding="utf-8") as f:
                     f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
