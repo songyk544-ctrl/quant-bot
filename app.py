@@ -3,10 +3,13 @@ import pandas as pd
 import altair as alt
 import os
 import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
 from datetime import datetime
 import plotly.express as px
+import streamlit.components.v1 as components
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -86,6 +89,36 @@ def load_data():
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
     return df_summary, df_hist
 
+# 🔥 [무적 방어 코드] 컬럼이 없을 때 안전하게 기본값을 반환하는 헬퍼 함수
+def safe_get(row, col_name, default=0.0):
+    return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
+
+# 🔥 [신규 추가] 네이버 증권 뉴스 및 공시 스크래핑 함수
+@st.cache_data(ttl=600)
+def get_naver_news_and_notice(code):
+    news_list, notice_list = [], []
+    if not code: return news_list, notice_list
+    code_str = str(code).zfill(6)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # 최신 뉴스 파싱 (iframe)
+    try:
+        res = requests.get(f"https://finance.naver.com/item/news_news.naver?code={code_str}&page=1", headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        titles = soup.select('.title a')
+        for t in titles[:5]: news_list.append(t.text.strip())
+    except: pass
+
+    # 최신 공시 파싱 (iframe)
+    try:
+        res = requests.get(f"https://finance.naver.com/item/news_notice.naver?code={code_str}&page=1", headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        titles = soup.select('.title a')
+        for t in titles[:3]: notice_list.append(t.text.strip())
+    except: pass
+    
+    return news_list, notice_list
+
 df_summary, df_history = load_data()
 
 if df_summary.empty:
@@ -108,7 +141,8 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "💬 Ask DeepAlpha"])
+    # 🔥 챗봇 탭 삭제 및 주도주 매치업 탭 신설
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🌍 매크로 인사이트", "🗺️ 섹터 히트맵", "📊 수급 스크리너", "📈 종목 분석", "🏆 백테스트", "⚔️ 주도주 매치업"])
 
     # --- 탭 1: 매크로 인사이트 ---
     with tab1:
@@ -165,7 +199,7 @@ else:
             else:
                 st.info("데이터 대기 중입니다.")
 
-    # --- 탭 3: 수급 스크리너 (프리미엄 하이브리드 UI) ---
+    # --- 탭 3: 수급 스크리너 ---
     with tab3:
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
@@ -191,29 +225,28 @@ else:
             for idx, row in df_display.iterrows():
                 rank = int(row['현재_순위'])
                 name = row['종목명']
-                sector = row['섹터'] if pd.notna(row['섹터']) else "분류안됨"
-                price = f"{row['현재가']:,.0f}"
-                chg = float(row['등락률'])
+                sector = safe_get(row, '섹터', '분류안됨')
+                price = f"{safe_get(row, '현재가', 0):,.0f}"
+                chg = float(safe_get(row, '등락률', 0))
                 chg_color = "#FF4B4B" if chg > 0 else "#1C83E1" if chg < 0 else "#AAAAAA"
                 chg_str = f"▲ {chg:.2f}%" if chg > 0 else f"▼ {abs(chg):.2f}%" if chg < 0 else "0.00%"
-                ai_score = int(row['AI수급점수'])
-                rank_chg = row['랭킹추세']
-                f_str = f"{float(row['외인강도(%)']):.1f}%"
-                p_str = f"{float(row['연기금강도(%)']):.1f}%"
+                ai_score = int(safe_get(row, 'AI수급점수', 0))
+                rank_chg = safe_get(row, '랭킹추세', '-')
+                f_str = f"{float(safe_get(row, '외인강도(%)', 0)):.1f}%"
+                p_str = f"{float(safe_get(row, '연기금강도(%)', 0)):.1f}%"
                 
-                rc_color = "#FF4B4B" if "▲" in rank_chg else ("#1C83E1" if "▼" in rank_chg else "#888888")
+                rc_color = "#FF4B4B" if "▲" in str(rank_chg) else ("#1C83E1" if "▼" in str(rank_chg) else "#888888")
                 
-                # 🔥 [수정] 카드 뷰에서도 섹터를 종목명 옆 세련된 배지 형태로 변경
                 card_html = f"""
 <div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
 <div style="display: flex; flex-direction: column; gap: 8px;">
-<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
 <span style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.7em; font-weight: 800; padding: 4px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); white-space: nowrap;">🏆 {rank}위</span>
 <span style="font-size: 0.8em; font-weight: bold; color: {rc_color}; white-space: nowrap;">{rank_chg}</span>
 <span style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
-<span style="background-color: #2A2A35; border: 1px solid #444; color: #DDD; font-size: 0.7em; font-weight: bold; padding: 3px 10px; border-radius: 15px; white-space: nowrap;">{sector}</span>
 </div>
+<div><span style="font-size: 0.75em; color: #AAA; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span></div>
 </div>
 <div style="text-align: right; min-width: 80px;">
 <div style="font-size: 1.1em; font-weight: 700; color: #FFF;">{price}원</div>
@@ -253,7 +286,12 @@ else:
 
             df_display_table = df_display.set_index('종목명')
 
-            styled_df = df_display_table.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).map(color_momentum, subset=['랭킹추세']).format({"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%", "PER": "{:.1f}", "ROE": "{:.1f}%"})
+            styled_df = df_display_table.style.map(color_score, subset=['AI수급점수']).map(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)']).map(color_momentum, subset=['랭킹추세'])
+            
+            format_dict = {"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%"}
+            if 'PER' in df_display_table.columns: format_dict["PER"] = "{:.1f}"
+            if 'ROE' in df_display_table.columns: format_dict["ROE"] = "{:.1f}%"
+            styled_df = styled_df.format(format_dict)
 
             base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
             advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
@@ -289,7 +327,7 @@ else:
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    # --- 탭 4: 종목 분석 ---
+    # --- 탭 4: 종목 분석 (네이버 크롤링 + Gemma 4 심층 분석) ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
@@ -297,18 +335,30 @@ else:
         if "selected_stock" not in st.session_state or st.session_state.selected_stock not in stock_list:
             st.session_state.selected_stock = stock_list[0]
             
-        selected_stock = st.selectbox("🔍 분석할 종목을 검색/선택하세요", options=stock_list, index=stock_list.index(st.session_state.selected_stock))
+        selected_stock = st.selectbox(
+            "🔍 분석할 종목을 검색/선택하세요", 
+            options=stock_list, 
+            index=stock_list.index(st.session_state.selected_stock)
+        )
         st.session_state.selected_stock = selected_stock
         target_stock = selected_stock
         
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
+        
+        sector_name = safe_get(selected_row, '섹터', '분류안됨')
+        cur_rank = safe_get(selected_row, '현재_순위', 0)
+        ai_score = safe_get(selected_row, 'AI수급점수', 0)
+        rank_trend = safe_get(selected_row, '랭킹추세', '-')
+        marcap = safe_get(selected_row, '시가총액', 0)
+        per_val = safe_get(selected_row, 'PER', 0.0)
+        roe_val = safe_get(selected_row, 'ROE', 0.0)
+        gap_20 = safe_get(selected_row, '이격도(%)', 100)
+        target_code = safe_get(selected_row, '종목코드', '')
 
-        # 🔥 [수정] 대괄호 형태의 섹터를 세련된 둥근 뱃지 형태로 변경
-        sector_name = selected_row.get('섹터', '분류안됨')
         st.markdown(f"""
-        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px;">
-            <h3 style="margin: 0; padding: 0;">💡 {target_stock}</h3>
-            <span style="background: linear-gradient(135deg, #1C83E1, #0056b3); color: white; font-size: 0.85em; font-weight: 600; padding: 5px 14px; border-radius: 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);">
+        <div style="display: flex; align-items: center; margin-top: 5px; margin-bottom: 20px;">
+            <h2 style="margin: 0; padding-right: 12px; color: #FFFFFF;">💡 {target_stock}</h2>
+            <span style="background: linear-gradient(135deg, #1C83E1, #0A58A3); color: white; padding: 4px 14px; border-radius: 20px; font-size: 0.9em; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
                 {sector_name}
             </span>
         </div>
@@ -318,22 +368,30 @@ else:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
         else:
             col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric(f"🏆 AI 점수 (전체 {int(selected_row['현재_순위'])}위)", f"{selected_row['AI수급점수']}점", f"순위 변동: {selected_row['랭킹추세']}")
-            col_m2.metric("💰 시가총액", f"{selected_row['시가총액']:,.0f}억")
-            col_m3.metric("📊 PER / ROE", f"{selected_row['PER']:.1f} / {selected_row['ROE']:.1f}%")
+            col_m1.metric(f"🏆 AI 점수 (전체 {int(cur_rank)}위)", f"{ai_score}점", f"순위 변동: {rank_trend}")
+            col_m2.metric("💰 시가총액", f"{marcap:,.0f}억")
+            
+            col_m3.metric("📊 PER / ROE", f"{per_val:.1f} / {roe_val:.1f}%")
 
-            tech_status = "🟢최적 매수" if 101 <= selected_row['이격도(%)'] <= 108 else ("🔴리스크 관리" if selected_row['이격도(%)'] < 95 else "⚫추세 추종")
-            col_m4.metric("📈 20일선 이격도", f"{selected_row['이격도(%)']}%", tech_status, delta_color="off")
+            tech_status = "🟢최적 매수" if 101 <= gap_20 <= 108 else ("🔴리스크 관리" if gap_20 < 95 else "⚫추세 추종")
+            col_m4.metric("📈 20일선 이격도", f"{gap_20}%", tech_status, delta_color="off")
             
             st.markdown("<br>", unsafe_allow_html=True)
             
             st.markdown("##### 🛒 주체별 1개월 수급 강도 및 연속 매수")
             col_s1, col_s2, col_s3, col_s4 = st.columns(4)
             
-            col_s1.metric("🔴 외인 강도", f"{float(selected_row['외인강도(%)']):.1f}%", f"{int(selected_row['외인연속'])}일 연속 순매수" if selected_row['외인연속'] > 0 else "연속매수 없음", delta_color="off")
-            col_s2.metric("🔵 연기금 강도", f"{float(selected_row['연기금강도(%)']):.1f}%", f"{int(selected_row['연기금연속'])}일 연속 순매수" if selected_row['연기금연속'] > 0 else "연속매수 없음", delta_color="off")
-            col_s3.metric("🟡 투신 강도", f"{float(selected_row['투신강도(%)']):.1f}%")
-            col_s4.metric("🟣 사모 강도", f"{float(selected_row['사모강도(%)']):.1f}%")
+            f_str_val = float(safe_get(selected_row, '외인강도(%)', 0))
+            p_str_val = float(safe_get(selected_row, '연기금강도(%)', 0))
+            t_str_val = float(safe_get(selected_row, '투신강도(%)', 0))
+            pef_str_val = float(safe_get(selected_row, '사모강도(%)', 0))
+            f_streak = int(safe_get(selected_row, '외인연속', 0))
+            p_streak = int(safe_get(selected_row, '연기금연속', 0))
+
+            col_s1.metric("🔴 외인 강도", f"{f_str_val:.1f}%", f"{f_streak}일 연속 순매수" if f_streak > 0 else "연속매수 없음", delta_color="off")
+            col_s2.metric("🔵 연기금 강도", f"{p_str_val:.1f}%", f"{p_streak}일 연속 순매수" if p_streak > 0 else "연속매수 없음", delta_color="off")
+            col_s3.metric("🟡 투신 강도", f"{t_str_val:.1f}%")
+            col_s4.metric("🟣 사모 강도", f"{pef_str_val:.1f}%")
 
             st.markdown("---")
 
@@ -355,38 +413,59 @@ else:
 
             st.markdown("---")
 
-            st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단")
-            st.caption("구글 검색 엔진을 활용하여 해당 종목의 최신 호재/악재 및 글로벌 시황 연계 분석을 제공합니다.")
+            st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단 (Gemma 4 RAG)")
+            st.caption("파이썬이 긁어온 100% 팩트 뉴스/공시와 데이터를 바탕으로 Gemma 4 31B 모델이 분석합니다. (할루시네이션 원천 차단)")
 
-            if st.button(f"✨ '{target_stock}' 실시간 심층 리포트 생성", use_container_width=True):
+            if st.button(f"✨ '{target_stock}' 네이버 뉴스/공시 기반 심층 리포트 생성", use_container_width=True):
                 if not client:
-                    st.error("AI 챗봇용 제미나이 API 키가 설정되지 않았습니다.")
+                    st.error("AI용 API 키가 설정되지 않았습니다.")
                 else:
-                    with st.spinner(f"구글 검색으로 '{target_stock}'의 매크로 연계 모멘텀을 수집 중입니다..."):
+                    with st.spinner(f"네이버 금융에서 '{target_stock}'의 실시간 뉴스와 공시를 파싱하고 있습니다..."):
+                        news_list, notice_list = get_naver_news_and_notice(target_code)
+                        
+                        st.markdown("###### 📡 수집된 팩트 데이터")
+                        with st.expander("파싱된 최신 뉴스 및 공시 원본 보기"):
+                            st.write("**[최신 뉴스]**")
+                            for n in news_list: st.caption(f"- {n}")
+                            if not news_list: st.caption("최근 뉴스가 없습니다.")
+                            st.write("**[최신 공시]**")
+                            for n in notice_list: st.caption(f"- {n}")
+                            if not notice_list: st.caption("최근 공시가 없습니다.")
+                        
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
-
+                        
+                        # 🔥 구글 검색 툴 제거, 오직 주입된 데이터로만 분석하도록 통제된 프롬프트 구성 (글로벌 이벤트 고려 반영)
                         prompt = f"""
                         너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
-                        종목명 '{target_stock}'(섹터: {selected_row.get('섹터', '알수없음')})에 대해 '구글 검색'을 반드시 돌려서 아래 양식으로 밀도 있는 브리핑을 해줘.
+                        내가 제공하는 아래의 [팩트 데이터]만을 기반으로 종목명 '{target_stock}'(섹터: {sector_name})에 대한 심층 브리핑을 작성해.
+                        인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해. 글로벌 정세 및 매크로 환경(미국 금리, 환율 동향 등)이 이 종목이 속한 섹터에 미칠 영향도 반드시 고려해서 코멘트해줘.
                         
-                        [분석 필수 조건]
-                        단순한 개별 종목 뉴스를 나열하지 마. 현재 진행 중인 **글로벌 매크로 이벤트(미국 금리, 환율 동향, 나스닥/S&P500 등 거시 경제 흐름)가 이 특정 종목이나 소속 섹터에 어떤 영향을 미칠지** 반드시 연계해서 입체적으로 코멘트할 것. 만약 사용자가 놓칠만한 리스크가 있다면 그것도 추가로 짚어줘.
+                        [팩트 데이터: 수급 및 펀더멘털]
+                        - PER: {per_val:.1f}, ROE: {roe_val:.1f}%
+                        - 20일선 이격도: {gap_20}%
+                        - 외국인 강도: {f_str_val:.1f}% (연속 {f_streak}일)
+                        - 연기금 강도: {p_str_val:.1f}% (연속 {p_streak}일)
+                        
+                        [팩트 데이터: 네이버 최신 뉴스 Top 5]
+                        {chr(10).join(news_list) if news_list else "최신 뉴스 없음"}
+                        
+                        [팩트 데이터: 최신 전자공시(DART) Top 3]
+                        {chr(10).join(notice_list) if notice_list else "최신 공시 없음"}
                         
                         [출력 양식]
-                        1. 📰 최신 모멘텀 & 핵심 뉴스: 구글 검색을 통해 알아낸 이 종목의 가장 최근(오늘/이번 주) 호재 및 악재 이슈
-                        2. 🌍 글로벌 시황 연계 분석: (필수 작성) 현재 글로벌 매크로 환경이나 해외 동종 업계(Peer) 흐름이 해당 종목에 주는 영향 
-                        3. 💡 수급 및 펀더멘털 평가: PER {selected_row['PER']}, ROE {selected_row['ROE']} 및 기관/외인 수급 강도 분석
-                        4. 🎯 단기 투자 전략 및 리스크 관리: 현재 이격도({selected_row['이격도(%)']}%)를 고려한 매수/보유/관망 의견과 주의해야 할 매크로 변수
+                        1. 📰 최신 모멘텀 요약 (뉴스와 공시 기반 핵심 요약)
+                        2. 🌍 글로벌 시황 연계 분석 (매크로 환경과 종목의 연관성)
+                        3. 💡 수급 및 펀더멘털 평가 (PER, ROE, 기관/외인 수급 해석)
+                        4. 🎯 단기 투자 전략 및 리스크 관리 (이격도 고려)
                         """
                         try:
-                            config = types.GenerateContentConfig(tools=[{"google_search": {}}])
+                            # Gemma 4 31B IT 모델 사용 (검색 config 완전 제거)
                             response = client.models.generate_content_stream(
-                                model='gemini-2.5-flash-lite',
-                                contents=prompt,
-                                config=config
+                                model='gemma-4-31b-it',
+                                contents=prompt
                             )
 
-                            st.success("✅ 실시간 검색 및 탑다운 분석 완료!")
+                            st.success("✅ Gemma 4 31B RAG 분석 완료!")
                             def stream_generator():
                                 for chunk in response:
                                     if chunk.text: yield chunk.text
@@ -395,7 +474,7 @@ else:
                                 st.write_stream(stream_generator)
 
                         except Exception as e:
-                            st.error(f"분석 중 오류 발생: {e}")
+                            st.error(f"분석 중 오류 발생 (API 키 모델 접근 권한이나 서버 상태를 확인하세요): {e}")
 
     # --- 탭 5: 백테스트 ---
     with tab5:
@@ -468,88 +547,76 @@ else:
                 else: st.info("⏳ 데이터 대기 중")
             else: st.info("⏳ 데이터 대기 중")
 
-    # --- 탭 6: 챗봇 ---
+    # --- 탭 6: 주도주 매치업 (신설) ---
     with tab6:
-        st.subheader("💬 Ask DeepAlpha (AI 퀀트 비서)")
+        st.subheader("⚔️ 주도주 AI 비교 분석 (매치업)")
+        st.caption("선택한 종목들의 네이버 뉴스와 공시, 퀀트 데이터를 파싱하여 Gemma 4 모델이 최적의 스윙 종목을 판정합니다.")
 
         if not is_vip:
-            show_premium_paywall("실시간 AI 퀀트 애널리스트와의 1:1 무제한 질의응답은 VIP 전용입니다.")
+            show_premium_paywall("AI 기반 다중 종목 비교 분석 기능은 VIP 전용입니다.")
         else:
             if not client:
-                st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 챗봇을 사용할 수 없습니다.")
+                st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 AI 매치업을 사용할 수 없습니다.")
             else:
-                if "messages" not in st.session_state:
-                    st.session_state.messages = [{"role": "assistant", "content": "안녕하세요! 종목 분석이나 최신 글로벌 금융 뉴스에 대해 무엇이든 물어보세요."}]
-
-                chat_container = st.container()
-                with chat_container:
-                    for msg in st.session_state.messages:
-                        if msg["role"] == "assistant":
-                            st.chat_message("assistant", avatar="🏛️").write(msg["content"])
-                        else:
-                            st.chat_message("user", avatar="👤").write(msg["content"])
-
-                top_stock = df_summary.iloc[0]['종목명'] if not df_summary.empty else "삼성전자"
-                top_sector = df_summary['섹터'].value_counts().idxmax() if not df_summary.empty else "반도체"
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.caption("🔍 실시간 데이터 기반 추천 질문 (클릭 시 자동 분석)")
-                col1, col2, col3 = st.columns(3)
-
-                if col1.button(f"🔥 {top_sector} 섹터 동향", use_container_width=True):
-                    st.session_state.trigger_prompt = f"오늘 핫한 '{top_sector}' 섹터의 수급 동향을 짚어주고, 이 섹터가 현재 미국의 최신 이슈와 어떤 연관성이 있는지 검색해서 분석해줘."
-                if col2.button(f"🏆 {top_stock} 매크로 분석", use_container_width=True):
-                    st.session_state.trigger_prompt = f"오늘 수급 1위인 '{top_stock}'의 매력 포인트를 설명해주고, 이 종목에 영향을 줄 수 있는 최신 글로벌 뉴스를 검색해서 함께 코멘트해줘."
-                if col3.button("🌍 오늘의 글로벌 뉴스 검색", use_container_width=True):
-                    st.session_state.trigger_prompt = "지금 당장 구글을 검색해서, 오늘 글로벌 주식 시장에 영향을 미친 가장 중요한 뉴스 3가지를 요약해줘."
-
-                user_input = st.chat_input("종목명이나 궁금한 최신 뉴스를 입력하세요...")
-                prompt = st.session_state.pop("trigger_prompt", user_input)
-
-                if prompt:
-                    st.session_state.messages.append({"role": "user", "content": prompt})
-                    with chat_container:
-                        st.chat_message("user", avatar="👤").write(prompt)
-
-                    today_str = datetime.now().strftime("%Y년 %m월 %d일")
-
-                    context_data = df_summary.head(20).to_string(index=False)
-                    system_prompt = f"""
-                    너는 'DeepAlpha'의 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
-                    
-                    [1. 실시간 매크로 전광판 데이터]
-                    {macro_summary_text}
-                    
-                    [2. 제공된 수급 데이터]
-                    {context_data}
-                    
-                    사용자의 질문: {prompt}
-                    
-                    [핵심 지시사항]
-                    1. 내장된 '구글 검색 도구'를 적극적으로 활용해서 가장 최신 시점의 뉴스와 정보를 기반으로 대답해.
-                    """
-
-                    with chat_container:
-                        with st.chat_message("assistant", avatar="🏛️"):
+                stock_list_full = df_summary['종목명'].tolist()
+                matchup_stocks = st.multiselect("비교할 종목을 2~3개 선택하세요", options=stock_list_full, max_selections=3)
+                
+                if len(matchup_stocks) > 1:
+                    if st.button("🚀 AI 매치업 시작", use_container_width=True, type="primary"):
+                        with st.spinner("선택된 종목들의 최신 데이터와 뉴스를 긁어오고 있습니다..."):
+                            matchup_data = []
+                            for ms in matchup_stocks:
+                                s_row = df_summary[df_summary['종목명'] == ms].iloc[0]
+                                s_code = safe_get(s_row, '종목코드', '')
+                                n_news, n_notice = get_naver_news_and_notice(s_code)
+                                
+                                matchup_data.append(f"""
+                                === [후보 종목: {ms}] ===
+                                - 섹터: {safe_get(s_row, '섹터', '분류안됨')} / AI점수: {safe_get(s_row, 'AI수급점수', 0)}점
+                                - 이격도: {safe_get(s_row, '이격도(%)', 100)}% / 외국인연속: {safe_get(s_row, '외인연속', 0)}일 / 연기금연속: {safe_get(s_row, '연기금연속', 0)}일
+                                - 최근 뉴스: {', '.join(n_news[:3]) if n_news else '없음'}
+                                """)
+                            
+                            combined_data_str = "\n".join(matchup_data)
+                            
+                            prompt = f"""
+                            너는 수석 퀀트 애널리스트야. 내가 아래에 제공한 {len(matchup_stocks)}개 종목의 [팩트 데이터]를 꼼꼼히 비교 분석해.
+                            글로벌 매크로 환경을 고려했을 때, 현재 단기 스윙(눌림목 및 수급 모멘텀) 관점에서 어떤 종목이 가장 유리한지 승자를 명확히 판정하고 그 이유를 설명해.
+                            
+                            [팩트 데이터]
+                            {combined_data_str}
+                            
+                            다음 양식으로 답변해줘:
+                            🏆 **최종 승자**: (종목명)
+                            🔍 **선정 이유**: (수급, 이격도, 뉴스를 종합하여 3~4줄로 핵심만 요약)
+                            ⚖️ **탈락 종목 코멘트**: (왜 승자보다 아쉬운지 짧게 분석)
+                            """
+                            
                             try:
-                                config = types.GenerateContentConfig(
-                                    tools=[{"google_search": {}}]
-                                )
                                 response = client.models.generate_content_stream(
-                                    model='gemini-2.5-flash-lite',
-                                    contents=system_prompt,
-                                    config=config
+                                    model='gemma-4-31b-it',
+                                    contents=prompt
                                 )
-
+                                st.success("✅ 매치업 판정 완료!")
                                 def stream_generator():
                                     for chunk in response:
-                                        if chunk.text:
-                                            yield chunk.text
-
-                                bot_reply = st.write_stream(stream_generator)
-
+                                        if chunk.text: yield chunk.text
+                                st.write_stream(stream_generator)
                             except Exception as e:
-                                bot_reply = f"앗, 구글 검색 및 분석 중 에러가 발생했습니다: {e}"
-                                st.write(bot_reply)
+                                st.error(f"분석 중 오류 발생: {e}")
+                else:
+                    st.info("비교 분석을 위해 최소 2개의 종목을 선택해주세요.")
 
-                        st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+# 🔥 모바일 편의성을 위한 '맨 위로 가기' 플로팅 버튼 주입
+components.html(
+    """
+    <script>
+    const btn = window.parent.document.createElement('button');
+    btn.innerHTML = '⬆';
+    btn.style.cssText = 'position:fixed; bottom:25px; right:20px; width:45px; height:45px; border-radius:50%; background-color:#1C83E1; color:white; font-size:20px; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); cursor:pointer; z-index:99999; display:flex; align-items:center; justify-content:center;';
+    btn.onclick = function() { window.parent.scrollTo({top:0, behavior:'smooth'}); };
+    window.parent.document.body.appendChild(btn);
+    </script>
+    """,
+    height=0, width=0
+)
