@@ -10,6 +10,7 @@ from google.genai import types
 from datetime import datetime
 import plotly.express as px
 import streamlit.components.v1 as components
+import urllib.parse  # 🔥 [추가] 검색어 인코딩을 위한 라이브러리
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
@@ -93,31 +94,58 @@ def load_data():
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
 
-# 🔥 [수정 완료] 빈 껍데기 공시 로직 제거 & 네이버 통합 뉴스 검색으로 파워업
+# 🔥 [수정 완료] 네이버 통합 뉴스 검색 + 금융 뉴스 우회 파워업 적용
 @st.cache_data(ttl=600)
 def get_naver_news(stock_name):
-    """네이버 통합 검색을 통해 종목명이 포함된 가장 최신/정확한 뉴스 5개를 긁어옵니다."""
+    """네이버 통합 검색 및 금융 뉴스를 넘나들며 최신 뉴스를 기어코 긁어옵니다."""
     news_list = []
     if not stock_name: return news_list
     
-    # 네이버 포털 통합 뉴스 검색 URL (정확도/최신순)
-    url = f"https://search.naver.com/search.naver?where=news&query={stock_name}&sm=tab_opt&sort=0&photo=0&field=0&pd=0&ds=&de=&docid=&related=0&mynews=0&office_type=0&office_section_code=0&news_office_checked=&nso=so%3Ar%2Cp%3Aall"
+    # 1. 한글 검색어 인코딩 (필수)
+    encoded_name = urllib.parse.quote(stock_name)
+    url = f"https://search.naver.com/search.naver?where=news&query={encoded_name}&sm=tab_opt&sort=0"
     
+    # 2. 봇 차단을 피하기 위한 완벽한 브라우저 위장 헤더
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://www.naver.com/'
     }
     
     try:
+        # [STEP A] 네이버 메인 포털 통합 뉴스 타격
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
         titles = soup.select('.news_tit')
-        for t in titles[:5]: 
+        for t in titles:
             title_text = t.get('title') or t.text
             if title_text and title_text.strip() not in news_list:
                 news_list.append(title_text.strip())
+            if len(news_list) >= 5: break
+            
+        # [STEP B] 포털에서 막혔거나 뉴스가 없다면? -> 네이버 금융 내부 검색으로 우회 타격
+        if not news_list:
+            # 네이버 금융은 옛날 방식인 EUC-KR 인코딩을 씁니다.
+            encoded_euckr = urllib.parse.quote(stock_name.encode('euc-kr'))
+            fin_url = f"https://finance.naver.com/news/news_search.naver?q={encoded_euckr}"
+            res_fin = requests.get(fin_url, headers=headers, timeout=5)
+            soup_fin = BeautifulSoup(res_fin.text, 'html.parser')
+            
+            fin_titles = soup_fin.select('.articleSubject a')
+            for t in fin_titles:
+                title_text = t.get('title') or t.text
+                if title_text and title_text.strip() not in news_list:
+                    news_list.append(title_text.strip())
+                if len(news_list) >= 5: break
+                
     except Exception as e:
         pass
+        
+    # 끝까지 못 긁어왔을 때 AI가 헛소리하지 않도록 방어
+    if not news_list:
+        news_list = ["현재 실시간 뉴스를 불러오지 못했습니다 (최근 특이 뉴스 없음)."]
         
     return news_list
 
