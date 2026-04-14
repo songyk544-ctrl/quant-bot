@@ -20,7 +20,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pandas requests beautifulsoup4 google-genai yfinance tomllib
+          pip install pandas requests beautifulsoup4 google-genai yfinance
 
       - name: Run Scraper
         env:
