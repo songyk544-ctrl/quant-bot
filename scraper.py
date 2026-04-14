@@ -10,6 +10,8 @@ from google.genai import types
 import yfinance as yf
 import re
 from email.utils import parsedate_to_datetime
+from pathlib import Path
+import tomllib
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
@@ -18,6 +20,33 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+def resolve_gemini_api_key():
+    """
+    실행 환경별 키 로딩 통합:
+    1) OS 환경변수 GEMINI_API_KEY
+    2) 프로젝트 .streamlit/secrets.toml
+    3) 프로젝트 secrets.toml
+    """
+    env_key = os.environ.get("GEMINI_API_KEY")
+    if env_key:
+        return env_key
+
+    candidate_files = [
+        Path(".streamlit/secrets.toml"),
+        Path("secrets.toml"),
+    ]
+    for p in candidate_files:
+        try:
+            if p.exists():
+                with p.open("rb") as f:
+                    parsed = tomllib.load(f)
+                key = parsed.get("GEMINI_API_KEY")
+                if key:
+                    return str(key)
+        except Exception:
+            continue
+    return None
 
 def get_kis_access_token():
     url = f"{URL_BASE}/oauth2/tokenP"
@@ -95,6 +124,125 @@ def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, ga
             fund_score -= 20 
 
     return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score + zombie_penalty)))
+
+def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, pension_streak, macro_news_text, macro_recency_score=50.0):
+    """
+    정성 점수(0~100): 뉴스-섹터 정합성 + 펀더멘털 힌트 + 연속 순매수 안정성
+    데이터가 부족하면 기본 50점(중립)을 유지합니다.
+    """
+    score = 50.0
+    text = (macro_news_text or "").lower()
+    sector = (sector_name or "분류안됨").lower()
+
+    # 시황 뉴스 반감기(최신 뉴스일수록 영향력↑, 오래된 뉴스일수록 영향력↓)
+    decay_factor = max(0.35, min(1.0, float(macro_recency_score) / 100.0))
+
+    # 시황 뉴스와 섹터의 키워드 정합성
+    sector_theme_map = {
+        "반도체": ["반도체", "ai", "hbm", "메모리"],
+        "전기": ["전력", "전기", "배터리", "2차전지", "ess"],
+        "건설": ["건설", "인프라", "플랜트", "수주"],
+        "화장품": ["화장품", "소비", "면세", "중국 소비"],
+        "제약": ["제약", "바이오", "임상", "허가"],
+        "방산": ["방산", "국방", "수출"],
+        "조선": ["조선", "선박", "해운", "lng"],
+        "기계": ["기계", "자동화", "설비투자"],
+        "증권": ["증권", "거래대금", "금리", "유동성"],
+    }
+    for sector_key, keywords in sector_theme_map.items():
+        if sector_key in sector and any(k.lower() in text for k in keywords):
+            score += 8 * decay_factor
+            break
+
+    # 리스크 키워드 감점
+    if any(k in text for k in ["긴축", "관세", "하락", "리스크", "소송", "악재"]):
+        score -= 4 * decay_factor
+
+    # 펀더멘털 보정 (정량에서 이미 반영되지만 정성 관점에서 소폭 보정)
+    if roe_val >= 15:
+        score += 5
+    elif roe_val >= 8:
+        score += 2
+    else:
+        score -= 2
+
+    if 0 < per_val <= 15:
+        score += 3
+    elif per_val <= 0:
+        score -= 5
+
+    # 연속 순매수 안정성
+    score += min(5, pension_streak * 0.8)
+    score += min(2, foreign_streak * 0.2)
+
+    return max(0, min(100, score))
+
+def blend_quant_qual_score(quant_score, qual_score, current_vix):
+    """
+    방식 B(가감형)만 사용:
+      Final = Quant + clamp((Qual-50)*sensitivity, -limit, +limit)
+    """
+    if current_vix < 25:
+        sensitivity = 0.4
+        limit = 10
+        mode = "상승장 (보수적 반영)"
+    else:
+        sensitivity = 0.6
+        limit = 20
+        mode = "하락장 (민감 반영)"
+
+    qual_adj = (qual_score - 50) * sensitivity
+    qual_adj = max(-limit, min(limit, qual_adj))
+    final_score = max(0, min(100, quant_score + qual_adj))
+    return int(round(final_score)), round(qual_adj, 2), mode
+
+def score_disclosures_and_reports(disclosures, reports):
+    """공시/리포트 이벤트를 점수화해 정성점수(0~100)로 반환."""
+    score = 50.0
+    positive_keys = ["실적", "수주", "계약", "자기주식", "소각", "기업설명회", "가이던스", "상향", "증가"]
+    negative_keys = ["소송", "정정", "하향", "감소", "리스크", "악화", "손실"]
+
+    for text in disclosures + reports:
+        t = str(text)
+        if any(k in t for k in positive_keys):
+            score += 3.5
+        if any(k in t for k in negative_keys):
+            score -= 4.0
+
+    # 이벤트 과다 누적 방지
+    return max(20.0, min(80.0, score))
+
+def apply_enhanced_qual_for_top_candidates(df_final, current_vix, top_n=40):
+    """
+    전 종목 기본점수 이후 상위 후보(top_n)만 공시/리포트를 심화 반영.
+    운영 안정성을 위해 상위권만 추가 크롤링합니다.
+    """
+    if df_final.empty:
+        return df_final
+
+    df_out = df_final.copy()
+    if "AI수급점수" not in df_out.columns:
+        return df_out
+
+    top_idx = df_out.sort_values("AI수급점수", ascending=False).head(top_n).index
+    for idx in top_idx:
+        row = df_out.loc[idx]
+        name = row.get("종목명", "")
+        code = row.get("종목코드", "")
+        disclosures = get_recent_disclosures(code, name, max_items=3)
+        reports = get_recent_analyst_reports(name, max_items=2)
+        event_qual = score_disclosures_and_reports(disclosures, reports)
+
+        base_qual = float(row.get("정성점수", 50))
+        blended_qual = (base_qual * 0.7) + (event_qual * 0.3)
+        final_score, qual_adj, score_mode = blend_quant_qual_score(float(row.get("Quant점수", row.get("AI수급점수", 0))), blended_qual, current_vix)
+
+        df_out.at[idx, "정성점수"] = round(blended_qual, 2)
+        df_out.at[idx, "정성보정치"] = qual_adj
+        df_out.at[idx, "점수모드"] = score_mode
+        df_out.at[idx, "AI수급점수"] = final_score
+
+    return df_out.sort_values("AI수급점수", ascending=False)
 
 def get_target_stock_list():
     target_list = []
@@ -326,6 +474,8 @@ def get_live_macro_and_news():
             hist = yf.Ticker(ticker).history(period="2d")
             if len(hist) >= 2:
                 curr, prev = hist['Close'].iloc[-1], hist['Close'].iloc[-2]
+                if pd.isna(curr) or pd.isna(prev) or float(prev) == 0.0:
+                    continue
                 change_pct = ((curr - prev) / prev) * 100
                 macro_str += f"- {name}: {curr:.2f} ({change_pct:+.2f}%)\n"
         except: pass
@@ -424,12 +574,27 @@ def get_live_macro_and_news():
         for item in final_news:
             source_stats[item["source"]] = source_stats.get(item["source"], 0) + 1
         print(f"📰 뉴스 수집 품질: raw={len(candidates)} final={len(final_news)} sources={source_stats}")
+        # 반감기 점수(0~100): 최근 기사일수록 높은 점수
+        recency_scores = []
+        now_dt = datetime.now()
+        for item in final_news:
+            dt = item.get("dt")
+            if dt is None:
+                recency_scores.append(40.0)
+                continue
+            elapsed_days = max(0.0, (now_dt - dt).total_seconds() / 86400.0)
+            # half-life = 1일 기준
+            decay = 1.0 / (1.0 + elapsed_days)
+            recency_scores.append(decay * 100.0)
+        macro_recency_score = round(sum(recency_scores) / len(recency_scores), 2) if recency_scores else 50.0
+
         news_str = "\n".join(news_lines) if news_lines else "- 뉴스 수집 실패"
     except Exception as e:
         print(f"⚠️ 시황 뉴스 수집 실패: {e}")
         news_str = "- 뉴스 수집 실패"
+        macro_recency_score = 50.0
     
-    return macro_str, news_str
+    return macro_str, news_str, macro_recency_score
 
 def run_scraper():
     print("🚀 수집기 봇 가동 시작 (V40.4 기관 수급 눌림목 최적화 & 백테스트 방어)...")
@@ -444,6 +609,7 @@ def run_scraper():
     
     regime = "공포/하락장 (안전제일 눌림목 & 펀더멘털 방어)" if current_vix >= 25 else "평온/강세장 (핫섹터 폭발적 모멘텀)"
     print(f"🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
+    macro_str_for_scoring, news_str_for_scoring, macro_recency_score = get_live_macro_and_news()
 
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
     target_kis_date = now_kst.strftime("%Y%m%d") if is_eod_updated else (now_kst - timedelta(days=1)).strftime("%Y%m%d")
@@ -500,7 +666,7 @@ def run_scraper():
 
             is_ma20_rising_flag = row_dict.get('추세상승', True)
 
-            new_score = calculate_dynamic_score(
+            quant_score = calculate_dynamic_score(
                 f_str=row_dict.get('외인강도(%)', 0), p_str=row_dict.get('연기금강도(%)', 0),
                 t_str=row_dict.get('투신강도(%)', 0), pef_str=row_dict.get('사모강도(%)', 0),
                 vol_surge=row_dict.get('거래급증(%)', 0), rsi_val=row_dict.get('RSI', 50),
@@ -511,11 +677,24 @@ def run_scraper():
                 per_val=row_dict.get('PER', 0), roe_val=row_dict.get('ROE', 0), 
                 current_vix=current_vix
             )
-            row_dict['AI수급점수'] = new_score
+            qual_score = calculate_qualitative_score(
+                sector_name=row_dict.get('섹터', '분류안됨'),
+                per_val=row_dict.get('PER', 0),
+                roe_val=row_dict.get('ROE', 0),
+                foreign_streak=row_dict.get('외인연속', 0),
+                pension_streak=row_dict.get('연기금연속', 0),
+                macro_news_text=news_str_for_scoring,
+                macro_recency_score=macro_recency_score
+            )
+            final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
+            row_dict['Quant점수'] = int(round(quant_score))
+            row_dict['정성점수'] = round(qual_score, 2)
+            row_dict['정성보정치'] = qual_adj
+            row_dict['점수모드'] = score_mode
+            row_dict['AI수급점수'] = final_score
             updated_rows.append(row_dict)
 
         df_final = pd.DataFrame(updated_rows).sort_values('AI수급점수', ascending=False)
-        df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
         
         eval_msg = "⚡ (슈퍼 캐시 모드로 재산출된 랭킹입니다.)\n\n"
             
@@ -600,10 +779,21 @@ def run_scraper():
                 else:
                     is_ma20_rising = gap_20 >= 100 
 
-                ai_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, row.PER, row.ROE, current_vix)
+                quant_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, row.PER, row.ROE, current_vix)
+                qual_score = calculate_qualitative_score(
+                    sector_name=sector_name,
+                    per_val=row.PER,
+                    roe_val=row.ROE,
+                    foreign_streak=foreign_streak,
+                    pension_streak=pension_streak,
+                    macro_news_text=news_str_for_scoring,
+                    macro_recency_score=macro_recency_score
+                )
+                final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
 
                 data_list.append({
-                    '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': ai_score,
+                    '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': final_score,
+                    'Quant점수': int(round(quant_score)), '정성점수': round(qual_score, 2), '정성보정치': qual_adj, '점수모드': score_mode,
                     '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
@@ -616,13 +806,16 @@ def run_scraper():
         if not data_list: return
 
         df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
-        df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
         
         df_history = pd.DataFrame(history_list)
         df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
 
         eval_msg = ""
     
+    # 상위 후보군 정성 심화(공시/리포트) 재보정
+    df_final = apply_enhanced_qual_for_top_candidates(df_final, current_vix=current_vix, top_n=40)
+    df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
+
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
@@ -692,68 +885,111 @@ def run_scraper():
     # ==========================================
     # 텔레그램 발송 및 AI 리포트
     # ==========================================
-    if GEMINI_API_KEY:
+    gemini_api_key = resolve_gemini_api_key()
+    if gemini_api_key:
         try:
-            client = genai.Client(api_key=GEMINI_API_KEY)
+            client = genai.Client(api_key=gemini_api_key)
             top3_str = ", ".join(top3_names)
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
+            top_N_names = df_final.head(20)['종목명'].tolist()
+            if os.path.exists("history.csv"):
+                df_history = pd.read_csv("history.csv")
+                latest_date = df_history['일자'].max()
+                df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
+                df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
+                df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
+            else:
+                df_merged = df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']]
             
+            macro_str, news_str = macro_str_for_scoring, news_str_for_scoring
+            top3_event_context = build_top3_event_context(df_final)
+            print("📌 Top3 공시/리포트 컨텍스트 수집 완료")
+            session_label = "장 마감" if is_eod_updated else "장중"
+            
+            prompt = f"""
+            너는 QEdge 수석 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
+            현재 세션은 {session_label}이고, VIX 지수는 {current_vix:.2f}로 {regime} 모드야.
+            
+            [1. 매크로 지표]
+            {macro_str}
+            
+            [2. 네이버 금융 주요 뉴스 (제목 및 내용 요약)]
+            {news_str}
+            
+            [3. 최상위 20개 종목 수급 및 모멘텀 동향]
+            {df_merged.to_string(index=False)}
+
+            [4. Top 3 최근 공시/증권사 리포트]
+            {top3_event_context}
+
+            다음 순서로 전문가 수준의 리포트를 작성해 줘.
+            1. 글로벌 매크로 요약
+            2. 섹터 및 수급 동향
+            3. Top 3 관심종목 및 근거
+            4. 공시/리포트 체크포인트
+            [주의] 제공 텍스트 외의 외부 검색 없이 작성.
+            """
+            
+            response = client.models.generate_content(
+                model='gemma-4-31b-it',
+                contents=prompt
+            )
+            
+            with open("report.md", "w", encoding="utf-8") as f:
+                f.write(f"## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})\n\n{response.text}")
+
             if not is_eod_updated:
                 tg_message = f"🔔 *[장중 요약]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *QEdge Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
             else:
-                top_N_names = df_final.head(20)['종목명'].tolist()
-                if os.path.exists("history.csv"):
-                    df_history = pd.read_csv("history.csv")
-                    latest_date = df_history['일자'].max()
-                    df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
-                    df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
-                    df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
-                else:
-                    df_merged = df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']]
-                
-                macro_str, news_str = get_live_macro_and_news()
-                top3_event_context = build_top3_event_context(df_final)
-                print("📌 Top3 공시/리포트 컨텍스트 수집 완료")
-                
-                # 🔥 [기능 업데이트] Google 검색 제거 및 네이버 뉴스 RAG 기반 프롬프트로 재설계
-                prompt = f"""
-                너는 QEdge 수석 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
-                현재 VIX 지수는 {current_vix:.2f}로 {regime} 모드로 포트폴리오가 구성되었어.
-                
-                [1. 매크로 지표]
-                {macro_str}
-                
-                [2. 네이버 금융 주요 뉴스 (제목 및 내용 요약)]
-                {news_str}
-                
-                [3. 최상위 20개 종목 수급 및 모멘텀 동향]
-                {df_merged.to_string(index=False)}
-
-                [4. Top 3 최근 공시/증권사 리포트]
-                {top3_event_context}
-
-                다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
-                1. 🌐 글로벌 매크로 요약: 제공된 네이버 금융 주요 뉴스를 활용하여 오늘 시장을 움직인 핵심 이슈를 요약해.
-                2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%), 손바뀜을 참고하여 시장의 자금이 쏠린 핫섹터를 분석해.
-                3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 시황 및 수급 모멘텀과 맞물려 설명해.
-                4. 🧾 공시/리포트 체크포인트: Top3 종목별로 최근 공시/증권사 리포트가 시사하는 기회와 리스크를 1~2줄씩 요약해.
-                (인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해.)
-    [🚨 절대 엄수 사항] 텔레그램 전송용이므로 마크다운 표(Table)는 절대 사용하지 마.
-                """
-                
-                # 🔥 Gemma 4 31B IT 모델 사용 (검색 config 완전 제거)
-                response = client.models.generate_content(
-                    model='gemma-4-31b-it', 
-                    contents=prompt
-                )
-                
-                with open("report.md", "w", encoding="utf-8") as f:
-                    f.write(f"## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
-                    
                 tg_message = f"🔔 *[장 마감 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *QEdge Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
-        except Exception as e: print(f"⚠️ AI 리포트 생성 실패: {e}")
+        except Exception as e:
+            print(f"⚠️ AI 리포트 생성 실패: {e}")
+            fallback_report = f"""## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
+
+AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
+
+### Top 3
+- {top3_names[0] if len(top3_names) > 0 else '-'}
+- {top3_names[1] if len(top3_names) > 1 else '-'}
+- {top3_names[2] if len(top3_names) > 2 else '-'}
+
+### VIX / Regime
+- VIX: {current_vix:.2f}
+- Mode: {regime}
+
+### Macro
+{macro_str_for_scoring if macro_str_for_scoring else '- 데이터 없음'}
+
+### News
+{news_str_for_scoring if news_str_for_scoring else '- 데이터 없음'}
+"""
+            with open("report.md", "w", encoding="utf-8") as f:
+                f.write(fallback_report)
+    else:
+        # API 키가 없더라도 report.md는 매 실행 최신화
+        fallback_report = f"""## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
+
+Gemini API 키가 없어 자동 요약본으로 생성했습니다.
+
+### Top 3
+- {top3_names[0] if len(top3_names) > 0 else '-'}
+- {top3_names[1] if len(top3_names) > 1 else '-'}
+- {top3_names[2] if len(top3_names) > 2 else '-'}
+
+### VIX / Regime
+- VIX: {current_vix:.2f}
+- Mode: {regime}
+
+### Macro
+{macro_str_for_scoring if macro_str_for_scoring else '- 데이터 없음'}
+
+### News
+{news_str_for_scoring if news_str_for_scoring else '- 데이터 없음'}
+"""
+        with open("report.md", "w", encoding="utf-8") as f:
+            f.write(fallback_report)
 
 if __name__ == "__main__":
     run_scraper()

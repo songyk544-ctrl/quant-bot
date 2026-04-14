@@ -9,6 +9,7 @@ from google import genai
 from google.genai import types
 from datetime import datetime
 import plotly.express as px
+import plotly.graph_objects as go
 import urllib.parse
 import re
 from email.utils import parsedate_to_datetime
@@ -127,10 +128,16 @@ st.markdown(
     .kpi-value { color:#F5F7FA; font-size:2.0em; font-weight:800; line-height:1.1; }
     .kpi-delta { font-size:0.9em; font-weight:700; margin-top:8px; display:inline-block; padding:2px 8px; border-radius:999px; }
     .kpi-meta { color:#9CA3AF; font-size:0.82em; margin-top:8px; }
+    .score-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap:8px; margin-top:8px; }
+    .score-kpi { background:#151A25; border:1px solid #2A3242; border-radius:10px; padding:9px 10px; }
+    .score-kpi-label { color:#9CA3AF; font-size:0.74em; margin-bottom:4px; }
+    .score-kpi-value { color:#E5E7EB; font-size:1.35em; font-weight:800; line-height:1.15; }
     @media (max-width: 900px) {
         .stock-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
         .kpi-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); gap:8px; }
         .kpi-value { font-size:1.8em; }
+        .score-kpi-grid { grid-template-columns: repeat(3, minmax(90px, 1fr)); gap:6px; }
+        .score-kpi-value { font-size:1.18em; }
     }
     </style>
     """,
@@ -753,6 +760,10 @@ else:
         sector_name = safe_get(selected_row, '섹터', '분류안됨')
         cur_rank = safe_get(selected_row, '현재_순위', 0)
         ai_score = safe_get(selected_row, 'AI수급점수', 0)
+        quant_score = float(safe_get(selected_row, 'Quant점수', ai_score))
+        qual_score = float(safe_get(selected_row, '정성점수', 50))
+        qual_adj = float(safe_get(selected_row, '정성보정치', 0))
+        score_mode = safe_get(selected_row, '점수모드', '기본')
         rank_trend = safe_get(selected_row, '랭킹추세', '-')
         marcap = safe_get(selected_row, '시가총액', 0)
         per_val = safe_get(selected_row, 'PER', 0.0)
@@ -812,6 +823,57 @@ else:
                 """,
                 unsafe_allow_html=True
             )
+
+            st.markdown("##### 점수 산출 구조")
+            display_final = round(float(ai_score), 1)
+            gauge = go.Figure(go.Indicator(
+                mode="gauge",
+                value=display_final,
+                gauge={
+                    "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#64748B", "tickfont": {"size": 10}},
+                    "bar": {"color": "#A78BFA", "thickness": 0.42},
+                    "bgcolor": "#0F172A",
+                    "borderwidth": 0,
+                    "steps": [
+                        {"range": [0, 40], "color": "#2B3445"},
+                        {"range": [40, 70], "color": "#334155"},
+                        {"range": [70, 100], "color": "#475569"}
+                    ],
+                }
+            ))
+            gauge.update_layout(
+                height=145,
+                margin=dict(l=8, r=8, t=8, b=2),
+                paper_bgcolor="rgba(0,0,0,0)",
+                font={"color": "#E5E7EB"},
+                annotations=[{
+                    "x": 0.5, "y": 0.13, "xref": "paper", "yref": "paper",
+                    "text": f"<b>{display_final:.1f}점</b>",
+                    "showarrow": False, "font": {"size": 24, "color": "#E5E7EB"}
+                }]
+            )
+            st.plotly_chart(gauge, use_container_width=True)
+            st.markdown(
+                f"""
+                <div class="score-kpi-grid">
+                    <div class="score-kpi">
+                        <div class="score-kpi-label">최종 점수</div>
+                        <div class="score-kpi-value">{display_final:.1f}</div>
+                    </div>
+                    <div class="score-kpi">
+                        <div class="score-kpi-label">정량 점수</div>
+                        <div class="score-kpi-value">{quant_score:.1f}</div>
+                    </div>
+                    <div class="score-kpi">
+                        <div class="score-kpi-label">정성 보정</div>
+                        <div class="score-kpi-value">{qual_adj:+.1f}</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.caption(f"정성 점수 {qual_score:.1f} | {score_mode}")
+
             st.markdown("##### 최근 1개월 수급 강도")
             st.markdown(
                 f"""
@@ -1036,19 +1098,23 @@ else:
                         try:
                             kospi_hist = yf.Ticker('^KS11').history(period="1y")
                             kospi_hist.index = kospi_hist.index.tz_localize(None).normalize()
+                            kospi_hist = kospi_hist.dropna(subset=['Close'])
                             
                             base_k_df = kospi_hist[kospi_hist.index <= pd.to_datetime(selected_start_date)]
-                            base_k = float(base_k_df['Close'].iloc[-1]) if not base_k_df.empty else None
+                            base_k = float(base_k_df['Close'].dropna().iloc[-1]) if not base_k_df.empty and not base_k_df['Close'].dropna().empty else None
                             
                             kospi_rets = []
                             for d in df_filtered['날짜_dt']:
                                 k_sub = kospi_hist[kospi_hist.index <= d]
-                                if not k_sub.empty and base_k is not None:
-                                    val = float(k_sub['Close'].iloc[-1])
+                                k_close = k_sub['Close'].dropna() if not k_sub.empty else pd.Series(dtype=float)
+                                if not k_close.empty and base_k is not None and base_k != 0:
+                                    val = float(k_close.iloc[-1])
                                     ret = ((val - base_k) / base_k) * 100
+                                    if pd.isna(ret):
+                                        ret = kospi_rets[-1] if kospi_rets else 0.0
                                     kospi_rets.append(ret)
                                 else:
-                                    kospi_rets.append(0)
+                                    kospi_rets.append(kospi_rets[-1] if kospi_rets else 0.0)
                             df_filtered['KOSPI 누적수익률'] = kospi_rets
                         except:
                             df_filtered['KOSPI 누적수익률'] = 0
@@ -1155,8 +1221,17 @@ else:
                 st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 비교 분석을 사용할 수 없습니다.")
             else:
                 stock_list_full = df_summary['종목명'].tolist()
-                matchup_stocks = st.multiselect("비교할 종목 2개를 선택하세요", options=stock_list_full, max_selections=2)
+                matchup_stocks = st.multiselect(
+                    "비교할 종목 2개를 선택하세요",
+                    options=stock_list_full,
+                    key="leaders_pair_multiselect"
+                )
+                if len(matchup_stocks) > 2:
+                    st.session_state["leaders_pair_multiselect"] = matchup_stocks[:2]
+                    matchup_stocks = st.session_state["leaders_pair_multiselect"]
+                    st.warning("비교는 2개 종목만 가능합니다. 최근 선택 종목은 제외했습니다.")
                 ready_to_run = len(matchup_stocks) == 2
+                st.caption(f"선택 상태: {len(matchup_stocks)}/2")
                 if st.button("비교 분석 시작", use_container_width=True, type="primary", disabled=not ready_to_run):
                     if ready_to_run:
                         with st.spinner("선택 종목의 뉴스/시황/참고자료를 수집하고 있습니다..."):
