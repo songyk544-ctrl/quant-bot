@@ -9,13 +9,12 @@ from google import genai
 from google.genai import types
 from datetime import datetime
 import plotly.express as px
-import streamlit.components.v1 as components
 import urllib.parse
 
 st.set_page_config(layout="wide", page_title="DeepAlpha 퀀트 터미널", page_icon="🏛️")
 
 # --- 🔥 고급스러운 블러(Blur) 페이월 UI 함수 ---
-def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다."):
+def show_premium_paywall(message="이 콘텐츠는 접근 코드 인증 후 이용할 수 있습니다."):
     st.markdown(f"""
     <div style="position: relative; margin-top: 10px; margin-bottom: 30px;">
         <div style="filter: blur(8px); opacity: 0.4; pointer-events: none; user-select: none;">
@@ -25,25 +24,25 @@ def show_premium_paywall(message="이 콘텐츠는 VIP 회원 전용입니다.")
             <div style="height: 150px; background: linear-gradient(90deg, #333 0%, #222 50%, #333 100%); border-radius: 10px; margin-top: 10px;"></div>
         </div>
         <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: rgba(20, 20, 30, 0.85); padding: 30px; border-radius: 15px; border: 1px solid #FFD700; box-shadow: 0 10px 30px rgba(255, 215, 0, 0.15); width: 85%; backdrop-filter: blur(5px);">
-            <h2 style="margin:0; color:#FFD700; font-weight: 800; letter-spacing: 1px;">🔒 PREMIUM ONLY</h2>
+            <h2 style="margin:0; color:#FFD700; font-weight: 800; letter-spacing: 1px;">🔒 CODE REQUIRED</h2>
             <p style="color:#FFF; margin-top:15px; font-size: 1.1em; font-weight: bold;">{message}</p>
-            <p style="font-size:0.85em; color:#AAA; margin-top: 5px;">좌측 <b>[>]</b> 사이드바를 열어 VIP 코드를 입력해주세요.</p>
+            <p style="font-size:0.85em; color:#AAA; margin-top: 5px;">좌측 <b>[>]</b> 사이드바를 열어 공유 코드를 입력해주세요.</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-# --- 사이드바 VIP 로그인 로직 ---
+# --- 사이드바 접근 코드 인증 로직 ---
 VIP_CODE = "ALPHA2026"
-st.sidebar.markdown("## 💎 프리미엄 멤버십")
-st.sidebar.caption("VIP 코드를 입력하고 전체 주도주와 상세 분석 데이터를 확인하세요.")
-user_code = st.sidebar.text_input("🔑 VIP 엑세스 코드", type="password")
+st.sidebar.markdown("## 🔐 접근 코드 인증")
+st.sidebar.caption("공유받은 코드를 입력하면 전체 주도주와 상세 분석 데이터를 볼 수 있습니다.")
+user_code = st.sidebar.text_input("🔑 접근 코드 입력", type="password")
 
 is_vip = (user_code == VIP_CODE)
 
 if is_vip:
-    st.sidebar.success("✅ VIP 인증 완료! 모든 데이터가 개방되었습니다.")
+    st.sidebar.success("✅ 코드 인증 완료! 전체 데이터가 열렸습니다.")
 else:
-    st.sidebar.info("👀 현재 무료 버전을 체험 중입니다.")
+    st.sidebar.info("👀 현재 공개 화면만 표시 중입니다. 코드를 입력하면 전체 화면이 열립니다.")
 
 st.title("🏛️ DeepAlpha 퀀트 터미널")
 st.caption("AI 기반 기관/외인 수급 및 글로벌 매크로 분석 플랫폼")
@@ -84,6 +83,23 @@ for name, data in macro_data.items():
     else: ticker_html += f"<div class='ticker-item'><span style='color: #DDDDDD;'>{name}</span> <span style='color: #888888;'>데이터 지연</span></div>"
 ticker_html += "</div>"
 st.markdown(ticker_html, unsafe_allow_html=True)
+st.markdown(
+    """
+    <style>
+    .stock-title-wrap { display:flex; align-items:center; margin-top:5px; margin-bottom:16px; gap:8px; flex-wrap:wrap; }
+    .stock-sector-chip { background: linear-gradient(135deg, #1C83E1, #0A58A3); color:white; padding:4px 12px; border-radius:20px; font-size:0.85em; font-weight:700; }
+    .stock-grid { display:grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap:10px; margin:8px 0 14px 0; }
+    .stock-card { background:#181825; border:1px solid #2B2B3A; border-radius:10px; padding:10px 12px; }
+    .stock-label { color:#A8A8B3; font-size:0.78em; margin-bottom:4px; }
+    .stock-value { color:#FFF; font-size:1.15em; font-weight:800; line-height:1.15; }
+    .stock-sub { color:#9AA0B1; font-size:0.78em; margin-top:3px; }
+    @media (max-width: 900px) {
+        .stock-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 def load_data():
     df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
@@ -92,6 +108,21 @@ def load_data():
 
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
+
+def format_pct(value):
+    try:
+        return f"{float(value):+.2f}%"
+    except Exception:
+        return "-"
+
+def resolve_daily_return(df_hist, trade_date, stock_name):
+    """history.csv(일자/종목명/등락률)에서 해당 일자의 종목 등락률을 조회합니다."""
+    if df_hist.empty or not {"일자", "종목명", "등락률"}.issubset(df_hist.columns):
+        return None
+    matched = df_hist[(df_hist["일자"].astype(str) == str(trade_date)) & (df_hist["종목명"] == stock_name)]
+    if matched.empty:
+        return None
+    return float(matched.iloc[-1]["등락률"])
 
 # 🔥 [신규 추가] 매크로 주요 시황 스크래핑 함수
 @st.cache_data(ttl=1800)
@@ -198,7 +229,7 @@ else:
             else:
                 teaser_text = report_content[:250] + "...\n\n"
                 st.markdown(teaser_text)
-                show_premium_paywall("심층 매크로 분석 리포트 전문은 VIP 전용입니다.")
+                show_premium_paywall("심층 매크로 분석 리포트 전문은 코드 인증 후 확인할 수 있습니다.")
         else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
 
     # --- 탭 2: 섹터 히트맵 ---
@@ -207,7 +238,7 @@ else:
         st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
 
         if not is_vip:
-            show_premium_paywall("전체 시장의 섹터별 자금 흐름을 조망하는 히트맵 분석은 VIP 전용입니다.")
+            show_premium_paywall("전체 시장의 섹터별 자금 흐름 히트맵은 코드 인증 후 확인할 수 있습니다.")
         else:
             if not df_summary.empty:
                 df_hm = df_summary.copy()
@@ -366,11 +397,13 @@ else:
             if event.selection.rows: 
                 selected_name = df_display_table.iloc[event.selection.rows[0]].name
                 st.session_state.selected_stock = selected_name
+                st.session_state.stock_selector = selected_name
+                st.rerun()
 
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
 
-    # --- 탭 4: 종목 분석 (네이버 통합 검색 뉴스 + 매크로 시황 융합 RAG) ---
+    # --- 탭 4: 종목 분석 (네이버 통합 검색 뉴스 + 매크로 시황 융합 분석) ---
     with tab4:
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
@@ -378,13 +411,19 @@ else:
         if "selected_stock" not in st.session_state or st.session_state.selected_stock not in stock_list:
             st.session_state.selected_stock = stock_list[0]
             
-        selected_stock = st.selectbox(
-            "🔍 분석할 종목을 검색/선택하세요", 
-            options=stock_list, 
-            index=stock_list.index(st.session_state.selected_stock)
+        if "stock_selector" not in st.session_state or st.session_state.stock_selector not in stock_list:
+            st.session_state.stock_selector = st.session_state.selected_stock
+
+        def on_stock_change():
+            st.session_state.selected_stock = st.session_state.stock_selector
+
+        st.selectbox(
+            "🔍 분석할 종목을 검색/선택하세요",
+            options=stock_list,
+            key="stock_selector",
+            on_change=on_stock_change
         )
-        st.session_state.selected_stock = selected_stock
-        target_stock = selected_stock
+        target_stock = st.session_state.stock_selector
         
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
         
@@ -398,32 +437,20 @@ else:
         gap_20 = safe_get(selected_row, '이격도(%)', 100)
         target_code = safe_get(selected_row, '종목코드', '')
 
-        st.markdown(f"""
-        <div style="display: flex; align-items: center; margin-top: 5px; margin-bottom: 20px;">
-            <h2 style="margin: 0; padding-right: 12px; color: #FFFFFF;">💡 {target_stock}</h2>
-            <span style="background: linear-gradient(135deg, #1C83E1, #0A58A3); color: white; padding: 4px 14px; border-radius: 20px; font-size: 0.9em; font-weight: bold; box-shadow: 0 2px 5px rgba(0,0,0,0.3);">
-                {sector_name}
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="stock-title-wrap">
+                <h2 style="margin: 0; color: #FFFFFF;">💡 {target_stock}</h2>
+                <span class="stock-sector-chip">{sector_name}</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         if not is_vip and target_stock not in free_tier_stocks:
-            show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 VIP 전용입니다.")
+            show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 코드 인증 후 확인할 수 있습니다.")
         else:
-            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-            col_m1.metric(f"🏆 AI 점수 (전체 {int(cur_rank)}위)", f"{ai_score}점", f"순위 변동: {rank_trend}")
-            col_m2.metric("💰 시가총액", f"{marcap:,.0f}억")
-            
-            col_m3.metric("📊 PER / ROE", f"{per_val:.1f} / {roe_val:.1f}%")
-
             tech_status = "🟢최적 매수" if 101 <= gap_20 <= 108 else ("🔴리스크 관리" if gap_20 < 95 else "⚫추세 추종")
-            col_m4.metric("📈 20일선 이격도", f"{gap_20}%", tech_status, delta_color="off")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            st.markdown("##### 🛒 주체별 1개월 수급 강도 및 연속 매수")
-            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-            
             f_str_val = float(safe_get(selected_row, '외인강도(%)', 0))
             p_str_val = float(safe_get(selected_row, '연기금강도(%)', 0))
             t_str_val = float(safe_get(selected_row, '투신강도(%)', 0))
@@ -431,10 +458,57 @@ else:
             f_streak = int(safe_get(selected_row, '외인연속', 0))
             p_streak = int(safe_get(selected_row, '연기금연속', 0))
 
-            col_s1.metric("🔴 외인 강도", f"{f_str_val:.1f}%", f"{f_streak}일 연속 순매수" if f_streak > 0 else "연속매수 없음", delta_color="off")
-            col_s2.metric("🔵 연기금 강도", f"{p_str_val:.1f}%", f"{p_streak}일 연속 순매수" if p_streak > 0 else "연속매수 없음", delta_color="off")
-            col_s3.metric("🟡 투신 강도", f"{t_str_val:.1f}%")
-            col_s4.metric("🟣 사모 강도", f"{pef_str_val:.1f}%")
+            st.markdown(
+                f"""
+                <div class="stock-grid">
+                    <div class="stock-card">
+                        <div class="stock-label">🏆 AI 점수</div>
+                        <div class="stock-value">{int(ai_score)}점</div>
+                        <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend}</div>
+                    </div>
+                    <div class="stock-card">
+                        <div class="stock-label">💰 시가총액</div>
+                        <div class="stock-value">{marcap:,.0f}억</div>
+                    </div>
+                    <div class="stock-card">
+                        <div class="stock-label">📊 PER / ROE</div>
+                        <div class="stock-value">{per_val:.1f} / {roe_val:.1f}%</div>
+                    </div>
+                    <div class="stock-card">
+                        <div class="stock-label">📈 20일선 이격도</div>
+                        <div class="stock-value">{gap_20}%</div>
+                        <div class="stock-sub">{tech_status}</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            st.markdown("##### 🛒 최근 1개월 수급 강도")
+            st.markdown(
+                f"""
+                <div class="stock-grid">
+                    <div class="stock-card">
+                        <div class="stock-label">🔴 외인 강도</div>
+                        <div class="stock-value">{f_str_val:.1f}%</div>
+                        <div class="stock-sub">{f_streak}일 연속 순매수</div>
+                    </div>
+                    <div class="stock-card">
+                        <div class="stock-label">🔵 연기금 강도</div>
+                        <div class="stock-value">{p_str_val:.1f}%</div>
+                        <div class="stock-sub">{p_streak}일 연속 순매수</div>
+                    </div>
+                    <div class="stock-card">
+                        <div class="stock-label">🟡 투신 강도</div>
+                        <div class="stock-value">{t_str_val:.1f}%</div>
+                    </div>
+                    <div class="stock-card">
+                        <div class="stock-label">🟣 사모 강도</div>
+                        <div class="stock-value">{pef_str_val:.1f}%</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
             st.markdown("---")
 
@@ -456,8 +530,8 @@ else:
 
             st.markdown("---")
 
-            st.markdown(f"##### 🤖 DeepAlpha 실시간 종목 진단 (Gemma 4 RAG)")
-            st.caption("파이썬이 긁어온 100% 팩트 뉴스(시황+종목요약)와 데이터를 바탕으로 Gemma 4 31B 모델이 분석합니다.")
+            st.markdown("##### 🤖 DeepAlpha 실시간 종목 진단")
+            st.caption("최신 시황 뉴스와 종목 데이터를 바탕으로 AI가 종목별 핵심 포인트를 정리합니다.")
 
             if st.button(f"✨ '{target_stock}' 뉴스/시황 기반 심층 리포트 생성", use_container_width=True):
                 if not client:
@@ -480,7 +554,7 @@ else:
                         today_str = datetime.now().strftime("%Y년 %m월 %d일")
                         
                         prompt = f"""
-                        너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {today_str}이야.
+                        너는 국내 주식시장을 분석하는 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
                         내가 제공하는 아래의 [팩트 데이터]만을 기반으로 종목명 '{target_stock}'(섹터: {sector_name})에 대한 심층 브리핑을 작성해.
                         인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해. 주요 시황 뉴스를 통해 현재 시장의 분위기를 파악하고, 이것이 해당 종목에 미칠 영향을 반드시 연계해서 분석해.
                         
@@ -508,7 +582,7 @@ else:
                                 contents=prompt
                             )
 
-                            st.success("✅ Gemma 4 31B RAG 분석 완료 (Top-Down 융합)!")
+                            st.success("✅ AI 분석이 완료되었습니다.")
                             def stream_generator():
                                 for chunk in response:
                                     if chunk.text: yield chunk.text
@@ -523,7 +597,7 @@ else:
     with tab5:
         st.subheader("🏆 DeepAlpha 모델 가상 포트폴리오 백테스트")
         if not is_vip:
-            show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 VIP 전용입니다.")
+            show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 코드 인증 후 확인할 수 있습니다.")
         else:
             if os.path.exists("performance_trend.csv"):
                 df_perf = pd.read_csv("performance_trend.csv")
@@ -585,6 +659,43 @@ else:
                         ).properties(height=300)
 
                         st.altair_chart(base_chart, use_container_width=True)
+
+                        if os.path.exists("score_trend.csv"):
+                            df_rank = pd.read_csv("score_trend.csv")
+                            if not df_rank.empty and {"날짜", "종목명", "순위"}.issubset(df_rank.columns):
+                                df_rank = df_rank[df_rank["순위"].isin([1, 2, 3])].copy()
+                                df_rank["날짜"] = df_rank["날짜"].astype(str)
+                                selected_dates = set(df_filtered["날짜_dt"].dt.strftime("%Y-%m-%d").tolist())
+                                df_rank = df_rank[df_rank["날짜"].isin(selected_dates)]
+
+                                rank_rows = []
+                                for dt in sorted(df_rank["날짜"].unique(), reverse=True):
+                                    day_slice = df_rank[df_rank["날짜"] == dt].sort_values("순위")
+                                    day_returns = []
+                                    day_data = {"날짜": dt}
+
+                                    for rank_no in [1, 2, 3]:
+                                        rank_row = day_slice[day_slice["순위"] == rank_no]
+                                        if rank_row.empty:
+                                            day_data[f"{rank_no}위 종목(등락률)"] = "-"
+                                            continue
+                                        stock_name = rank_row.iloc[0]["종목명"]
+                                        day_ret = resolve_daily_return(df_history, dt, stock_name)
+                                        if day_ret is not None:
+                                            day_returns.append(day_ret)
+                                        day_data[f"{rank_no}위 종목(등락률)"] = f"{stock_name} ({format_pct(day_ret)})" if day_ret is not None else f"{stock_name} (-)"
+
+                                    perf_row = df_filtered[df_filtered["날짜_dt"].dt.strftime("%Y-%m-%d") == dt]
+                                    if perf_row.empty:
+                                        continue
+                                    day_data["Top3 평균 등락률"] = format_pct(sum(day_returns) / len(day_returns)) if day_returns else "-"
+                                    day_data["포트폴리오 누적수익률"] = f"{float(perf_row.iloc[0]['조정_포트수익률']):+.2f}%"
+                                    day_data["KOSPI 누적수익률"] = f"{float(perf_row.iloc[0]['KOSPI 누적수익률']):+.2f}%"
+                                    rank_rows.append(day_data)
+
+                                if rank_rows:
+                                    st.markdown("##### 📋 날짜별 Top3 구성 종목 및 성과")
+                                    st.dataframe(pd.DataFrame(rank_rows), hide_index=True, use_container_width=True)
                     else:
                         st.info("선택하신 날짜에 해당하는 백테스트 데이터가 없습니다.")
                 else: st.info("⏳ 데이터 대기 중")
@@ -593,10 +704,10 @@ else:
     # --- 탭 6: 주도주 매치업 (신설) ---
     with tab6:
         st.subheader("⚔️ 주도주 AI 비교 분석 (매치업)")
-        st.caption("선택한 종목들의 네이버 뉴스 통합 검색 결과(본문 요약)와 시황, 퀀트 데이터를 파싱하여 Gemma 4 모델이 최적의 스윙 종목을 판정합니다.")
+        st.caption("선택한 종목들의 뉴스/시황/퀀트 데이터를 종합해 단기 관점의 상대 우위를 비교합니다.")
 
         if not is_vip:
-            show_premium_paywall("AI 기반 다중 종목 비교 분석 기능은 VIP 전용입니다.")
+            show_premium_paywall("AI 기반 다중 종목 비교 분석 기능은 코드 인증 후 이용할 수 있습니다.")
         else:
             if not client:
                 st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 AI 매치업을 사용할 수 없습니다.")
@@ -653,16 +764,3 @@ else:
                 else:
                     st.info("비교 분석을 위해 최소 2개의 종목을 선택해주세요.")
 
-# 🔥 모바일 편의성을 위한 '맨 위로 가기' 플로팅 버튼 주입
-components.html(
-    """
-    <script>
-    const btn = window.parent.document.createElement('button');
-    btn.innerHTML = '⬆';
-    btn.style.cssText = 'position:fixed; bottom:25px; right:20px; width:45px; height:45px; border-radius:50%; background-color:#1C83E1; color:white; font-size:20px; border:none; box-shadow:0 4px 10px rgba(0,0,0,0.3); cursor:pointer; z-index:99999; display:flex; align-items:center; justify-content:center;';
-    btn.onclick = function() { window.parent.scrollTo({top:0, behavior:'smooth'}); };
-    window.parent.document.body.appendChild(btn);
-    </script>
-    """,
-    height=0, width=0
-)
