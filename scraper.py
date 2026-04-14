@@ -8,6 +8,8 @@ import os
 from google import genai
 from google.genai import types
 import yfinance as yf
+import re
+from email.utils import parsedate_to_datetime
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
@@ -134,6 +136,188 @@ def send_telegram_message(text):
     try: requests.post(url, data=data)
     except: pass
 
+def _request_html(url, headers, timeout=4, retries=2):
+    for attempt in range(retries + 1):
+        try:
+            return requests.get(url, headers=headers, timeout=timeout)
+        except Exception as e:
+            if attempt == retries:
+                print(f"⚠️ 요청 실패: {url} ({e})")
+                return None
+
+def _normalize_text(text):
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+def _extract_source(title_text, fallback="일반"):
+    if " - " in title_text:
+        maybe_source = _normalize_text(title_text.split(" - ")[-1])
+        if 1 < len(maybe_source) <= 12:
+            return maybe_source
+    return fallback
+
+def _event_tags(text):
+    rules = {
+        "실적": ["실적", "영업이익", "매출", "어닝", "가이던스"],
+        "수주": ["수주", "계약", "공급", "협약", "납품"],
+        "정책": ["정부", "정책", "규제", "법안", "금리", "관세"],
+        "수급": ["외국인", "기관", "연기금", "순매수", "공매도"],
+        "리스크": ["소송", "리콜", "악재", "부진", "감소", "하향"]
+    }
+    tags = []
+    for tag, keywords in rules.items():
+        if any(k in text for k in keywords):
+            tags.append(tag)
+    return tags
+
+def _title_signature(title_text):
+    normalized = re.sub(r"[^0-9A-Za-z가-힣 ]+", " ", title_text.lower())
+    tokens = [t for t in normalized.split() if len(t) > 1]
+    return set(tokens[:12])
+
+def _is_similar_title(sig, signature_list, threshold=0.75):
+    for other in signature_list:
+        if not sig or not other:
+            continue
+        inter = len(sig & other)
+        union = len(sig | other)
+        if union > 0 and (inter / union) >= threshold:
+            return True
+    return False
+
+def _source_weight(source):
+    weights = {
+        "연합뉴스": 1.0, "뉴시스": 0.95, "이데일리": 0.9, "매일경제": 0.9,
+        "한국경제": 0.9, "머니투데이": 0.88, "서울경제": 0.88, "일반": 0.82
+    }
+    return weights.get(source, 0.84)
+
+def _score_news_candidate(candidate):
+    now = datetime.now()
+    news_dt = candidate.get("dt")
+    age_score = 0.7
+    if news_dt is not None:
+        diff_h = max(0.0, (now - news_dt).total_seconds() / 3600)
+        if diff_h <= 6:
+            age_score = 1.1
+        elif diff_h <= 24:
+            age_score = 1.0
+        elif diff_h <= 48:
+            age_score = 0.85
+        else:
+            age_score = 0.6
+    tag_bonus = min(0.35, 0.12 * len(candidate.get("tags", [])))
+    text_quality = 0.08 if len(candidate.get("desc", "")) >= 20 else 0.0
+    return _source_weight(candidate.get("source", "일반")) + age_score + tag_bonus + text_quality
+
+def _parse_short_yy_mm_dd(text):
+    """네이버 리서치 날짜(예: 26.04.14)를 datetime으로 변환."""
+    txt = _normalize_text(text).replace(".", "-")
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{2})$", txt)
+    if not m:
+        return None
+    yy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    yyyy = 2000 + yy if yy < 70 else 1900 + yy
+    try:
+        return datetime(yyyy, mm, dd)
+    except Exception:
+        return None
+
+def get_recent_disclosures(stock_code, stock_name, max_items=3):
+    """네이버 금융 공시 페이지에서 최근 공시를 가져옵니다."""
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    url = f"https://finance.naver.com/item/news_notice.naver?code={stock_code}"
+    res = _request_html(url, headers=headers, timeout=4, retries=1)
+    if res is None:
+        return []
+    try:
+        # 한글 깨짐 방지
+        res.encoding = res.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(res.text, "html.parser")
+        rows = soup.select("table tr")
+        cutoff_dt = datetime.now() - timedelta(days=10)
+        items = []
+
+        for tr in rows:
+            a_tag = tr.select_one("a[href*='news_notice_read']")
+            if not a_tag:
+                continue
+            tds = tr.select("td")
+            date_text = _normalize_text(tds[-1].text if tds else "")
+            try:
+                dt = datetime.strptime(date_text, "%Y.%m.%d")
+            except Exception:
+                dt = None
+            if dt is not None and dt < cutoff_dt:
+                continue
+            title = _normalize_text(a_tag.text)
+            if title:
+                items.append(f"{stock_name} 공시: {title} ({date_text})")
+            if len(items) >= max_items:
+                break
+        return items
+    except Exception as e:
+        print(f"⚠️ 공시 수집 실패 [{stock_name}]: {e}")
+        return []
+
+def get_recent_analyst_reports(stock_name, max_items=3):
+    """네이버 증권 리서치에서 종목 키워드 리포트를 조회합니다."""
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    url = f"https://finance.naver.com/research/company_list.naver?keyword={requests.utils.quote(stock_name)}"
+    res = _request_html(url, headers=headers, timeout=4, retries=1)
+    if res is None:
+        return []
+    try:
+        res.encoding = res.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(res.text, "html.parser")
+        cutoff_dt = datetime.now() - timedelta(days=14)
+        items = []
+        seen = set()
+
+        for tr in soup.select("table tr"):
+            report_tag = tr.select_one("a[href*='/research/company_read.naver']")
+            stock_tag = tr.select_one("a[href*='/item/main.naver?code=']")
+            if not report_tag:
+                continue
+            report_title = _normalize_text(report_tag.text)
+            report_stock = _normalize_text(stock_tag.text if stock_tag else "")
+            if stock_name not in report_stock:
+                continue
+            tds = tr.select("td")
+            date_text = _normalize_text(tds[-2].text if len(tds) >= 2 else "")
+            dt = _parse_short_yy_mm_dd(date_text)
+            if dt is not None and dt < cutoff_dt:
+                continue
+            key = f"{report_stock}|{report_title}"
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(f"{report_stock} 리포트: {report_title} ({date_text})")
+            if len(items) >= max_items:
+                break
+        return items
+    except Exception as e:
+        print(f"⚠️ 리포트 수집 실패 [{stock_name}]: {e}")
+        return []
+
+def build_top3_event_context(df_final):
+    """Top3 종목의 공시/리포트를 모아 프롬프트 컨텍스트를 구성합니다."""
+    if df_final.empty:
+        return "데이터 없음"
+    top3 = df_final.head(3)[["종목명", "종목코드"]].to_dict("records")
+    lines = []
+    for row in top3:
+        name, code = row["종목명"], row["종목코드"]
+        disclosures = get_recent_disclosures(code, name, max_items=3)
+        reports = get_recent_analyst_reports(name, max_items=2)
+        if not disclosures and not reports:
+            lines.append(f"- {name}: 최근 공시/리포트 데이터 없음")
+            continue
+        for d in disclosures:
+            lines.append(f"- {d}")
+        for r in reports:
+            lines.append(f"- {r}")
+    return "\n".join(lines) if lines else "최근 공시/리포트 데이터 없음"
+
 def get_live_macro_and_news():
     tickers = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11", "S&P500": "^GSPC", "NASDAQ": "^IXIC", "환율": "KRW=X", "WTI유": "CL=F", "미 국채(10y)": "^TNX", "VIX": "^VIX"}
     macro_str = ""
@@ -149,19 +333,101 @@ def get_live_macro_and_news():
     # 🔥 [기능 업데이트] 네이버 시황 뉴스 제목 + 요약 본문 동시 스크래핑
     news_str = ""
     try:
-        res = requests.get("https://finance.naver.com/news/mainnews.naver", headers={'User-Agent': 'Mozilla/5.0'})
-        soup = BeautifulSoup(res.text, 'html.parser')
-        subjects = soup.select('.articleSubject a')
-        summaries = soup.select('.articleSummary')
-        
-        news_list = []
-        for i in range(min(5, len(subjects))):
-            title = subjects[i].text.strip()
-            desc = summaries[i].text.strip() if i < len(summaries) else ""
-            desc = ' '.join(desc.split()) # 불필요한 줄바꿈 및 탭 제거
-            news_list.append(f"제목: {title} / 내용: {desc}")
-        news_str = "\n".join([f"- {n}" for n in news_list])
-    except: news_str = "- 뉴스 수집 실패"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        cutoff_dt = datetime.now() - timedelta(hours=48)
+        candidates = []
+        signatures = []
+
+        def add_candidate(title, desc="", news_dt=None, source="일반"):
+            title = _normalize_text(title)
+            desc = _normalize_text(desc)
+            if not title:
+                return
+            signature = _title_signature(title)
+            if _is_similar_title(signature, signatures):
+                return
+            signatures.append(signature)
+            tags = _event_tags(f"{title} {desc}")
+            candidates.append({
+                "title": title,
+                "desc": desc,
+                "dt": news_dt,
+                "source": source,
+                "tags": tags
+            })
+
+        res = _request_html("https://finance.naver.com/news/mainnews.naver", headers=headers, timeout=4, retries=1)
+        if res is not None:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            subjects = soup.select('.articleSubject a')
+            summaries = soup.select('.articleSummary')
+
+            for i in range(min(20, len(subjects))):
+                title = _normalize_text(subjects[i].text)
+                desc = _normalize_text(summaries[i].text if i < len(summaries) else "")
+                add_candidate(title=title, desc=desc, source=_extract_source(title, "네이버금융"))
+                if len(candidates) >= 12:
+                    break
+
+        # 네이버 금융 검색 fallback (최신성 필터)
+        if not candidates:
+            fin_res = _request_html("https://finance.naver.com/news/news_search.naver?q=%EC%BD%94%EC%8A%A4%ED%94%BC", headers=headers, timeout=4, retries=1)
+            if fin_res is not None:
+                soup_fin = BeautifulSoup(fin_res.text, "html.parser")
+                for tr in soup_fin.select("table.type5 tr"):
+                    t_tag = tr.select_one(".articleSubject a")
+                    d_tag = tr.select_one(".wdate")
+                    if not t_tag:
+                        continue
+                    title = _normalize_text(t_tag.get("title") or t_tag.text)
+                    dt_text = _normalize_text(d_tag.text if d_tag else "")
+                    try:
+                        news_dt = datetime.strptime(dt_text, "%Y-%m-%d %H:%M")
+                    except Exception:
+                        news_dt = None
+                    if news_dt is not None and news_dt < cutoff_dt:
+                        continue
+                    add_candidate(title=title, news_dt=news_dt, source="네이버금융")
+                    if len(candidates) >= 12:
+                        break
+
+        # 무료 RSS fallback
+        if not candidates:
+            rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C%20OR%20%EC%BD%94%EC%8A%A4%ED%94%BC&hl=ko&gl=KR&ceid=KR:ko"
+            rss_res = _request_html(rss_url, headers=headers, timeout=4, retries=0)
+            if rss_res is not None:
+                soup_rss = BeautifulSoup(rss_res.text, "xml")
+                for item in soup_rss.select("item")[:10]:
+                    title = _normalize_text(item.title.text if item.title else "")
+                    pub_date = _normalize_text(item.pubDate.text if item.pubDate else "")
+                    try:
+                        dt = parsedate_to_datetime(pub_date).replace(tzinfo=None)
+                    except Exception:
+                        dt = None
+                    if dt is not None and dt < cutoff_dt:
+                        continue
+                    add_candidate(title=title, news_dt=dt, source="GoogleNewsRSS")
+                    if len(candidates) >= 12:
+                        break
+
+        final_news = sorted(candidates, key=_score_news_candidate, reverse=True)[:5]
+        news_lines = []
+        for item in final_news:
+            tag_text = ",".join(item["tags"][:2]) if item["tags"] else "일반"
+            if item["desc"]:
+                news_lines.append(f"- 제목: {item['title']} / 내용: {item['desc']} / 출처: {item['source']} / 태그: {tag_text}")
+            else:
+                news_lines.append(f"- 제목: {item['title']} / 출처: {item['source']} / 태그: {tag_text}")
+
+        # GitHub Actions 로그에서 수집 품질을 바로 확인할 수 있도록 요약 출력
+        source_stats = {}
+        for item in final_news:
+            source_stats[item["source"]] = source_stats.get(item["source"], 0) + 1
+        print(f"📰 뉴스 수집 품질: raw={len(candidates)} final={len(final_news)} sources={source_stats}")
+        news_str = "\n".join(news_lines) if news_lines else "- 뉴스 수집 실패"
+    except Exception as e:
+        print(f"⚠️ 시황 뉴스 수집 실패: {e}")
+        news_str = "- 뉴스 수집 실패"
     
     return macro_str, news_str
 
@@ -433,7 +699,7 @@ def run_scraper():
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             
             if not is_eod_updated:
-                tg_message = f"🔔 *[장중 실시간 브리핑]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *장중 퀀트 픽 Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+                tg_message = f"🔔 *[장중 요약]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *QEdge Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
             else:
                 top_N_names = df_final.head(20)['종목명'].tolist()
@@ -447,10 +713,12 @@ def run_scraper():
                     df_merged = df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']]
                 
                 macro_str, news_str = get_live_macro_and_news()
+                top3_event_context = build_top3_event_context(df_final)
+                print("📌 Top3 공시/리포트 컨텍스트 수집 완료")
                 
                 # 🔥 [기능 업데이트] Google 검색 제거 및 네이버 뉴스 RAG 기반 프롬프트로 재설계
                 prompt = f"""
-                너는 여의도 최고의 탑다운 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
+                너는 QEdge 수석 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
                 현재 VIX 지수는 {current_vix:.2f}로 {regime} 모드로 포트폴리오가 구성되었어.
                 
                 [1. 매크로 지표]
@@ -462,10 +730,15 @@ def run_scraper():
                 [3. 최상위 20개 종목 수급 및 모멘텀 동향]
                 {df_merged.to_string(index=False)}
 
+                [4. Top 3 최근 공시/증권사 리포트]
+                {top3_event_context}
+
                 다음 순서로 전문가 수준의 마감 리포트를 작성해 줘.
-                1. 🌐 글로벌 매크로 브리핑: 제공된 네이버 금융 주요 뉴스를 활용하여 오늘 시장을 움직인 핵심 이슈를 요약해.
+                1. 🌐 글로벌 매크로 요약: 제공된 네이버 금융 주요 뉴스를 활용하여 오늘 시장을 움직인 핵심 이슈를 요약해.
                 2. 🌪️ 섹터 및 수급 동향: RSI와 거래급증(%), 손바뀜을 참고하여 시장의 자금이 쏠린 핫섹터를 분석해.
-                3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 시황 및 수급 모멘텀과 맞물려 설명해. (인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해.)
+                3. 🎯 Top 3 관심종목 & 추천 사유: 반드시 표 안의 20개 종목 중에서만 3개를 골라 시황 및 수급 모멘텀과 맞물려 설명해.
+                4. 🧾 공시/리포트 체크포인트: Top3 종목별로 최근 공시/증권사 리포트가 시사하는 기회와 리스크를 1~2줄씩 요약해.
+                (인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해.)
     [🚨 절대 엄수 사항] 텔레그램 전송용이므로 마크다운 표(Table)는 절대 사용하지 마.
                 """
                 
@@ -476,9 +749,9 @@ def run_scraper():
                 )
                 
                 with open("report.md", "w", encoding="utf-8") as f:
-                    f.write(f"## 🌐 여의도 탑다운 퀀트 애널리스트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
+                    f.write(f"## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d')})\n\n{response.text}")
                     
-                tg_message = f"🔔 *[장 마감 수급 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *최종 퀀트 픽 Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+                tg_message = f"🔔 *[장 마감 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *QEdge Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
         except Exception as e: print(f"⚠️ AI 리포트 생성 실패: {e}")
 
