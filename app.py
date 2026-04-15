@@ -179,6 +179,65 @@ def load_data():
     df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
     return df_summary, df_hist
 
+def load_score_trend_safe():
+    """머지 충돌/깨진 CSV를 방어적으로 읽어 앱 크래시를 막습니다."""
+    base_cols = ['날짜', '종목명', '순위']
+    if not os.path.exists("score_trend.csv"):
+        return pd.DataFrame(columns=base_cols)
+    try:
+        df = pd.read_csv("score_trend.csv", on_bad_lines="skip")
+    except Exception:
+        return pd.DataFrame(columns=base_cols)
+    if df.empty:
+        return pd.DataFrame(columns=base_cols)
+
+    # BOM/공백 정리
+    df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
+
+    # 충돌 마커가 컬럼으로 들어온 경우 제거
+    bad_cols = [c for c in df.columns if any(x in str(c) for x in ["<<<<<<<", "=======", ">>>>>>>"])]
+    if bad_cols:
+        df = df.drop(columns=bad_cols, errors='ignore')
+
+    if not set(base_cols).issubset(df.columns):
+        return pd.DataFrame(columns=base_cols)
+
+    # 충돌 마커가 데이터 행으로 들어온 경우 제거
+    marker_pat = r"^(<<<<<<<|=======|>>>>>>>)"
+    df = df[~df['날짜'].astype(str).str.contains(marker_pat, regex=True, na=False)]
+    df = df[~df['종목명'].astype(str).str.contains(marker_pat, regex=True, na=False)]
+
+    df['날짜'] = df['날짜'].astype(str).str.strip()
+    df = df.dropna(subset=['날짜', '종목명', '순위'])
+    return df
+
+def load_performance_trend_safe():
+    """머지 충돌/깨진 performance_trend.csv를 방어적으로 읽습니다."""
+    base_cols = ['날짜', '일간수익률', '누적수익률']
+    if not os.path.exists("performance_trend.csv"):
+        return pd.DataFrame(columns=base_cols)
+    try:
+        df = pd.read_csv("performance_trend.csv", on_bad_lines="skip")
+    except Exception:
+        return pd.DataFrame(columns=base_cols)
+    if df.empty:
+        return pd.DataFrame(columns=base_cols)
+
+    df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
+    bad_cols = [c for c in df.columns if any(x in str(c) for x in ["<<<<<<<", "=======", ">>>>>>>"])]
+    if bad_cols:
+        df = df.drop(columns=bad_cols, errors='ignore')
+
+    if not set(base_cols).issubset(df.columns):
+        return pd.DataFrame(columns=base_cols)
+
+    marker_pat = r"^(<<<<<<<|=======|>>>>>>>)"
+    df = df[~df['날짜'].astype(str).str.contains(marker_pat, regex=True, na=False)]
+    for c in ['일간수익률', '누적수익률']:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+    df = df.dropna(subset=['날짜'])
+    return df[base_cols]
+
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
 
@@ -723,7 +782,7 @@ else:
     df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='first', ascending=False).astype(int)
     
     if os.path.exists("score_trend.csv"):
-        df_trend = pd.read_csv("score_trend.csv")
+        df_trend = load_score_trend_safe()
         dates = sorted(df_trend['날짜'].unique(), reverse=True)
         if len(dates) >= 2:
             yday_data = df_trend[df_trend['날짜'] == dates[1]][['종목명', '순위']]
@@ -1291,7 +1350,7 @@ else:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 코드 인증 후 확인할 수 있습니다.")
         else:
             if os.path.exists("performance_trend.csv"):
-                df_perf = pd.read_csv("performance_trend.csv")
+                df_perf = load_performance_trend_safe()
                 if not df_perf.empty:
                     df_perf['날짜_dt'] = pd.to_datetime(df_perf['날짜'])
                     min_date = df_perf['날짜_dt'].min().date()
@@ -1426,7 +1485,7 @@ else:
                             st.caption(f"일부 벤치마크 데이터가 지연되어 표시되지 않았습니다: {err_names}")
 
                         if os.path.exists("score_trend.csv"):
-                            df_rank = pd.read_csv("score_trend.csv")
+                            df_rank = load_score_trend_safe()
                             if not df_rank.empty and {"날짜", "종목명", "순위"}.issubset(df_rank.columns):
                                 df_rank = df_rank[df_rank["순위"].isin([1, 2, 3])].copy()
                                 df_rank["날짜"] = df_rank["날짜"].astype(str)

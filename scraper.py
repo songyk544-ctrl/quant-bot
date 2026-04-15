@@ -333,6 +333,37 @@ def _request_html(url, headers, timeout=4, retries=2):
                 print(f"⚠️ 요청 실패: {url} ({e})")
                 return None
 
+def load_score_trend_safe():
+    """머지 충돌/깨진 score_trend.csv를 방어적으로 로드."""
+    base_cols = ['종목명', '종목코드', 'AI수급점수', '순위', '날짜']
+    if not os.path.exists("score_trend.csv"):
+        return pd.DataFrame(columns=base_cols)
+    try:
+        df = pd.read_csv("score_trend.csv", on_bad_lines="skip")
+    except Exception:
+        return pd.DataFrame(columns=base_cols)
+    if df.empty:
+        return pd.DataFrame(columns=base_cols)
+
+    df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
+    bad_cols = [c for c in df.columns if any(x in str(c) for x in ["<<<<<<<", "=======", ">>>>>>>"])]
+    if bad_cols:
+        df = df.drop(columns=bad_cols, errors='ignore')
+
+    if '날짜' not in df.columns:
+        return pd.DataFrame(columns=base_cols)
+
+    marker_pat = r"^(<<<<<<<|=======|>>>>>>>)"
+    if '날짜' in df.columns:
+        df = df[~df['날짜'].astype(str).str.contains(marker_pat, regex=True, na=False)]
+    if '종목명' in df.columns:
+        df = df[~df['종목명'].astype(str).str.contains(marker_pat, regex=True, na=False)]
+
+    for c in base_cols:
+        if c not in df.columns:
+            df[c] = None
+    return df[base_cols]
+
 def _normalize_text(text):
     return re.sub(r"\s+", " ", (text or "")).strip()
 
@@ -915,7 +946,7 @@ def run_scraper(manual_full_parse=False):
 
     trend_file = "score_trend.csv"
     if os.path.exists(trend_file):
-        df_trend_old = pd.read_csv(trend_file)
+        df_trend_old = load_score_trend_safe()
         df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
         pd.concat([df_trend_old, df_trend_new], ignore_index=True).to_csv(trend_file, index=False, encoding='utf-8-sig')
     else:
