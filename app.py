@@ -61,15 +61,45 @@ else: client = None
 def get_macro_data():
     tickers = {"🇰🇷 KOSPI": "^KS11", "🇰🇷 KOSDAQ": "^KQ11", "🇺🇸 S&P500": "^GSPC", "🇺🇸 NASDAQ": "^IXIC", "💵 환율": "KRW=X", "🛢️ WTI유": "CL=F", "📉 미 국채(10y)": "^TNX", "😨 VIX": "^VIX"}
     macro_info = {}
+
+    def _fetch_chart_close_pair(symbol):
+        """Yahoo Chart API 직접 호출로 최근 종가 2개를 가져옵니다."""
+        try:
+            encoded_symbol = urllib.parse.quote(symbol, safe="")
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range=10d&interval=1d"
+            res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+            if res.status_code != 200:
+                return None
+            payload = res.json()
+            result = ((payload or {}).get("chart") or {}).get("result") or []
+            if not result:
+                return None
+            quote = (((result[0].get("indicators") or {}).get("quote") or [{}])[0])
+            closes = [float(x) for x in (quote.get("close") or []) if x is not None]
+            if len(closes) < 2:
+                return None
+            return closes[-1], closes[-2]
+        except Exception:
+            return None
+
     for name, ticker in tickers.items():
         try:
-            t = yf.Ticker(ticker)
-            hist = t.history(period="5d")
-            if len(hist) >= 2:
-                current, prev = hist['Close'].iloc[-1], hist['Close'].iloc[-2]
+            # 1) direct API 우선 (환경별 yfinance 경고/빈응답 이슈 회피)
+            pair = _fetch_chart_close_pair(ticker)
+            if pair is None:
+                # 2) fallback: yfinance
+                t = yf.Ticker(ticker)
+                hist = t.history(period="5d")
+                if len(hist) >= 2:
+                    pair = (float(hist['Close'].iloc[-1]), float(hist['Close'].iloc[-2]))
+
+            if pair is not None and pair[1] != 0:
+                current, prev = pair
                 macro_info[name] = {"value": current, "change": current - prev, "change_pct": ((current - prev) / prev) * 100}
-            else: macro_info[name] = None
-        except: macro_info[name] = None
+            else:
+                macro_info[name] = None
+        except:
+            macro_info[name] = None
     return macro_info
 
 macro_data = get_macro_data()
@@ -166,6 +196,107 @@ def resolve_daily_return(df_hist, trade_date, stock_name):
     if matched.empty:
         return None
     return float(matched.iloc[-1]["등락률"])
+
+def fetch_yahoo_chart_history(ticker_symbol, range_period="2y", interval="1d"):
+    """yfinance 실패 시 Yahoo Chart API 직접 호출 fallback."""
+    try:
+        encoded_symbol = urllib.parse.quote(ticker_symbol, safe="")
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_symbol}?range={range_period}&interval={interval}"
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+        if res.status_code != 200:
+            return pd.DataFrame()
+        payload = res.json()
+        result = ((payload or {}).get("chart") or {}).get("result") or []
+        if not result:
+            return pd.DataFrame()
+        data = result[0]
+        timestamps = data.get("timestamp") or []
+        quotes = (((data.get("indicators") or {}).get("quote") or [{}])[0])
+        closes = quotes.get("close") or []
+        if not timestamps or not closes:
+            return pd.DataFrame()
+        df = pd.DataFrame({"ts": timestamps, "Close": closes}).dropna(subset=["Close"])
+        if df.empty:
+            return pd.DataFrame()
+        df["Date"] = pd.to_datetime(df["ts"], unit="s").dt.tz_localize(None).dt.normalize()
+        return df.set_index("Date")[["Close"]].sort_index()
+    except Exception:
+        return pd.DataFrame()
+
+def format_report_for_readability(report_text):
+    """리포트 상단 메타(작성일/시장상태/작성자)가 한 줄로 붙는 경우 가독성을 위해 줄바꿈을 보정."""
+    if not report_text:
+        return report_text
+    formatted = report_text
+    for marker in ["**날짜:**", "**시장 상태:**", "**시장상태:**", "**작성자:**"]:
+        formatted = formatted.replace(f" {marker}", f"\n{marker}")
+    return formatted
+
+def build_quality_badge(row):
+    """종목 데이터 충실도 기반 간단 신뢰도 배지."""
+    score = 0
+    if "정성점수" in row.index and pd.notna(row.get("정성점수")):
+        score += 1
+    if "Quant점수" in row.index and pd.notna(row.get("Quant점수")):
+        score += 1
+    if "외인연속" in row.index and pd.notna(row.get("외인연속")):
+        score += 1
+    if "연기금연속" in row.index and pd.notna(row.get("연기금연속")):
+        score += 1
+    if score >= 4:
+        return "신뢰도 높음"
+    if score >= 2:
+        return "신뢰도 보통"
+    return "신뢰도 낮음"
+
+def render_action_brief(df_summary_local, macro_news_refs):
+    """오늘의 액션 브리프 3카드(매수 후보/관망/리스크)."""
+    if df_summary_local.empty:
+        st.info("오늘의 액션 브리프를 만들 데이터가 아직 없습니다.")
+        return
+
+    ranked = df_summary_local.sort_values("AI수급점수", ascending=False).reset_index(drop=True)
+    buy_row = ranked.iloc[0]
+    watch_idx = min(4, len(ranked) - 1)
+    watch_row = ranked.iloc[watch_idx]
+
+    try:
+        vix_data = macro_data.get("😨 VIX")
+        vix_val = float(vix_data["value"]) if vix_data and vix_data.get("value") is not None else None
+    except Exception:
+        vix_val = None
+    risk_text = "주의" if (vix_val is not None and vix_val >= 22) else "중립"
+    risk_detail = f"VIX {vix_val:.2f}" if vix_val is not None else "VIX 데이터 지연"
+    if len(macro_news_refs or []) == 0:
+        risk_text = "주의"
+        risk_detail = "시황 뉴스 지연"
+
+    updated_at = datetime.now().strftime("%H:%M")
+    st.markdown(
+        f"""
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-title">오늘의 매수 후보</div>
+                <div class="kpi-value" style="font-size:1.45em;">{buy_row.get('종목명', '-')}</div>
+                <span class="kpi-delta" style="background:rgba(54,192,106,0.18); color:#36C06A;">AI {float(buy_row.get('AI수급점수', 0)):.1f}</span>
+                <div class="kpi-meta">{build_quality_badge(buy_row)} · 갱신 {updated_at}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">관망 후보</div>
+                <div class="kpi-value" style="font-size:1.45em;">{watch_row.get('종목명', '-')}</div>
+                <span class="kpi-delta" style="background:rgba(59,130,246,0.16); color:#60A5FA;">AI {float(watch_row.get('AI수급점수', 0)):.1f}</span>
+                <div class="kpi-meta">추세 확인 필요 · 갱신 {updated_at}</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-title">리스크 경보</div>
+                <div class="kpi-value" style="font-size:1.45em;">{risk_text}</div>
+                <span class="kpi-delta" style="background:rgba(224,75,75,0.16); color:#E04B4B;">{risk_detail}</span>
+                <div class="kpi-meta">뉴스 {len(macro_news_refs or [])}건 반영 · 갱신 {updated_at}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
 def _request_html(url, headers, timeout=4, retries=2):
     """가벼운 재시도로 일시적 네트워크 실패를 완화합니다."""
@@ -362,27 +493,89 @@ def get_stock_disclosure_report_context(stock_name, stock_code):
 # 🔥 [신규 추가] 매크로 주요 시황 스크래핑 함수
 @st.cache_data(ttl=1800)
 def get_macro_headline_news():
-    """네이버 금융 메인의 '주요 뉴스' 5개를 긁어옵니다."""
-    headlines = []
+    """반복 이슈 Top5 + 최신 뉴스 Top5를 함께 반환."""
     headers = {'User-Agent': 'Mozilla/5.0'}
+    cutoff_dt = datetime.now() - pd.Timedelta(hours=72)
+    candidates = []
+    signatures = []
+
+    def add_candidate(title, desc="", news_dt=None, source="일반"):
+        title = _normalize_text(title)
+        desc = _normalize_text(desc)
+        if not title:
+            return
+        sig = _title_signature(title)
+        if _is_similar_title(sig, signatures):
+            return
+        signatures.append(sig)
+        candidates.append({
+            "title": title,
+            "desc": desc,
+            "dt": news_dt,
+            "source": source,
+            "tags": _event_tags(f"{title} {desc}")
+        })
+
     try:
         res = _request_html("https://finance.naver.com/news/mainnews.naver", headers=headers, timeout=4, retries=1)
-        if res is None:
-            return headlines
-        soup = BeautifulSoup(res.text, 'html.parser')
-        titles = soup.select('.articleSubject a')
-        seen = set()
-        for t in titles:
-            title = _normalize_text(t.text)
-            if not title or title in seen:
-                continue
-            seen.add(title)
-            headlines.append(title)
-            if len(headlines) >= 5:
-                break
-    except:
+        if res is not None:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            subjects = soup.select('.articleSubject a')
+            summaries = soup.select('.articleSummary')
+            for i in range(min(30, len(subjects))):
+                add_candidate(
+                    title=_normalize_text(subjects[i].text),
+                    desc=_normalize_text(summaries[i].text if i < len(summaries) else ""),
+                    source="네이버금융"
+                )
+
+        if len(candidates) < 40:
+            rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C%20OR%20%EC%BD%94%EC%8A%A4%ED%94%BC%20OR%20%EA%B8%88%EB%A6%AC&hl=ko&gl=KR&ceid=KR:ko"
+            res_rss = _request_html(rss_url, headers=headers, timeout=5, retries=1)
+            if res_rss is not None:
+                rss_soup = BeautifulSoup(res_rss.text, "xml")
+                for item in rss_soup.select("item")[:40]:
+                    title = _normalize_text(item.title.text if item.title else "")
+                    pub_date = _normalize_text(item.pubDate.text if item.pubDate else "")
+                    try:
+                        dt = parsedate_to_datetime(pub_date).replace(tzinfo=None)
+                    except Exception:
+                        dt = None
+                    if dt is not None and dt < cutoff_dt:
+                        continue
+                    add_candidate(title=title, news_dt=dt, source="GoogleNewsRSS")
+                    if len(candidates) >= 40:
+                        break
+    except Exception:
         pass
-    return headlines
+
+    if not candidates:
+        return []
+
+    # 반복 이슈 Top5
+    topic_stats = {}
+    now = datetime.now()
+    for item in candidates:
+        tags = item.get("tags") or ["일반"]
+        source = item.get("source", "일반")
+        dt = item.get("dt")
+        recency = 0.4 if dt is None else (1.0 / (1.0 + max(0.0, (now - dt).total_seconds() / 86400.0)))
+        for tag in tags:
+            stat = topic_stats.setdefault(tag, {"count": 0, "sources": set(), "recency_sum": 0.0})
+            stat["count"] += 1
+            stat["sources"].add(source)
+            stat["recency_sum"] += recency
+
+    ranked_topics = []
+    for tag, st in topic_stats.items():
+        avg_recency = st["recency_sum"] / max(1, st["count"])
+        score = (st["count"] * 1.0) + (len(st["sources"]) * 0.7) + (avg_recency * 2.0)
+        ranked_topics.append((score, tag, st["count"], len(st["sources"])))
+    ranked_topics.sort(reverse=True)
+
+    topic_lines = [f"[반복] {tag} (빈도 {cnt} / 출처 {src_cnt})" for _, tag, cnt, src_cnt in ranked_topics[:5]]
+    latest_lines = [f"[최신] {item['title']}" for item in sorted(candidates, key=_score_news_candidate, reverse=True)[:5]]
+    return topic_lines + latest_lines
 
 # 🔥 [업그레이드] 제목 + 요약 본문(Snippet) 동시 추출
 @st.cache_data(ttl=600)
@@ -447,49 +640,59 @@ def get_naver_news(stock_name):
                 break
             
         if not candidates:
-            encoded_euckr = urllib.parse.quote(stock_name.encode('euc-kr'))
-            fin_url = f"https://finance.naver.com/news/news_search.naver?q={encoded_euckr}"
+            # 네이버 금융 검색은 DOM 구조가 자주 바뀌므로 셀렉터를 유연하게 처리
+            fin_url = f"https://finance.naver.com/news/news_search.naver?q={urllib.parse.quote(stock_name)}"
             res_fin = _request_html(fin_url, headers=headers, timeout=4, retries=1)
             if res_fin is not None:
                 soup_fin = BeautifulSoup(res_fin.text, 'html.parser')
+                title_nodes = soup_fin.select('.articleSubject a')
+                date_nodes = soup_fin.select('.wdate')
+                summary_nodes = soup_fin.select('.articleSummary')
 
-                # 네이버 금융 뉴스검색: 날짜/제목 함께 읽어서 최신성 필터 적용
-                rows = soup_fin.select('table.type5 tr')
-                for tr in rows:
-                    t_tag = tr.select_one('.articleSubject a')
-                    d_tag = tr.select_one('.wdate')
+                for idx, t_tag in enumerate(title_nodes):
                     if not t_tag:
                         continue
                     title_text = _normalize_text(t_tag.get('title') or t_tag.text)
-                    dt_text = _normalize_text(d_tag.text if d_tag else "")
+                    dt_text = _normalize_text(date_nodes[idx].text if idx < len(date_nodes) else "")
+                    summary_text = _normalize_text(summary_nodes[idx].text if idx < len(summary_nodes) else "")
                     try:
                         news_dt = datetime.strptime(dt_text, "%Y-%m-%d %H:%M")
                     except Exception:
                         news_dt = None
                     if news_dt is not None and news_dt < cutoff_dt:
                         continue
-                    add_candidate(title=title_text, news_dt=news_dt, source="네이버금융")
+                    add_candidate(title=title_text, desc=summary_text, news_dt=news_dt, source="네이버금융")
                     if len(candidates) >= 10:
                         break
 
-        # 2차 fallback: 무료 RSS (Google News) - 속도 영향 최소화를 위해 마지막에만 사용
+        # 2차 fallback: 무료 RSS (Google News) - 다중 쿼리로 누락 확률 완화
         if not candidates:
-            rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(stock_name + ' 주식')}&hl=ko&gl=KR&ceid=KR:ko"
-            res_rss = _request_html(rss_url, headers=headers, timeout=4, retries=0)
-            if res_rss is not None:
+            rss_queries = [
+                f"{stock_name} 주식",
+                f"{stock_name} 증권",
+                stock_name
+            ]
+            for q in rss_queries:
+                rss_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=ko&gl=KR&ceid=KR:ko"
+                res_rss = _request_html(rss_url, headers=headers, timeout=6, retries=1)
+                if res_rss is None:
+                    continue
                 rss_soup = BeautifulSoup(res_rss.text, "xml")
-                for item in rss_soup.select("item")[:10]:
+                for item in rss_soup.select("item")[:20]:
                     title_text = _normalize_text(item.title.text if item.title else "")
                     pub_date = _normalize_text(item.pubDate.text if item.pubDate else "")
                     try:
                         dt = parsedate_to_datetime(pub_date).replace(tzinfo=None)
                     except Exception:
                         dt = None
-                    if dt is not None and dt < cutoff_dt:
+                    # RSS는 기사량 확보를 위해 72시간까지 허용
+                    if dt is not None and dt < (datetime.now() - pd.Timedelta(hours=72)):
                         continue
                     add_candidate(title=title_text, news_dt=dt, source="GoogleNewsRSS")
                     if len(candidates) >= 10:
                         break
+                if len(candidates) >= 10:
+                    break
 
         if candidates:
             ranked = sorted(candidates, key=_score_news_candidate, reverse=True)
@@ -540,8 +743,13 @@ else:
     with tab1:
         st.subheader("오늘의 매크로 리포트")
         macro_refs = get_macro_headline_news()
+        st.markdown("##### 오늘의 액션 브리프")
+        st.caption("매수/관망/리스크를 먼저 확인하고 세부 탭으로 내려가세요.")
+        render_action_brief(df_summary, macro_refs)
+        st.markdown("---")
         if os.path.exists("report.md"):
             with open("report.md", "r", encoding="utf-8") as f: report_content = f.read()
+            report_content = format_report_for_readability(report_content)
 
             if is_vip:
                 st.markdown(report_content)
@@ -594,7 +802,7 @@ else:
                     coloraxis_showscale=False
                 )
 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info("데이터 대기 중입니다.")
 
@@ -722,7 +930,7 @@ else:
                     "소속": st.column_config.Column("시장", width="small")
                 },
                 column_order=current_columns,
-                hide_index=False, use_container_width=True, height=250 if not is_vip else 600
+                hide_index=False, width='stretch', height=250 if not is_vip else 600
             )
             if event.selection.rows: 
                 selected_name = df_display_table.iloc[event.selection.rows[0]].name
@@ -852,7 +1060,7 @@ else:
                     "showarrow": False, "font": {"size": 24, "color": "#E5E7EB"}
                 }]
             )
-            st.plotly_chart(gauge, use_container_width=True)
+            st.plotly_chart(gauge, width='stretch')
             st.markdown(
                 f"""
                 <div class="score-kpi-grid">
@@ -928,16 +1136,6 @@ else:
                         })
 
                     df_flow = pd.DataFrame(flow_rows)
-                    st.markdown("##### 주체별 순매입 현황 (1주 / 1개월)")
-                    st.dataframe(
-                        df_flow.style.format({
-                            "1주 순매입(백만 원)": "{:+,.0f}",
-                            "1개월 순매입(백만 원)": "{:+,.0f}",
-                            "시총 대비(1개월)": "{:+.2f}%"
-                        }),
-                        hide_index=True,
-                        use_container_width=True
-                    )
 
                     def calc_consecutive_buy_days(df_hist_local, investor_col):
                         if investor_col not in df_hist_local.columns:
@@ -965,7 +1163,7 @@ else:
                     color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#36C06A', '#E04B4B', '#3BA7FF', '#B08CFF'])
                     with col1:
                         st.markdown("##### 20일 종가 추이")
-                        st.altair_chart(alt.Chart(target_hist).mark_line(color='#36C06A', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), use_container_width=True)
+                        st.altair_chart(alt.Chart(target_hist).mark_line(color='#36C06A', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), width='stretch')
                     with col2:
                         st.markdown("##### 주체별 연속 순매수")
                         streak_chart = alt.Chart(streak_df).mark_bar(cornerRadiusEnd=6).encode(
@@ -986,7 +1184,18 @@ else:
                             x=alt.X('연속순매수일:Q'),
                             text='표시:N'
                         )
-                        st.altair_chart(streak_chart + streak_text, use_container_width=True)
+                        st.altair_chart(streak_chart + streak_text, width='stretch')
+
+                    st.markdown("##### 주체별 순매입 현황 (1주 / 1개월)")
+                    st.dataframe(
+                        df_flow.style.format({
+                            "1주 순매입(백만 원)": "{:+,.0f}",
+                            "1개월 순매입(백만 원)": "{:+,.0f}",
+                            "시총 대비(1개월)": "{:+.2f}%"
+                        }),
+                        hide_index=True,
+                        width='stretch'
+                    )
 
                     with st.expander("주체별 순매수 대금 추이(백만 원)"):
                         amount_df = target_hist.melt(
@@ -1002,7 +1211,7 @@ else:
                                 color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
                                 order=alt.Order('투자자:N', sort='descending')
                             ).properties(height=280),
-                            use_container_width=True
+                            width='stretch'
                         )
 
             st.markdown("---")
@@ -1095,42 +1304,72 @@ else:
                         base_port_ret = df_filtered.iloc[0]['누적수익률']
                         df_filtered['조정_포트수익률'] = df_filtered['누적수익률'] - base_port_ret
                         
+                        benchmark_fetch_errors = []
                         try:
-                            kospi_hist = yf.Ticker('^KS11').history(period="1y")
-                            kospi_hist.index = kospi_hist.index.tz_localize(None).normalize()
-                            kospi_hist = kospi_hist.dropna(subset=['Close'])
-                            
-                            base_k_df = kospi_hist[kospi_hist.index <= pd.to_datetime(selected_start_date)]
-                            base_k = float(base_k_df['Close'].dropna().iloc[-1]) if not base_k_df.empty and not base_k_df['Close'].dropna().empty else None
-                            
-                            kospi_rets = []
-                            for d in df_filtered['날짜_dt']:
-                                k_sub = kospi_hist[kospi_hist.index <= d]
-                                k_close = k_sub['Close'].dropna() if not k_sub.empty else pd.Series(dtype=float)
-                                if not k_close.empty and base_k is not None and base_k != 0:
-                                    val = float(k_close.iloc[-1])
-                                    ret = ((val - base_k) / base_k) * 100
-                                    if pd.isna(ret):
-                                        ret = kospi_rets[-1] if kospi_rets else 0.0
-                                    kospi_rets.append(ret)
-                                else:
-                                    kospi_rets.append(kospi_rets[-1] if kospi_rets else 0.0)
-                            df_filtered['KOSPI 누적수익률'] = kospi_rets
-                        except:
-                            df_filtered['KOSPI 누적수익률'] = 0
-                        
-                        current_port_ret = df_filtered['조정_포트수익률'].iloc[-1]
-                        current_kospi_ret = df_filtered['KOSPI 누적수익률'].iloc[-1]
-                        
-                        if len(df_filtered) > 1:
-                            port_daily_diff = df_filtered['조정_포트수익률'].iloc[-1] - df_filtered['조정_포트수익률'].iloc[-2]
-                            kospi_daily_diff = df_filtered['KOSPI 누적수익률'].iloc[-1] - df_filtered['KOSPI 누적수익률'].iloc[-2]
-                        else:
-                            port_daily_diff = 0.0
-                            kospi_daily_diff = 0.0
+                            def compute_benchmark_returns(ticker_symbol):
+                                # 1) Yahoo Chart API 직접 호출(환경별 yfinance 빈응답 이슈 회피)
+                                hist = fetch_yahoo_chart_history(ticker_symbol, range_period="2y", interval="1d")
+                                # 2) direct 호출 실패 시 yfinance fallback
+                                if hist.empty:
+                                    hist = yf.Ticker(ticker_symbol).history(period="2y")
+                                if hist.empty:
+                                    benchmark_fetch_errors.append(ticker_symbol)
+                                    return [float("nan")] * len(df_filtered)
 
-                        alpha_ret = current_port_ret - current_kospi_ret
-                        alpha_color = "#36C06A" if alpha_ret >= 0 else "#E04B4B"
+                                idx = hist.index
+                                if getattr(idx, "tz", None) is not None:
+                                    idx = idx.tz_localize(None)
+                                hist.index = idx.normalize()
+                                hist = hist.dropna(subset=['Close'])
+                                if hist.empty:
+                                    benchmark_fetch_errors.append(ticker_symbol)
+                                    return [float("nan")] * len(df_filtered)
+
+                                base_df = hist[hist.index <= pd.to_datetime(selected_start_date)]
+                                base_close = float(base_df['Close'].dropna().iloc[-1]) if not base_df.empty and not base_df['Close'].dropna().empty else None
+                                if base_close is None or base_close == 0:
+                                    benchmark_fetch_errors.append(ticker_symbol)
+                                    return [float("nan")] * len(df_filtered)
+
+                                rets = []
+                                for d in df_filtered['날짜_dt']:
+                                    sub = hist[hist.index <= d]
+                                    close_series = sub['Close'].dropna() if not sub.empty else pd.Series(dtype=float)
+                                    if not close_series.empty:
+                                        val = float(close_series.iloc[-1])
+                                        ret = ((val - base_close) / base_close) * 100
+                                        if pd.isna(ret):
+                                            ret = rets[-1] if rets else float("nan")
+                                        rets.append(ret)
+                                    else:
+                                        rets.append(rets[-1] if rets else float("nan"))
+                                return rets
+
+                            df_filtered['KOSPI 누적수익률'] = compute_benchmark_returns('^KS11')
+                        except:
+                            df_filtered['KOSPI 누적수익률'] = [float("nan")] * len(df_filtered)
+                            benchmark_fetch_errors = ['^KS11']
+                        
+                        def _safe_last(series):
+                            val = series.iloc[-1] if len(series) > 0 else float("nan")
+                            return 0.0 if pd.isna(val) else float(val)
+
+                        def _safe_daily_diff(series):
+                            if len(series) <= 1:
+                                return 0.0
+                            a, b = series.iloc[-1], series.iloc[-2]
+                            if pd.isna(a) or pd.isna(b):
+                                return 0.0
+                            return float(a - b)
+
+                        current_port_ret = _safe_last(df_filtered['조정_포트수익률'])
+                        current_kospi_ret = _safe_last(df_filtered['KOSPI 누적수익률'])
+
+                        port_daily_diff = _safe_daily_diff(df_filtered['조정_포트수익률'])
+                        kospi_daily_diff = _safe_daily_diff(df_filtered['KOSPI 누적수익률'])
+
+                        alpha_kospi = current_port_ret - current_kospi_ret
+                        alpha_color = "#36C06A" if alpha_kospi >= 0 else "#E04B4B"
                         port_delta_color = "#36C06A" if port_daily_diff >= 0 else "#E04B4B"
                         kospi_delta_color = "#36C06A" if kospi_daily_diff >= 0 else "#E04B4B"
                         trading_days = len(df_filtered)
@@ -1148,7 +1387,7 @@ else:
                                     <div class="kpi-title">KOSPI 누적 수익률</div>
                                     <div class="kpi-value">{current_kospi_ret:+.2f}%</div>
                                     <span class="kpi-delta" style="background: rgba(59,130,246,0.16); color:{kospi_delta_color};">일간 {kospi_daily_diff:+.2f}%</span>
-                                    <div class="kpi-meta">초과 성과 <span style="color:{alpha_color}; font-weight:700;">{alpha_ret:+.2f}%p</span></div>
+                                    <div class="kpi-meta">초과 성과 <span style="color:{alpha_color}; font-weight:700;">{alpha_kospi:+.2f}%p</span></div>
                                 </div>
                             </div>
                             """,
@@ -1158,15 +1397,33 @@ else:
                         st.markdown("<br>", unsafe_allow_html=True)
                         
                         df_filtered['날짜_표시'] = df_filtered['날짜_dt'].dt.strftime('%m/%d')
-                        df_melt = df_filtered.melt(id_vars=['날짜_표시'], value_vars=['조정_포트수익률', 'KOSPI 누적수익률'], var_name='포트폴리오', value_name='수익률(%)')
+                        df_melt = df_filtered.melt(
+                            id_vars=['날짜_표시'],
+                            value_vars=['조정_포트수익률', 'KOSPI 누적수익률'],
+                            var_name='포트폴리오',
+                            value_name='수익률(%)'
+                        )
                         
                         base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
                             x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
                             y=alt.Y('수익률(%):Q', title="누적 수익률 (%)"),
-                            color=alt.Color('포트폴리오:N', scale=alt.Scale(domain=['조정_포트수익률', 'KOSPI 누적수익률'], range=['#E74C3C', '#AAAAAA']), legend=alt.Legend(title=None, orient='bottom'))
+                            color=alt.Color(
+                                '포트폴리오:N',
+                                scale=alt.Scale(
+                                    domain=['조정_포트수익률', 'KOSPI 누적수익률'],
+                                    range=['#E74C3C', '#AAAAAA']
+                                ),
+                                legend=alt.Legend(title=None, orient='bottom')
+                            )
                         ).properties(height=300)
 
-                        st.altair_chart(base_chart, use_container_width=True)
+                        st.altair_chart(base_chart, width='stretch')
+                        if benchmark_fetch_errors:
+                            labels = {
+                                '^KS11': 'KOSPI'
+                            }
+                            err_names = ", ".join(labels.get(x, x) for x in sorted(set(benchmark_fetch_errors)))
+                            st.caption(f"일부 벤치마크 데이터가 지연되어 표시되지 않았습니다: {err_names}")
 
                         if os.path.exists("score_trend.csv"):
                             df_rank = pd.read_csv("score_trend.csv")
@@ -1203,7 +1460,7 @@ else:
 
                                 if rank_rows:
                                     with st.expander("날짜별 Top3 구성 종목 및 성과", expanded=False):
-                                        st.dataframe(pd.DataFrame(rank_rows), hide_index=True, use_container_width=True)
+                                        st.dataframe(pd.DataFrame(rank_rows), hide_index=True, width='stretch')
                     else:
                         st.info("선택하신 날짜에 해당하는 백테스트 데이터가 없습니다.")
                 else: st.info("⏳ 데이터 대기 중")
@@ -1221,15 +1478,25 @@ else:
                 st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 비교 분석을 사용할 수 없습니다.")
             else:
                 stock_list_full = df_summary['종목명'].tolist()
+                if "leaders_pair_warn" not in st.session_state:
+                    st.session_state["leaders_pair_warn"] = False
+
+                def _enforce_pair_limit():
+                    selected = st.session_state.get("leaders_pair_multiselect", [])
+                    if len(selected) > 2:
+                        st.session_state["leaders_pair_multiselect"] = selected[:2]
+                        st.session_state["leaders_pair_warn"] = True
+
                 matchup_stocks = st.multiselect(
                     "비교할 종목 2개를 선택하세요",
                     options=stock_list_full,
-                    key="leaders_pair_multiselect"
+                    key="leaders_pair_multiselect",
+                    on_change=_enforce_pair_limit
                 )
-                if len(matchup_stocks) > 2:
-                    st.session_state["leaders_pair_multiselect"] = matchup_stocks[:2]
-                    matchup_stocks = st.session_state["leaders_pair_multiselect"]
+                matchup_stocks = st.session_state.get("leaders_pair_multiselect", matchup_stocks)
+                if st.session_state.get("leaders_pair_warn", False):
                     st.warning("비교는 2개 종목만 가능합니다. 최근 선택 종목은 제외했습니다.")
+                    st.session_state["leaders_pair_warn"] = False
                 ready_to_run = len(matchup_stocks) == 2
                 st.caption(f"선택 상태: {len(matchup_stocks)}/2")
                 if st.button("비교 분석 시작", use_container_width=True, type="primary", disabled=not ready_to_run):

@@ -12,6 +12,7 @@ import re
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 import tomllib
+import argparse
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
@@ -20,6 +21,35 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+def resolve_kis_credentials():
+    """
+    KIS 키 로딩 우선순위:
+    1) OS 환경변수
+    2) .streamlit/secrets.toml
+    3) secrets.toml
+    """
+    app_key = os.environ.get("KIS_APP_KEY")
+    app_secret = os.environ.get("KIS_APP_SECRET")
+    if app_key and app_secret:
+        return app_key, app_secret
+
+    candidate_files = [
+        Path(".streamlit/secrets.toml"),
+        Path("secrets.toml"),
+    ]
+    for p in candidate_files:
+        try:
+            if p.exists():
+                with p.open("rb") as f:
+                    parsed = tomllib.load(f)
+                app_key = parsed.get("KIS_APP_KEY")
+                app_secret = parsed.get("KIS_APP_SECRET")
+                if app_key and app_secret:
+                    return str(app_key), str(app_secret)
+        except Exception:
+            continue
+    return None, None
 
 def resolve_gemini_api_key():
     """
@@ -49,8 +79,11 @@ def resolve_gemini_api_key():
     return None
 
 def get_kis_access_token():
+    kis_app_key, kis_app_secret = resolve_kis_credentials()
+    if not kis_app_key or not kis_app_secret:
+        return None
     url = f"{URL_BASE}/oauth2/tokenP"
-    body = {"grant_type": "client_credentials", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET}
+    body = {"grant_type": "client_credentials", "appkey": kis_app_key, "appsecret": kis_app_secret}
     try:
         res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body), timeout=10)
         return res.json().get("access_token")
@@ -125,13 +158,14 @@ def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, ga
 
     return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score + zombie_penalty)))
 
-def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, pension_streak, macro_news_text, macro_recency_score=50.0):
+def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, pension_streak, macro_news_text, macro_recency_score=50.0, repeated_topics_text=""):
     """
     정성 점수(0~100): 뉴스-섹터 정합성 + 펀더멘털 힌트 + 연속 순매수 안정성
     데이터가 부족하면 기본 50점(중립)을 유지합니다.
     """
     score = 50.0
     text = (macro_news_text or "").lower()
+    topic_text = (repeated_topics_text or "").lower()
     sector = (sector_name or "분류안됨").lower()
 
     # 시황 뉴스 반감기(최신 뉴스일수록 영향력↑, 오래된 뉴스일수록 영향력↓)
@@ -157,6 +191,12 @@ def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, p
     # 리스크 키워드 감점
     if any(k in text for k in ["긴축", "관세", "하락", "리스크", "소송", "악재"]):
         score -= 4 * decay_factor
+
+    # 반복 이슈 반영(최신 뉴스와 분리된 지속성 시그널)
+    if any(k in topic_text for k in ["실적", "수주", "정책", "수급"]):
+        score += 3 * decay_factor
+    if any(k in topic_text for k in ["리스크", "하락", "긴축", "관세"]):
+        score -= 3 * decay_factor
 
     # 펀더멘털 보정 (정량에서 이미 반영되지만 정성 관점에서 소폭 보정)
     if roe_val >= 15:
@@ -357,6 +397,39 @@ def _score_news_candidate(candidate):
     text_quality = 0.08 if len(candidate.get("desc", "")) >= 20 else 0.0
     return _source_weight(candidate.get("source", "일반")) + age_score + tag_bonus + text_quality
 
+def _build_macro_topic_lines(candidates, top_n=5):
+    """최근 기사 후보에서 반복 이슈 TopN을 가볍게 추출."""
+    if not candidates:
+        return []
+    now = datetime.now()
+    topic_stats = {}
+    for item in candidates:
+        tags = item.get("tags") or ["일반"]
+        source = item.get("source", "일반")
+        dt = item.get("dt")
+        if dt is not None:
+            elapsed_days = max(0.0, (now - dt).total_seconds() / 86400.0)
+            recency = 1.0 / (1.0 + elapsed_days)
+        else:
+            recency = 0.4
+        for tag in tags:
+            stat = topic_stats.setdefault(tag, {"count": 0, "sources": set(), "recency_sum": 0.0})
+            stat["count"] += 1
+            stat["sources"].add(source)
+            stat["recency_sum"] += recency
+
+    ranked = []
+    for tag, st in topic_stats.items():
+        avg_recency = st["recency_sum"] / max(1, st["count"])
+        score = (st["count"] * 1.0) + (len(st["sources"]) * 0.7) + (avg_recency * 2.0)
+        ranked.append((score, tag, st["count"], len(st["sources"]), avg_recency))
+    ranked.sort(reverse=True)
+
+    lines = []
+    for _, tag, cnt, src_cnt, avg_recency in ranked[:top_n]:
+        lines.append(f"- 반복이슈: {tag} | 빈도 {cnt}건 | 출처 {src_cnt}곳 | 최신성 {avg_recency*100:.0f}")
+    return lines
+
 def _parse_short_yy_mm_dd(text):
     """네이버 리서치 날짜(예: 26.04.14)를 datetime으로 변환."""
     txt = _normalize_text(text).replace(".", "-")
@@ -484,7 +557,7 @@ def get_live_macro_and_news():
     news_str = ""
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        cutoff_dt = datetime.now() - timedelta(hours=48)
+        cutoff_dt = datetime.now() - timedelta(hours=72)
         candidates = []
         signatures = []
 
@@ -541,13 +614,13 @@ def get_live_macro_and_news():
                     if len(candidates) >= 12:
                         break
 
-        # 무료 RSS fallback
-        if not candidates:
-            rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C%20OR%20%EC%BD%94%EC%8A%A4%ED%94%BC&hl=ko&gl=KR&ceid=KR:ko"
-            rss_res = _request_html(rss_url, headers=headers, timeout=4, retries=0)
+        # 무료 RSS 확장 수집(반복 이슈 계산용)
+        if len(candidates) < 40:
+            rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C%20OR%20%EC%BD%94%EC%8A%A4%ED%94%BC%20OR%20%EA%B8%88%EB%A6%AC&hl=ko&gl=KR&ceid=KR:ko"
+            rss_res = _request_html(rss_url, headers=headers, timeout=5, retries=1)
             if rss_res is not None:
                 soup_rss = BeautifulSoup(rss_res.text, "xml")
-                for item in soup_rss.select("item")[:10]:
+                for item in soup_rss.select("item")[:40]:
                     title = _normalize_text(item.title.text if item.title else "")
                     pub_date = _normalize_text(item.pubDate.text if item.pubDate else "")
                     try:
@@ -557,11 +630,17 @@ def get_live_macro_and_news():
                     if dt is not None and dt < cutoff_dt:
                         continue
                     add_candidate(title=title, news_dt=dt, source="GoogleNewsRSS")
-                    if len(candidates) >= 12:
+                    if len(candidates) >= 40:
                         break
 
+        topic_lines = _build_macro_topic_lines(candidates, top_n=5)
+        repeated_topics_text = " ".join(topic_lines)
         final_news = sorted(candidates, key=_score_news_candidate, reverse=True)[:5]
         news_lines = []
+        if topic_lines:
+            news_lines.append("[반복 핵심 이슈 Top5]")
+            news_lines.extend(topic_lines)
+            news_lines.append("[최신 뉴스 Top5]")
         for item in final_news:
             tag_text = ",".join(item["tags"][:2]) if item["tags"] else "일반"
             if item["desc"]:
@@ -593,10 +672,11 @@ def get_live_macro_and_news():
         print(f"⚠️ 시황 뉴스 수집 실패: {e}")
         news_str = "- 뉴스 수집 실패"
         macro_recency_score = 50.0
+        repeated_topics_text = ""
     
-    return macro_str, news_str, macro_recency_score
+    return macro_str, news_str, macro_recency_score, repeated_topics_text
 
-def run_scraper():
+def run_scraper(manual_full_parse=False):
     print("🚀 수집기 봇 가동 시작 (V40.4 기관 수급 눌림목 최적화 & 백테스트 방어)...")
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
@@ -609,7 +689,7 @@ def run_scraper():
     
     regime = "공포/하락장 (안전제일 눌림목 & 펀더멘털 방어)" if current_vix >= 25 else "평온/강세장 (핫섹터 폭발적 모멘텀)"
     print(f"🌍 실시간 VIX 지수: {current_vix:.2f} ➔ [{regime}] 가동")
-    macro_str_for_scoring, news_str_for_scoring, macro_recency_score = get_live_macro_and_news()
+    macro_str_for_scoring, news_str_for_scoring, macro_recency_score, repeated_topics_text = get_live_macro_and_news()
 
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
     target_kis_date = now_kst.strftime("%Y%m%d") if is_eod_updated else (now_kst - timedelta(days=1)).strftime("%Y%m%d")
@@ -631,6 +711,9 @@ def run_scraper():
         if '추세상승' not in df_check.columns:
             force_full_parse = True
             print("⚠️ 기존 데이터에 [추세상승] 정보가 없습니다. 새로운 로직 적용을 위해 1회 한투 API를 강제 호출합니다.")
+    if manual_full_parse:
+        force_full_parse = True
+        print("🛠️ 수동 강제 옵션(--full-parse)으로 풀 파싱 모드를 실행합니다.")
 
     is_test_mode = False # 🔥 테스트 모드 여부를 감지하는 플래그 설정
 
@@ -684,7 +767,8 @@ def run_scraper():
                 foreign_streak=row_dict.get('외인연속', 0),
                 pension_streak=row_dict.get('연기금연속', 0),
                 macro_news_text=news_str_for_scoring,
-                macro_recency_score=macro_recency_score
+                macro_recency_score=macro_recency_score,
+                repeated_topics_text=repeated_topics_text
             )
             final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
             row_dict['Quant점수'] = int(round(quant_score))
@@ -705,7 +789,11 @@ def run_scraper():
         print("📥 [풀 파싱 모드] 새로운 수급 데이터 및 추세 정보를 KIS API로부터 수집합니다.")
         df_target = get_target_stock_list()
         token = get_kis_access_token()
-        headers = {"authorization": f"Bearer {token}", "appkey": KIS_APP_KEY, "appsecret": KIS_APP_SECRET, "tr_id": "FHPTJ04160001", "custtype": "P"}
+        kis_app_key, kis_app_secret = resolve_kis_credentials()
+        if not token or not kis_app_key or not kis_app_secret:
+            print("❌ KIS 인증 정보가 유효하지 않아 풀 파싱을 중단합니다.")
+            return
+        headers = {"authorization": f"Bearer {token}", "appkey": kis_app_key, "appsecret": kis_app_secret, "tr_id": "FHPTJ04160001", "custtype": "P"}
         url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
         data_list, history_list = [], []
@@ -787,7 +875,8 @@ def run_scraper():
                     foreign_streak=foreign_streak,
                     pension_streak=pension_streak,
                     macro_news_text=news_str_for_scoring,
-                    macro_recency_score=macro_recency_score
+                    macro_recency_score=macro_recency_score,
+                    repeated_topics_text=repeated_topics_text
                 )
                 final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
 
@@ -808,7 +897,11 @@ def run_scraper():
         df_final = pd.DataFrame(data_list).sort_values('AI수급점수', ascending=False)
         
         df_history = pd.DataFrame(history_list)
-        df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
+        if not df_history.empty:
+            df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
+        else:
+            # 빈 수집 결과로 기존 history.csv를 덮어써서 파일이 깨지는 상황 방지
+            print("⚠️ history_list가 비어 있어 history.csv 갱신을 건너뜁니다. (기존 파일 유지)")
 
         eval_msg = ""
     
@@ -893,11 +986,18 @@ def run_scraper():
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             top_N_names = df_final.head(20)['종목명'].tolist()
             if os.path.exists("history.csv"):
-                df_history = pd.read_csv("history.csv")
-                latest_date = df_history['일자'].max()
-                df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
-                df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
-                df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
+                try:
+                    df_history = pd.read_csv("history.csv")
+                    required_cols = {"일자", "종목명", "외인", "연기금"}
+                    if not df_history.empty and required_cols.issubset(df_history.columns):
+                        latest_date = df_history['일자'].max()
+                        df_today = df_history[(df_history['일자'] == latest_date) & (df_history['종목명'].isin(top_N_names))]
+                        df_merged = pd.merge(df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']], df_today[['종목명', '외인', '연기금']], on='종목명', how='left')
+                        df_merged.rename(columns={'외인': '당일_외인순매수(백만)', '연기금': '당일_연기금순매수(백만)'}, inplace=True)
+                    else:
+                        df_merged = df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']]
+                except Exception:
+                    df_merged = df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']]
             else:
                 df_merged = df_final.head(20)[['종목명', '섹터', 'AI수급점수', '손바뀜(%)', 'RSI', '거래급증(%)']]
             
@@ -915,6 +1015,9 @@ def run_scraper():
             
             [2. 네이버 금융 주요 뉴스 (제목 및 내용 요약)]
             {news_str}
+
+            [2-1. 반복 핵심 이슈 Top5]
+            {repeated_topics_text if repeated_topics_text else "반복 이슈 데이터 없음"}
             
             [3. 최상위 20개 종목 수급 및 모멘텀 동향]
             {df_merged.to_string(index=False)}
@@ -964,6 +1067,9 @@ AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
 
 ### News
 {news_str_for_scoring if news_str_for_scoring else '- 데이터 없음'}
+
+### Repeated Topics
+{repeated_topics_text if repeated_topics_text else '- 데이터 없음'}
 """
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(fallback_report)
@@ -987,9 +1093,15 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 
 ### News
 {news_str_for_scoring if news_str_for_scoring else '- 데이터 없음'}
+
+### Repeated Topics
+{repeated_topics_text if repeated_topics_text else '- 데이터 없음'}
 """
         with open("report.md", "w", encoding="utf-8") as f:
             f.write(fallback_report)
 
 if __name__ == "__main__":
-    run_scraper()
+    parser = argparse.ArgumentParser(description="QEdge scraper runner")
+    parser.add_argument("--full-parse", action="store_true", help="슈퍼 캐시를 무시하고 KIS 풀 파싱을 강제 실행")
+    args = parser.parse_args()
+    run_scraper(manual_full_parse=args.full_parse)
