@@ -699,10 +699,15 @@ def get_naver_news(stock_name):
                 break
             
         if not candidates:
-            # 네이버 금융 검색은 DOM 구조가 자주 바뀌므로 셀렉터를 유연하게 처리
-            fin_url = f"https://finance.naver.com/news/news_search.naver?q={urllib.parse.quote(stock_name)}"
-            res_fin = _request_html(fin_url, headers=headers, timeout=4, retries=1)
-            if res_fin is not None:
+            # 네이버 금융 검색은 인코딩/DOM 변동이 있어 utf/euc-kr를 모두 시도
+            fin_urls = [
+                f"https://finance.naver.com/news/news_search.naver?q={urllib.parse.quote(stock_name)}",
+                f"https://finance.naver.com/news/news_search.naver?q={urllib.parse.quote(stock_name.encode('euc-kr'))}",
+            ]
+            for fin_url in fin_urls:
+                res_fin = _request_html(fin_url, headers=headers, timeout=4, retries=1)
+                if res_fin is None:
+                    continue
                 soup_fin = BeautifulSoup(res_fin.text, 'html.parser')
                 title_nodes = soup_fin.select('.articleSubject a')
                 date_nodes = soup_fin.select('.wdate')
@@ -723,9 +728,11 @@ def get_naver_news(stock_name):
                     add_candidate(title=title_text, desc=summary_text, news_dt=news_dt, source="네이버금융")
                     if len(candidates) >= 10:
                         break
+                if candidates:
+                    break
 
-        # 2차 fallback: 무료 RSS (Google News) - 다중 쿼리로 누락 확률 완화
-        if not candidates:
+        # 2차 fallback: 무료 RSS (Google News) - 후보가 부족할 때 보강
+        if len(candidates) < 5:
             rss_queries = [
                 f"{stock_name} 주식",
                 f"{stock_name} 증권",
