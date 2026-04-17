@@ -112,10 +112,17 @@ def calculate_rsi(prices, period=14):
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
 # 🔥 [수급 로직 업데이트] 외인 비중 대폭 축소, 기관(투신/사모/연기금) 비중 극대화 (눌림목 최적화)
-def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, per_val, roe_val, current_vix):
+def calculate_dynamic_score(
+    f_str, p_str, t_str, pef_str,
+    vol_surge, rsi_val, gap_20,
+    foreign_streak, pension_streak,
+    turnover_rate, is_ma20_rising,
+    per_val, roe_val, current_vix,
+    dip_buying_ratio=0.0, higher_lows_flag=False, squeeze_flag=False
+):
     
     if current_vix < 25:
-        # 🚀 상승장: 기관 주도 폭발적 모멘텀
+        # 🚀 상승장: V41.0 눌림목 패턴 특화
         zombie_penalty = 0 
         fund_score = 0
         
@@ -125,12 +132,20 @@ def calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, ga
         streak_score = max(0, min(10, (pension_streak * 1.5) + (foreign_streak * 0.5)))
         supply_score = strength_score + streak_score # 최대 30점
 
-        turnover_score = 20 if turnover_rate >= 10 else (10 if turnover_rate >= 5 else 0)
-        v_score = 10 if vol_surge >= 150 else 0
-        r_score = 15 if 60 <= rsi_val <= 85 else (5 if 50 <= rsi_val < 60 else 0)
-        momentum_score = turnover_score + v_score + r_score # 최대 45점
+        pattern_score = 0
+        pattern_score += 15 if float(dip_buying_ratio) >= 0.7 else 0
+        pattern_score += 15 if bool(higher_lows_flag) else 0
+        pattern_score += 10 if bool(squeeze_flag) else 0
 
-        tech_score = 25 if 102 <= gap_20 <= 115 else (10 if 98 <= gap_20 < 102 else 0) # 최대 25점
+        if 102 <= gap_20 <= 108:
+            tech_score = 20
+        elif 98 <= gap_20 < 102:
+            tech_score = 10
+        else:
+            tech_score = 0
+
+        momentum_score = 10 if turnover_rate >= 5 else 0
+        return max(0, min(100, int(supply_score + pattern_score + tech_score + momentum_score)))
         
     else:
         # 🛡️ 하락장: 기관 방어 스윙 (연기금 주도, 투신/사모 보조)
@@ -779,6 +794,9 @@ def run_scraper(manual_full_parse=False):
                 row_dict['이격도(%)'] = new_gap
 
             is_ma20_rising_flag = row_dict.get('추세상승', True)
+            dip_buying_ratio = float(row_dict.get('음봉매집률', 0.0))
+            higher_lows_flag = bool(row_dict.get('저점상향', False))
+            squeeze_flag = bool(row_dict.get('변동성수렴', False))
 
             quant_score = calculate_dynamic_score(
                 f_str=row_dict.get('외인강도(%)', 0), p_str=row_dict.get('연기금강도(%)', 0),
@@ -789,7 +807,10 @@ def run_scraper(manual_full_parse=False):
                 turnover_rate=row_dict.get('손바뀜(%)', 0), 
                 is_ma20_rising=is_ma20_rising_flag, 
                 per_val=row_dict.get('PER', 0), roe_val=row_dict.get('ROE', 0), 
-                current_vix=current_vix
+                current_vix=current_vix,
+                dip_buying_ratio=dip_buying_ratio,
+                higher_lows_flag=higher_lows_flag,
+                squeeze_flag=squeeze_flag
             )
             qual_score = calculate_qualitative_score(
                 sector_name=row_dict.get('섹터', '분류안됨'),
@@ -898,7 +919,41 @@ def run_scraper(manual_full_parse=False):
                 else:
                     is_ma20_rising = gap_20 >= 100 
 
-                quant_score = calculate_dynamic_score(f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20, foreign_streak, pension_streak, turnover_rate, is_ma20_rising, row.PER, row.ROE, current_vix)
+                # V41.0 눌림목 패턴 지표 계산
+                dip_buying_ratio = 0.0
+                higher_lows_flag = False
+                squeeze_flag = False
+                if len(closes) >= 20:
+                    total_pt = 0.0
+                    dip_pt = 0.0
+                    for i in range(0, min(19, len(closes) - 1)):
+                        close_today = closes[i]
+                        close_prev = closes[i + 1]
+                        p_amt_i = safe_api_float(daily_list[i].get('fund_ntby_qty')) * close_today
+                        t_amt_i = safe_api_float(daily_list[i].get('ivtr_ntby_qty')) * close_today
+                        pt_amt_i = p_amt_i + t_amt_i
+                        total_pt += pt_amt_i
+                        if close_today < close_prev:
+                            dip_pt += pt_amt_i
+                    if total_pt > 0:
+                        dip_buying_ratio = max(0.0, min(1.0, dip_pt / total_pt))
+
+                    recent10 = closes[:10]
+                    past10 = closes[10:20]
+                    if len(recent10) == 10 and len(past10) == 10:
+                        higher_lows_flag = min(recent10) >= (min(past10) * 1.02)
+                        recent10_mean = sum(recent10) / len(recent10) if recent10 else 0.0
+                        if recent10_mean > 0:
+                            squeeze_flag = ((max(recent10) - min(recent10)) / recent10_mean) <= 0.07
+
+                quant_score = calculate_dynamic_score(
+                    f_str, p_str, t_str, pef_str, vol_surge, rsi_val, gap_20,
+                    foreign_streak, pension_streak, turnover_rate, is_ma20_rising,
+                    row.PER, row.ROE, current_vix,
+                    dip_buying_ratio=dip_buying_ratio,
+                    higher_lows_flag=higher_lows_flag,
+                    squeeze_flag=squeeze_flag
+                )
                 qual_score = calculate_qualitative_score(
                     sector_name=sector_name,
                     per_val=row.PER,
@@ -917,7 +972,10 @@ def run_scraper(manual_full_parse=False):
                     '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
-                    '추세상승': is_ma20_rising, 
+                    '추세상승': is_ma20_rising,
+                    '음봉매집률': round(dip_buying_ratio, 4),
+                    '저점상향': bool(higher_lows_flag),
+                    '변동성수렴': bool(squeeze_flag),
                     '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
                 })
             except: pass 
