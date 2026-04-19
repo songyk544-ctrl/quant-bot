@@ -78,6 +78,57 @@ def resolve_gemini_api_key():
             continue
     return None
 
+def resolve_dart_api_key():
+    """
+    DART Open API 키 로딩 (resolve_gemini_api_key와 동일 우선순위):
+    1) OS 환경변수 DART_API_KEY
+    2) .streamlit/secrets.toml
+    3) secrets.toml
+    """
+    env_key = os.environ.get("DART_API_KEY")
+    if env_key:
+        return str(env_key).strip()
+
+    candidate_files = [
+        Path(".streamlit/secrets.toml"),
+        Path("secrets.toml"),
+    ]
+    for p in candidate_files:
+        try:
+            if p.exists():
+                with p.open("rb") as f:
+                    parsed = tomllib.load(f)
+                key = parsed.get("DART_API_KEY")
+                if key:
+                    return str(key).strip()
+        except Exception:
+            continue
+    return None
+
+_DART_STOCK_TO_CORP = None
+
+def load_dart_stock_to_corp_map():
+    """dart_map.csv가 있으면 {stock_code(6자리): corp_code} 로드 (전역 캐시)."""
+    global _DART_STOCK_TO_CORP
+    if _DART_STOCK_TO_CORP is not None:
+        return _DART_STOCK_TO_CORP
+    path = Path("dart_map.csv")
+    if not path.exists():
+        _DART_STOCK_TO_CORP = {}
+        return _DART_STOCK_TO_CORP
+    try:
+        df = pd.read_csv(path, dtype=str)
+        m = {}
+        for _, row in df.iterrows():
+            sc = str(row.get("stock_code", "") or "").strip()
+            cc = str(row.get("corp_code", "") or "").strip()
+            if len(sc) == 6 and sc.isdigit() and cc:
+                m[sc] = cc
+        _DART_STOCK_TO_CORP = m
+    except Exception:
+        _DART_STOCK_TO_CORP = {}
+    return _DART_STOCK_TO_CORP
+
 def get_kis_access_token():
     kis_app_key, kis_app_secret = resolve_kis_credentials()
     if not kis_app_key or not kis_app_secret:
@@ -494,15 +545,57 @@ def _parse_short_yy_mm_dd(text):
     except Exception:
         return None
 
-def get_recent_disclosures(stock_code, stock_name, max_items=3):
-    """네이버 금융 공시 페이지에서 최근 공시를 가져옵니다."""
+def _normalize_stock_code_6(stock_code):
+    s = str(stock_code or "").strip()
+    if s.isdigit() and len(s) <= 6:
+        return s.zfill(6)
+    return s if len(s) == 6 else ""
+
+def _fetch_dart_list_json_pages(corp_code, api_key, bgn_de, end_de, pblntf_ty):
+    """DART list.json 전체 페이지 수집. 실패 시 None."""
+    url = "https://opendart.fss.or.kr/api/list.json"
+    merged = []
+    page_no = 1
+    while True:
+        params = {
+            "crtfc_key": api_key,
+            "corp_code": corp_code,
+            "bgn_de": bgn_de,
+            "end_de": end_de,
+            "page_no": str(page_no),
+            "page_count": "100",
+            "pblntf_ty": pblntf_ty,
+        }
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            data = r.json()
+        except Exception:
+            return None
+        status = str(data.get("status", ""))
+        # DART: 013 = 조회된 데이터 없음(요청은 유효). 이 경우 빈 list로 처리.
+        if status == "013":
+            return merged
+        if status != "000":
+            return None
+        batch = data.get("list") or []
+        merged.extend(batch)
+        try:
+            total_page = int(data.get("total_page") or 1)
+        except Exception:
+            total_page = 1
+        if page_no >= total_page:
+            break
+        page_no += 1
+    return merged
+
+def _get_recent_disclosures_naver(stock_code, stock_name, max_items=3):
+    """네이버 금융 공시 페이지에서 최근 공시 (기존 로직)."""
     headers = {'User-Agent': 'Mozilla/5.0'}
     url = f"https://finance.naver.com/item/news_notice.naver?code={stock_code}"
     res = _request_html(url, headers=headers, timeout=4, retries=1)
     if res is None:
         return []
     try:
-        # 한글 깨짐 방지
         res.encoding = res.apparent_encoding or "utf-8"
         soup = BeautifulSoup(res.text, "html.parser")
         rows = soup.select("table tr")
@@ -530,6 +623,51 @@ def get_recent_disclosures(stock_code, stock_name, max_items=3):
     except Exception as e:
         print(f"⚠️ 공시 수집 실패 [{stock_name}]: {e}")
         return []
+
+def get_recent_disclosures(stock_code, stock_name, max_items=3):
+    """DART Open API 우선, 실패 시 네이버 금융 공시 크롤링 Fallback."""
+    sc6 = _normalize_stock_code_6(stock_code)
+    dart_key = resolve_dart_api_key()
+    dart_map = load_dart_stock_to_corp_map()
+    corp_code = dart_map.get(sc6) if sc6 and dart_map else None
+
+    if dart_key and corp_code:
+        today = datetime.now().date()
+        end_de = today.strftime("%Y%m%d")
+        bgn_de = (today - timedelta(days=14)).strftime("%Y%m%d")
+        combined = []
+        for pty in ("I", "A"):
+            batch = _fetch_dart_list_json_pages(corp_code, dart_key, bgn_de, end_de, pty)
+            if batch is None:
+                combined = None
+                break
+            combined.extend(batch)
+        if combined is not None and combined:
+            by_rcept = {}
+            for it in combined:
+                rno = it.get("rcept_no") or ""
+                rdt = str(it.get("rcept_dt") or "")
+                nm = str(it.get("report_nm") or "").strip()
+                if not nm:
+                    continue
+                key = rno if rno else f"{rdt}|{nm}"
+                prev = by_rcept.get(key)
+                if prev is None or (rdt > (prev.get("rcept_dt") or "")):
+                    by_rcept[key] = {"report_nm": nm, "rcept_dt": rdt}
+            sorted_items = sorted(
+                by_rcept.values(),
+                key=lambda x: str(x.get("rcept_dt") or ""),
+                reverse=True,
+            )
+            out = []
+            for it in sorted_items[:max_items]:
+                rdt = str(it.get("rcept_dt") or "")
+                nm = it.get("report_nm") or ""
+                out.append(f"- [공시] {nm} ({rdt})")
+            if out:
+                return out
+
+    return _get_recent_disclosures_naver(stock_code, stock_name, max_items=max_items)
 
 def get_recent_analyst_reports(stock_name, max_items=3):
     """네이버 증권 리서치에서 종목 키워드 리포트를 조회합니다."""
