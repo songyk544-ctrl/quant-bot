@@ -13,6 +13,14 @@ import plotly.graph_objects as go
 import urllib.parse
 import re
 from email.utils import parsedate_to_datetime
+from news_utils import (
+    normalize_text as _normalize_text,
+    extract_source as _extract_source,
+    event_tags as _event_tags,
+    title_signature as _title_signature,
+    is_similar_title as _is_similar_title,
+    score_news_candidate as _score_news_candidate_base,
+)
 
 st.set_page_config(layout="wide", page_title="QEdge", page_icon="Q")
 
@@ -36,16 +44,20 @@ def show_premium_paywall(message="이 콘텐츠는 접근 코드 인증 후 이�
 
 # --- 사이드바 접근 코드 인증 로직 ---
 VIP_CODE = "ALPHA2026"
+ADMIN_CODE = st.secrets.get("ADMIN_CODE", "MASTER2026")
 st.sidebar.markdown("## 접근 코드 인증")
 st.sidebar.caption("공유받은 코드를 입력하면 전체 주도주와 상세 분석 데이터를 볼 수 있습니다.")
 user_code = st.sidebar.text_input("접근 코드 입력", type="password")
 
-is_vip = (user_code == VIP_CODE)
+is_admin = (user_code == ADMIN_CODE)
+is_vip = (user_code == VIP_CODE) or is_admin
 
 if is_vip:
     st.sidebar.success("코드 인증이 완료되었습니다. 전체 데이터를 확인할 수 있습니다.")
 else:
     st.sidebar.info("현재 공개 화면만 표시 중입니다. 코드를 입력하면 전체 화면이 열립니다.")
+if is_admin:
+    st.sidebar.success("관리자 모드가 활성화되었습니다.")
 
 st.title("QEdge")
 st.caption("수급·뉴스·매크로를 한 화면에서 보는 퀀트 대시보드")
@@ -98,7 +110,8 @@ def get_macro_data():
                 macro_info[name] = {"value": current, "change": current - prev, "change_pct": ((current - prev) / prev) * 100}
             else:
                 macro_info[name] = None
-        except:
+        except Exception as e:
+            print(f"[WARN] 매크로 카드 지표 수집 실패({name}/{ticker}): {e}")
             macro_info[name] = None
     return macro_info
 
@@ -308,6 +321,60 @@ def build_quality_badge(row):
         return "신뢰도 보통"
     return "신뢰도 낮음"
 
+def pick_watch_candidate(ranked_df, macro_news_refs):
+    """
+    관망 후보를 5위 고정 대신 동적으로 선택:
+    - 상위권(최대 12개) 내에서
+    - 뉴스 키워드 정합성(섹터/종목명) + 최근 순위 상승폭(랭크 모멘텀) 반영
+    """
+    if ranked_df.empty:
+        return None
+    if len(ranked_df) == 1:
+        return ranked_df.iloc[0]
+
+    # 최상위 1개는 매수 후보로 사용하므로 관망 후보군에서 제외
+    pool = ranked_df.iloc[1:min(12, len(ranked_df))].copy()
+    if pool.empty:
+        return ranked_df.iloc[min(1, len(ranked_df) - 1)]
+
+    macro_text = " ".join(macro_news_refs or []).lower()
+    theme_keywords = ["반도체", "바이오", "2차전지", "전력", "조선", "방산", "금리", "환율", "원유", "ai", "자동차", "게임"]
+    rank_momentum = {}
+    try:
+        df_trend = load_score_trend_safe()
+        if not df_trend.empty and {"날짜", "종목명", "순위"}.issubset(df_trend.columns):
+            dates = sorted(df_trend["날짜"].astype(str).unique(), reverse=True)
+            if len(dates) >= 2:
+                curr_dt, prev_dt = dates[0], dates[1]
+                curr = df_trend[df_trend["날짜"].astype(str) == curr_dt][["종목명", "순위"]].copy()
+                prev = df_trend[df_trend["날짜"].astype(str) == prev_dt][["종목명", "순위"]].copy()
+                curr.columns = ["종목명", "curr_rank"]
+                prev.columns = ["종목명", "prev_rank"]
+                merged = pd.merge(curr, prev, on="종목명", how="left")
+                for _, row in merged.iterrows():
+                    try:
+                        c_rank = int(row["curr_rank"])
+                        p_rank = int(row["prev_rank"]) if pd.notna(row["prev_rank"]) else c_rank
+                        rank_momentum[str(row["종목명"])] = p_rank - c_rank
+                    except Exception:
+                        continue
+    except Exception:
+        rank_momentum = {}
+
+    def _score_row(r):
+        name = str(r.get("종목명", "") or "").lower()
+        sector = str(r.get("섹터", "") or "").lower()
+        text = f"{name} {sector}"
+        theme_hits = sum(1 for kw in theme_keywords if kw in macro_text and kw in text)
+        rank_delta = float(rank_momentum.get(str(r.get("종목명", "")), 0.0))
+        # 하루 순위 개선폭(전일순위-현재순위)을 완만하게 반영
+        momentum_score = max(-2.0, min(3.0, rank_delta * 0.4))
+        return (theme_hits * 2.0) + momentum_score
+
+    pool["_watch_score"] = pool.apply(_score_row, axis=1)
+    best = pool.sort_values(["_watch_score", "AI수급점수"], ascending=False).iloc[0]
+    return best
+
 def render_action_brief(df_summary_local, macro_news_refs):
     """오늘의 액션 브리프 3카드(매수 후보/관망/리스크)."""
     if df_summary_local.empty:
@@ -316,8 +383,10 @@ def render_action_brief(df_summary_local, macro_news_refs):
 
     ranked = df_summary_local.sort_values("AI수급점수", ascending=False).reset_index(drop=True)
     buy_row = ranked.iloc[0]
-    watch_idx = min(4, len(ranked) - 1)
-    watch_row = ranked.iloc[watch_idx]
+    watch_row = pick_watch_candidate(ranked, macro_news_refs)
+    if watch_row is None:
+        watch_idx = min(4, len(ranked) - 1)
+        watch_row = ranked.iloc[watch_idx]
 
     try:
         vix_data = macro_data.get("😨 VIX")
@@ -366,9 +435,6 @@ def _request_html(url, headers, timeout=4, retries=2):
             if attempt == retries:
                 return None
 
-def _normalize_text(text):
-    return re.sub(r"\s+", " ", (text or "")).strip()
-
 def _parse_news_datetime(raw_text):
     """네이버 뉴스 표기(방금 전/분 전/시간 전/YYYY.MM.DD.)를 datetime으로 변환."""
     if not raw_text:
@@ -392,68 +458,8 @@ def _parse_news_datetime(raw_text):
             return None
     return None
 
-def _extract_source(title_text, fallback="일반"):
-    if " - " in title_text:
-        maybe_source = _normalize_text(title_text.split(" - ")[-1])
-        if 1 < len(maybe_source) <= 12:
-            return maybe_source
-    return fallback
-
-def _event_tags(text):
-    rules = {
-        "실적": ["실적", "영업이익", "매출", "어닝", "가이던스"],
-        "수주": ["수주", "계약", "공급", "협약", "납품"],
-        "정책": ["정부", "정책", "규제", "법안", "금리", "관세"],
-        "수급": ["외국인", "기관", "연기금", "순매수", "공매도"],
-        "리스크": ["소송", "리콜", "악재", "부진", "감소", "하향"]
-    }
-    tags = []
-    for tag, keywords in rules.items():
-        if any(k in text for k in keywords):
-            tags.append(tag)
-    return tags
-
-def _title_signature(title_text):
-    normalized = re.sub(r"[^0-9A-Za-z가-힣 ]+", " ", title_text.lower())
-    tokens = [t for t in normalized.split() if len(t) > 1]
-    return set(tokens[:12])
-
-def _is_similar_title(sig, signature_list, threshold=0.75):
-    for other in signature_list:
-        if not sig or not other:
-            continue
-        inter = len(sig & other)
-        union = len(sig | other)
-        if union > 0 and (inter / union) >= threshold:
-            return True
-    return False
-
-def _source_weight(source):
-    weights = {
-        "연합뉴스": 1.0, "뉴시스": 0.95, "이데일리": 0.9, "매일경제": 0.9,
-        "한국경제": 0.9, "머니투데이": 0.88, "서울경제": 0.88, "일반": 0.82
-    }
-    return weights.get(source, 0.84)
-
 def _score_news_candidate(candidate):
-    now = datetime.now()
-    news_dt = candidate.get("dt")
-    age_score = 0.7
-    if news_dt is not None:
-        diff_h = max(0.0, (now - news_dt).total_seconds() / 3600)
-        if diff_h <= 6:
-            age_score = 1.1
-        elif diff_h <= 24:
-            age_score = 1.0
-        elif diff_h <= 48:
-            age_score = 0.85
-        else:
-            age_score = 0.6
-
-    tag_bonus = min(0.35, 0.12 * len(candidate.get("tags", [])))
-    text_quality = 0.08 if len(candidate.get("desc", "")) >= 20 else 0.0
-    relevance_bonus = 0.18 if candidate.get("is_relevant", False) else -0.08
-    return _source_weight(candidate.get("source", "일반")) + age_score + tag_bonus + text_quality + relevance_bonus
+    return _score_news_candidate_base(candidate, include_relevance=True)
 
 def _is_relevant_to_stock(stock_name, text):
     """종목명 직접 포함 여부와 토큰 일치율로 뉴스 연관성을 추정."""
@@ -615,7 +621,10 @@ def get_macro_headline_news():
     topic_stats = {}
     now = datetime.now()
     for item in candidates:
-        tags = item.get("tags") or ["일반"]
+        # 의미 태그 없는 기사까지 '일반'으로 묶으면 일반이 과대표집됨.
+        tags = [t for t in (item.get("tags") or []) if t and t != "일반"]
+        if not tags:
+            continue
         source = item.get("source", "일반")
         dt = item.get("dt")
         recency = 0.4 if dt is None else (1.0 / (1.0 + max(0.0, (now - dt).total_seconds() / 86400.0)))
@@ -633,6 +642,8 @@ def get_macro_headline_news():
     ranked_topics.sort(reverse=True)
 
     topic_lines = [f"[반복] {tag} (빈도 {cnt} / 출처 {src_cnt})" for _, tag, cnt, src_cnt in ranked_topics[:5]]
+    if not topic_lines:
+        topic_lines = ["[반복] 유의미한 공통 키워드 없음"]
     latest_lines = [f"[최신] {item['title']}" for item in sorted(candidates, key=_score_news_candidate, reverse=True)[:5]]
     return topic_lines + latest_lines
 
@@ -803,7 +814,12 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["매크로", "섹터 히트맵", "수급 스크리너", "종목 분석", "백테스트", "주도주 비교"])
+    tab_labels = ["매크로", "섹터 히트맵", "수급 스크리너", "종목 분석", "백테스트", "주도주 비교"]
+    if is_admin:
+        tab_labels.append("🔒 포트폴리오")
+    tabs = st.tabs(tab_labels)
+    tab1, tab2, tab3, tab4, tab5, tab6 = tabs[:6]
+    tab7 = tabs[6] if is_admin and len(tabs) > 6 else None
 
     # --- 탭 1: 매크로 인사이트 ---
     with tab1:
@@ -1412,7 +1428,8 @@ else:
                                 return rets
 
                             df_filtered['KOSPI 누적수익률'] = compute_benchmark_returns('^KS11')
-                        except:
+                        except Exception as e:
+                            print(f"[WARN] 벤치마크 수익률 계산 실패(^KS11): {e}")
                             df_filtered['KOSPI 누적수익률'] = [float("nan")] * len(df_filtered)
                             benchmark_fetch_errors = ['^KS11']
                         
@@ -1634,3 +1651,239 @@ else:
                 if not ready_to_run:
                     st.info("비교 분석을 위해 종목 2개를 선택해주세요.")
 
+    # --- 탭 7: 관리자 전용 포트폴리오 ---
+    if is_admin and tab7 is not None:
+        with tab7:
+            st.subheader("🔒 관리자 포트폴리오")
+            st.caption("웹에서 포트폴리오를 직접 편집하고 수급 이탈 리스크를 실시간 점검합니다.")
+            with st.expander("리스크 경보 임계값 설정", expanded=False):
+                st.markdown(
+                    """
+                    <div style="background:linear-gradient(135deg, #141A26, #101624); border:1px solid #2A344A; border-radius:12px; padding:12px 14px; margin-bottom:10px;">
+                        <div style="color:#E5E7EB; font-weight:700; margin-bottom:6px;">경보 규칙 안내</div>
+                        <div style="color:#AAB2C5; font-size:0.92em; line-height:1.55;">
+                            • <b>복합 경보</b>: 외인/연기금이 <b>동시에 매도 전환</b>이고, AI 점수가 기준 미만일 때<br/>
+                            • <b>단독 급락 경보</b>: AI 점수만 급락 기준 미만일 때
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                col_thr1, col_thr2 = st.columns(2)
+                with col_thr1:
+                    ai_warn_threshold = st.slider(
+                        "복합 경보 AI 기준 (외인·연기금 동반 매도일 때 적용)",
+                        min_value=50,
+                        max_value=80,
+                        value=65,
+                        step=1,
+                        key="admin_ai_warn_threshold",
+                    )
+                with col_thr2:
+                    ai_critical_threshold = st.slider(
+                        "단독 급락 경보 AI 기준 (AI만으로 경보)",
+                        min_value=40,
+                        max_value=70,
+                        value=55,
+                        step=1,
+                        key="admin_ai_critical_threshold",
+                    )
+                st.markdown(
+                    f"""
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+                        <span style="background:rgba(59,130,246,0.16); color:#93C5FD; border:1px solid rgba(59,130,246,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
+                            복합 경보 AI 기준: {int(ai_warn_threshold)}
+                        </span>
+                        <span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
+                            단독 급락 기준: {int(ai_critical_threshold)}
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            portfolio_save_file = "my_portfolio.csv"
+            base_cols = ["종목명", "수량", "매수가"]
+            if os.path.exists(portfolio_save_file):
+                try:
+                    df_port_saved = pd.read_csv(portfolio_save_file)
+                except Exception:
+                    df_port_saved = pd.DataFrame(columns=base_cols)
+            else:
+                df_port_saved = pd.DataFrame(columns=base_cols)
+
+            for c in base_cols:
+                if c not in df_port_saved.columns:
+                    df_port_saved[c] = None
+            df_port_saved["종목명"] = df_port_saved["종목명"].astype(str).str.strip()
+            df_port_saved["수량"] = pd.to_numeric(df_port_saved["수량"], errors="coerce").fillna(0)
+            df_port_saved["매수가"] = pd.to_numeric(df_port_saved["매수가"], errors="coerce").fillna(0.0)
+            df_port_saved = df_port_saved[df_port_saved["종목명"] != ""].copy()
+            stock_options = sorted(df_summary["종목명"].dropna().astype(str).unique().tolist())
+
+            if df_port_saved.empty:
+                st.info("저장된 포트폴리오가 없습니다. 상단 에디터에서 종목을 추가하세요.")
+            else:
+                join_cols = ["종목명", "현재가", "등락률", "AI수급점수", "외인강도(%)", "연기금강도(%)"]
+                df_joined = pd.merge(
+                    df_port_saved,
+                    df_summary[join_cols].copy(),
+                    on="종목명",
+                    how="left",
+                )
+
+                f_strength = pd.to_numeric(df_joined["외인강도(%)"], errors="coerce").fillna(0.0)
+                p_strength = pd.to_numeric(df_joined["연기금강도(%)"], errors="coerce").fillna(0.0)
+                ai_score = pd.to_numeric(df_joined["AI수급점수"], errors="coerce").fillna(0.0)
+                qty_num = pd.to_numeric(df_joined["수량"], errors="coerce").fillna(0.0)
+                buy_num = pd.to_numeric(df_joined["매수가"], errors="coerce").fillna(0.0)
+                cur_num = pd.to_numeric(df_joined["현재가"], errors="coerce").fillna(0.0)
+                risk_a = (f_strength < 0) & (p_strength < 0)
+                risk_b = ai_score < float(ai_warn_threshold)
+                # 오탐 완화: 단순 단일 신호보다 복합신호(A && AI<임계값) 우선, 매우 낮은 AI는 단독 경보
+                df_joined["수급이탈위험"] = (risk_a & risk_b) | (ai_score < float(ai_critical_threshold))
+
+                total_buy_amount = float((qty_num * buy_num).sum())
+                total_eval_amount = float((qty_num * cur_num).sum())
+                total_profit_amount = total_eval_amount - total_buy_amount
+                total_profit_pct = (total_profit_amount / total_buy_amount * 100.0) if total_buy_amount > 0 else 0.0
+                pnl_color = "#36C06A" if total_profit_amount >= 0 else "#E04B4B"
+                profit_amount_color = "#36C06A" if total_profit_amount >= 0 else "#E04B4B"
+                st.markdown("#### 포트폴리오 손익 요약")
+                s1, s2 = st.columns(2)
+                s3, s4 = st.columns(2)
+                with s1:
+                    st.markdown(
+                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
+                        <div style="color:#9CA3AF; font-size:0.76em;">총 매수금액</div>
+                        <div style="color:#F5F7FA; font-weight:800; margin-top:3px;">{total_buy_amount:,.0f}원</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                with s2:
+                    st.markdown(
+                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
+                        <div style="color:#9CA3AF; font-size:0.76em;">현재 평가금액</div>
+                        <div style="color:#F5F7FA; font-weight:800; margin-top:3px;">{total_eval_amount:,.0f}원</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                with s3:
+                    st.markdown(
+                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
+                        <div style="color:#9CA3AF; font-size:0.76em;">총 손익 금액</div>
+                        <div style="color:{profit_amount_color}; font-weight:900; margin-top:3px;">{total_profit_amount:+,.0f}원</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+                with s4:
+                    st.markdown(
+                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
+                        <div style="color:#9CA3AF; font-size:0.76em;">현재 수익률</div>
+                        <div style="color:{pnl_color}; font-weight:900; margin-top:3px;">{total_profit_pct:+.2f}%</div>
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+                risk_rows = df_joined[df_joined["수급이탈위험"]].copy()
+
+                st.markdown(
+                    """
+                    <div style="background:linear-gradient(135deg, #121827, #0f1523); border:1px solid #2A344A; border-radius:14px; padding:10px 14px; margin:10px 0 10px 0;">
+                        <div style="color:#E5E7EB; font-size:1.0em; font-weight:800;">내 포트폴리오 현황</div>
+                        <div style="color:#9CA3AF; font-size:0.84em; margin-top:2px;">리스크 종목은 카드 배경/테두리가 붉게 강조됩니다.</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                card_cols = st.columns(2)
+                for i, (_, row) in enumerate(df_joined.iterrows()):
+                    with card_cols[i % 2]:
+                        cur = float(pd.to_numeric(row.get("현재가"), errors="coerce") or 0.0)
+                        chg = float(pd.to_numeric(row.get("등락률"), errors="coerce") or 0.0)
+                        qty = float(pd.to_numeric(row.get("수량"), errors="coerce") or 0.0)
+                        buy = float(pd.to_numeric(row.get("매수가"), errors="coerce") or 0.0)
+                        ai = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
+                        fs = float(pd.to_numeric(row.get("외인강도(%)"), errors="coerce") or 0.0)
+                        ps = float(pd.to_numeric(row.get("연기금강도(%)"), errors="coerce") or 0.0)
+                        pnl = ((cur - buy) / buy * 100.0) if buy > 0 and cur > 0 else None
+                        eval_amt = qty * cur
+                        weight_pct = (eval_amt / total_eval_amount * 100.0) if total_eval_amount > 0 else 0.0
+                        risk_flag = bool(row.get("수급이탈위험", False))
+                        border = "#E04B4B" if risk_flag else "#2C3242"
+                        bg = "rgba(224,75,75,0.14)" if risk_flag else "linear-gradient(135deg, #171A24, #131A28)"
+                        pnl_txt = f"{pnl:+.2f}%" if pnl is not None else "-"
+                        pnl_color = "#36C06A" if pnl is not None and pnl >= 0 else "#E04B4B"
+                        chg_color = "#36C06A" if chg >= 0 else "#E04B4B"
+                        risk_badge = (
+                            '<span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">⚠ 비중 축소 권고</span>'
+                            if risk_flag
+                            else '<span style="background:rgba(54,192,106,0.16); color:#86EFAC; border:1px solid rgba(54,192,106,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">안정</span>'
+                        )
+
+                        st.markdown(
+                            f"""
+                            <div style="background:{bg}; border:1px solid {border}; border-radius:16px; padding:12px 14px; margin-bottom:10px; box-shadow:0 8px 22px rgba(0,0,0,0.28);">
+                                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                                    <div style="color:#F5F7FA; font-size:1.15em; font-weight:800;">{row.get('종목명', '-')}</div>
+                                    <div style="color:{pnl_color}; font-size:1.25em; font-weight:900;">{pnl_txt}</div>
+                                </div>
+                                <div style="color:#9CA3AF; margin-top:5px; font-size:0.85em;">비중 {weight_pct:.1f}% | 등락률 <span style="color:{chg_color}; font-weight:700;">{chg:+.2f}%</span></div>
+                                <div style="color:#D1D5DB; margin-top:6px; font-size:0.87em;">현재가 {cur:,.0f}원 · 보유 {qty:,.0f}주 · 매수가 {buy:,.0f}원</div>
+                                <div style="margin-top:8px;">{risk_badge}</div>
+                                <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">🏆 AI {ai:.1f} | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
+
+            st.markdown("---")
+            with st.expander("포트폴리오 편집 및 저장", expanded=False):
+                pf_count = int(df_port_saved["종목명"].fillna("").astype(str).str.strip().ne("").sum()) if not df_port_saved.empty else 0
+                pf_qty_sum = float(pd.to_numeric(df_port_saved.get("수량", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+                pf_cost_sum = float(
+                    (
+                        pd.to_numeric(df_port_saved.get("수량", pd.Series(dtype=float)), errors="coerce").fillna(0)
+                        * pd.to_numeric(df_port_saved.get("매수가", pd.Series(dtype=float)), errors="coerce").fillna(0.0)
+                    ).sum()
+                )
+
+                st.markdown(
+                    f"""
+                    <div style="background:linear-gradient(135deg, #121827, #0f1523); border:1px solid #2A344A; border-radius:14px; padding:12px 14px; margin:8px 0 10px 0;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <div style="color:#E5E7EB; font-size:1.02em; font-weight:800;">포트폴리오 에디터</div>
+                            <div style="color:#93C5FD; font-size:0.82em;">자동완성 종목 선택 지원</div>
+                        </div>
+                        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                            <span style="background:#1b2233; color:#D1D5DB; border:1px solid #2B364C; border-radius:999px; padding:4px 10px; font-size:0.82em;">보유 종목 {pf_count}개</span>
+                            <span style="background:#1b2233; color:#D1D5DB; border:1px solid #2B364C; border-radius:999px; padding:4px 10px; font-size:0.82em;">총 수량 {pf_qty_sum:,.0f}</span>
+                            <span style="background:#1b2233; color:#D1D5DB; border:1px solid #2B364C; border-radius:999px; padding:4px 10px; font-size:0.82em;">총 매입금액 {pf_cost_sum:,.0f}원</span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                edited_portfolio = st.data_editor(
+                    df_port_saved if not df_port_saved.empty else pd.DataFrame(columns=base_cols),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key="admin_portfolio_editor",
+                    column_config={
+                        "종목명": st.column_config.SelectboxColumn("종목명", options=stock_options, required=False),
+                        "수량": st.column_config.NumberColumn("수량", min_value=0, step=1),
+                        "매수가": st.column_config.NumberColumn("매수가(원)", min_value=0.0, step=100.0, format="%.0f원"),
+                    },
+                )
+                st.caption("팁: 종목명 셀을 클릭하면 현재 스크리너 종목 리스트에서 빠르게 선택할 수 있습니다.")
+
+                if st.button("포트폴리오 저장", type="primary", use_container_width=True):
+                    save_df = edited_portfolio.copy()
+                    save_df["종목명"] = save_df["종목명"].astype(str).str.strip()
+                    save_df = save_df[save_df["종목명"] != ""]
+                    save_df["수량"] = pd.to_numeric(save_df["수량"], errors="coerce").fillna(0)
+                    save_df["매수가"] = pd.to_numeric(save_df["매수가"], errors="coerce").fillna(0.0)
+                    save_df.to_csv(portfolio_save_file, index=False, encoding="utf-8-sig")
+                    st.success("포트폴리오를 저장했습니다. 상단 현황에 즉시 반영됩니다.")
+                    st.rerun()

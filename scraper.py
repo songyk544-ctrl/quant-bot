@@ -3,7 +3,7 @@ import requests
 import json
 import time
 from datetime import datetime, timedelta, timezone 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, FeatureNotFound
 import os
 from google import genai
 from google.genai import types
@@ -13,6 +13,15 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 import tomllib
 import argparse
+import io
+from news_utils import (
+    normalize_text as _normalize_text,
+    extract_source as _extract_source,
+    event_tags as _event_tags,
+    title_signature as _title_signature,
+    is_similar_title as _is_similar_title,
+    score_news_candidate as _score_news_candidate_base,
+)
 
 URL_BASE = "https://openapi.koreainvestment.com:9443"
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
@@ -77,6 +86,30 @@ def resolve_gemini_api_key():
         except Exception:
             continue
     return None
+
+def safe_read_csv_with_conflict_guard(path, **kwargs):
+    """
+    git merge conflict 마커가 섞인 CSV를 최대한 복구해 읽습니다.
+    복구 불가 시 빈 DataFrame 반환.
+    """
+    try:
+        return pd.read_csv(path, **kwargs)
+    except Exception:
+        pass
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
+            lines = f.readlines()
+        cleaned = []
+        for line in lines:
+            s = line.lstrip()
+            if s.startswith("<<<<<<<") or s.startswith("=======") or s.startswith(">>>>>>>"):
+                continue
+            cleaned.append(line)
+        if not cleaned:
+            return pd.DataFrame()
+        return pd.read_csv(io.StringIO("".join(cleaned)), **kwargs)
+    except Exception:
+        return pd.DataFrame()
 
 def resolve_dart_api_key():
     """
@@ -383,7 +416,8 @@ def get_target_stock_list():
                                     '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
                                     'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text)
                                 })
-            except: pass
+            except Exception as e:
+                print(f"[WARN] 시가총액 페이지 수집 실패: {e}")
             time.sleep(0.5) 
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
@@ -392,8 +426,10 @@ def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     clean_text = text.replace('**', '*') 
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000], "parse_mode": "Markdown"}
-    try: requests.post(url, data=data)
-    except: pass
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print(f"[WARN] 텔레그램 전송 실패: {e}")
 
 def _request_html(url, headers, timeout=4, retries=2):
     for attempt in range(retries + 1):
@@ -435,69 +471,8 @@ def load_score_trend_safe():
             df[c] = None
     return df[base_cols]
 
-def _normalize_text(text):
-    return re.sub(r"\s+", " ", (text or "")).strip()
-
-def _extract_source(title_text, fallback="일반"):
-    if " - " in title_text:
-        maybe_source = _normalize_text(title_text.split(" - ")[-1])
-        if 1 < len(maybe_source) <= 12:
-            return maybe_source
-    return fallback
-
-def _event_tags(text):
-    rules = {
-        "실적": ["실적", "영업이익", "매출", "어닝", "가이던스"],
-        "수주": ["수주", "계약", "공급", "협약", "납품"],
-        "정책": ["정부", "정책", "규제", "법안", "금리", "관세"],
-        "수급": ["외국인", "기관", "연기금", "순매수", "공매도"],
-        "리스크": ["소송", "리콜", "악재", "부진", "감소", "하향"]
-    }
-    tags = []
-    for tag, keywords in rules.items():
-        if any(k in text for k in keywords):
-            tags.append(tag)
-    return tags
-
-def _title_signature(title_text):
-    normalized = re.sub(r"[^0-9A-Za-z가-힣 ]+", " ", title_text.lower())
-    tokens = [t for t in normalized.split() if len(t) > 1]
-    return set(tokens[:12])
-
-def _is_similar_title(sig, signature_list, threshold=0.75):
-    for other in signature_list:
-        if not sig or not other:
-            continue
-        inter = len(sig & other)
-        union = len(sig | other)
-        if union > 0 and (inter / union) >= threshold:
-            return True
-    return False
-
-def _source_weight(source):
-    weights = {
-        "연합뉴스": 1.0, "뉴시스": 0.95, "이데일리": 0.9, "매일경제": 0.9,
-        "한국경제": 0.9, "머니투데이": 0.88, "서울경제": 0.88, "일반": 0.82
-    }
-    return weights.get(source, 0.84)
-
 def _score_news_candidate(candidate):
-    now = datetime.now()
-    news_dt = candidate.get("dt")
-    age_score = 0.7
-    if news_dt is not None:
-        diff_h = max(0.0, (now - news_dt).total_seconds() / 3600)
-        if diff_h <= 6:
-            age_score = 1.1
-        elif diff_h <= 24:
-            age_score = 1.0
-        elif diff_h <= 48:
-            age_score = 0.85
-        else:
-            age_score = 0.6
-    tag_bonus = min(0.35, 0.12 * len(candidate.get("tags", [])))
-    text_quality = 0.08 if len(candidate.get("desc", "")) >= 20 else 0.0
-    return _source_weight(candidate.get("source", "일반")) + age_score + tag_bonus + text_quality
+    return _score_news_candidate_base(candidate, include_relevance=False)
 
 def _build_macro_topic_lines(candidates, top_n=5):
     """최근 기사 후보에서 반복 이슈 TopN을 가볍게 추출."""
@@ -506,7 +481,11 @@ def _build_macro_topic_lines(candidates, top_n=5):
     now = datetime.now()
     topic_stats = {}
     for item in candidates:
-        tags = item.get("tags") or ["일반"]
+        # 태그가 없는 기사를 '일반'으로 몰아넣으면 일반이 항상 1위를 차지해 정보가 희석됨.
+        # 반복 이슈는 의미 태그가 잡힌 기사만 집계한다.
+        tags = [t for t in (item.get("tags") or []) if t and t != "일반"]
+        if not tags:
+            continue
         source = item.get("source", "일반")
         dt = item.get("dt")
         if dt is not None:
@@ -587,6 +566,13 @@ def _fetch_dart_list_json_pages(corp_code, api_key, bgn_de, end_de, pblntf_ty):
             break
         page_no += 1
     return merged
+
+def _parse_rss_soup(xml_text):
+    """환경에 xml parser(lxml)가 없어도 RSS를 파싱할 수 있도록 폴백."""
+    try:
+        return BeautifulSoup(xml_text, "xml")
+    except FeatureNotFound:
+        return BeautifulSoup(xml_text, "html.parser")
 
 def _get_recent_disclosures_naver(stock_code, stock_name, max_items=3):
     """네이버 금융 공시 페이지에서 최근 공시 (기존 로직)."""
@@ -740,7 +726,8 @@ def get_live_macro_and_news():
                     continue
                 change_pct = ((curr - prev) / prev) * 100
                 macro_str += f"- {name}: {curr:.2f} ({change_pct:+.2f}%)\n"
-        except: pass
+        except Exception as e:
+            print(f"[WARN] 매크로 지표 수집 실패({name}/{ticker}): {e}")
     
     # 🔥 [기능 업데이트] 네이버 시황 뉴스 제목 + 요약 본문 동시 스크래핑
     news_str = ""
@@ -808,7 +795,7 @@ def get_live_macro_and_news():
             rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C%20OR%20%EC%BD%94%EC%8A%A4%ED%94%BC%20OR%20%EA%B8%88%EB%A6%AC&hl=ko&gl=KR&ceid=KR:ko"
             rss_res = _request_html(rss_url, headers=headers, timeout=5, retries=1)
             if rss_res is not None:
-                soup_rss = BeautifulSoup(rss_res.text, "xml")
+                soup_rss = _parse_rss_soup(rss_res.text)
                 for item in soup_rss.select("item")[:40]:
                     title = _normalize_text(item.title.text if item.title else "")
                     pub_date = _normalize_text(item.pubDate.text if item.pubDate else "")
@@ -841,7 +828,7 @@ def get_live_macro_and_news():
         source_stats = {}
         for item in final_news:
             source_stats[item["source"]] = source_stats.get(item["source"], 0) + 1
-        print(f"📰 뉴스 수집 품질: raw={len(candidates)} final={len(final_news)} sources={source_stats}")
+        print(f"[INFO] 뉴스 수집 품질: raw={len(candidates)} final={len(final_news)} sources={source_stats}")
         # 반감기 점수(0~100): 최근 기사일수록 높은 점수
         recency_scores = []
         now_dt = datetime.now()
@@ -858,7 +845,7 @@ def get_live_macro_and_news():
 
         news_str = "\n".join(news_lines) if news_lines else "- 뉴스 수집 실패"
     except Exception as e:
-        print(f"⚠️ 시황 뉴스 수집 실패: {e}")
+        print(f"[WARN] 시황 뉴스 수집 실패: {e}")
         news_str = "- 뉴스 수집 실패"
         macro_recency_score = 50.0
         repeated_topics_text = ""
@@ -892,7 +879,8 @@ def run_scraper(manual_full_parse=False):
                 latest_kis_date = str(df_hist_check['일자'].max()).replace("-", "")
                 if latest_kis_date == target_kis_date:
                     already_fetched_kis = True
-        except: pass
+        except Exception as e:
+            print(f"[WARN] history.csv 점검 실패: {e}")
 
     force_full_parse = False
     if os.path.exists("data.csv"):
@@ -996,7 +984,8 @@ def run_scraper(manual_full_parse=False):
                 res_nv = requests.get(f"https://finance.naver.com/item/main.naver?code={code}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
                 sector_tag = BeautifulSoup(res_nv.text, 'html.parser').select_one('div.trade_compare h4.h_sub a')
                 if sector_tag: sector_name = sector_tag.text.strip()
-            except: pass
+            except Exception as e:
+                print(f"[WARN] 섹터 수집 실패({name}/{code}): {e}")
 
             params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": target_kis_date, "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"}
             
@@ -1103,7 +1092,8 @@ def run_scraper(manual_full_parse=False):
                     '음봉매집률': round(dip_buying_ratio, 4),
                     '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
                 })
-            except: pass 
+            except Exception as e:
+                print(f"[WARN] 종목 처리 실패({name}/{code}): {e}")
             time.sleep(0.2) 
 
         if not data_list: return
@@ -1144,7 +1134,9 @@ def run_scraper(manual_full_parse=False):
 
     if os.path.exists(portfolio_file):
         try:
-            df_port = pd.read_csv(portfolio_file)
+            df_port = safe_read_csv_with_conflict_guard(portfolio_file)
+            if df_port.empty or not {"종목명", "매수가"}.issubset(df_port.columns):
+                raise ValueError("portfolio.csv 형식 오류 또는 비어 있음")
             
             returns, eval_details = [], []
             for _, row in df_port.iterrows():
@@ -1163,7 +1155,7 @@ def run_scraper(manual_full_parse=False):
             if not is_test_mode:
                 cum_ret = daily_ret
                 if os.path.exists(perf_file):
-                    df_perf = pd.read_csv(perf_file)
+                    df_perf = safe_read_csv_with_conflict_guard(perf_file)
                     if not df_perf.empty:
                         df_perf = df_perf[df_perf['날짜'] != today_date] 
                         cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
@@ -1182,7 +1174,8 @@ def run_scraper(manual_full_parse=False):
                     top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
             else:
                 eval_msg += "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
-        except: pass
+        except Exception as e:
+            print(f"[WARN] 백테스트 정산 실패: {e}")
     else:
         if is_eod_updated and not is_test_mode:
             top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
