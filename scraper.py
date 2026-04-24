@@ -425,13 +425,32 @@ def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, p
         "기계": ["기계", "자동화", "설비투자"],
         "증권": ["증권", "거래대금", "금리", "유동성"],
     }
+    positive_tone_keys = ["호재", "상향", "증가", "개선", "수주", "체결", "흑자", "서프라이즈", "기대", "확대"]
+    neutral_tone_keys = ["전망", "관측", "분석", "주목", "설명", "동향", "점검", "리포트", "이슈"]
+    negative_tone_keys = ["긴축", "관세", "하락", "리스크", "소송", "악재", "부진", "감소", "충격", "약세"]
+
+    positive_hits = sum(1 for k in positive_tone_keys if k in text)
+    neutral_hits = sum(1 for k in neutral_tone_keys if k in text)
+    negative_hits = sum(1 for k in negative_tone_keys if k in text)
+
+    # 테마 매칭 점수는 "호재 톤일 때 강화 / 중립 톤일 때 약화"시켜 군집 편향을 완화
+    if positive_hits > negative_hits:
+        theme_tone_mult = 1.0
+    elif neutral_hits >= max(1, positive_hits):
+        theme_tone_mult = 0.35
+    else:
+        theme_tone_mult = 0.55
+
+    theme_boost = 0.0
     for sector_key, keywords in sector_theme_map.items():
         if sector_key in sector and any(k.lower() in text for k in keywords):
-            score += 8 * decay_factor
+            theme_boost = 8 * decay_factor * theme_tone_mult
             break
+    # 테마 가점 상한(캡): 설명형 기사 과다 노출 시 과도한 누적 방지
+    score += min(4.5, theme_boost)
 
     # 리스크 키워드 감점
-    if any(k in text for k in ["긴축", "관세", "하락", "리스크", "소송", "악재"]):
+    if negative_hits > 0:
         score -= 4 * decay_factor
 
     # 반복 이슈 반영(최신 뉴스와 분리된 지속성 시그널)
@@ -524,6 +543,42 @@ def apply_enhanced_qual_for_top_candidates(df_final, current_vix, top_n=40):
         df_out.at[idx, "점수모드"] = score_mode
         df_out.at[idx, "AI수급점수"] = final_score
 
+    return df_out.sort_values("AI수급점수", ascending=False)
+
+def apply_theme_crowding_penalty(df_final, top_n=40, crowd_ratio=0.3):
+    """
+    상위권(top_n)에서 특정 테마가 과도하게 몰릴 때 완만한 감점으로 군집 편향 완화.
+    - crowd_ratio(기본 30%) 초과분만 감점
+    - 종목당 최대 -3점 제한
+    """
+    if df_final.empty or "AI수급점수" not in df_final.columns:
+        return df_final
+    df_out = df_final.copy()
+    top_slice = df_out.sort_values("AI수급점수", ascending=False).head(top_n).copy()
+    if top_slice.empty:
+        return df_out
+
+    theme_col = "테마" if "테마" in top_slice.columns else ("섹터" if "섹터" in top_slice.columns else None)
+    if not theme_col:
+        return df_out
+
+    themes = top_slice[theme_col].fillna("").astype(str).str.split(";").str[0].str.strip()
+    counts = themes.value_counts()
+    if counts.empty:
+        return df_out
+
+    total = max(1, len(top_slice))
+    for idx, row in top_slice.iterrows():
+        key = str(row.get(theme_col, "") or "").split(";")[0].strip()
+        if not key:
+            continue
+        ratio = float(counts.get(key, 0)) / total
+        if ratio <= crowd_ratio:
+            continue
+        overload = ratio - crowd_ratio
+        penalty = min(3.0, overload * 10.0)
+        new_score = float(df_out.at[idx, "AI수급점수"]) - penalty
+        df_out.at[idx, "AI수급점수"] = max(0.0, round(new_score, 2))
     return df_out.sort_values("AI수급점수", ascending=False)
 
 def get_target_stock_list():
@@ -1252,6 +1307,8 @@ def run_scraper(manual_full_parse=False):
     
     # 상위 후보군 정성 심화(공시/리포트) 재보정
     df_final = apply_enhanced_qual_for_top_candidates(df_final, current_vix=current_vix, top_n=40)
+    # 상위권 특정 테마 쏠림 완화
+    df_final = apply_theme_crowding_penalty(df_final, top_n=40, crowd_ratio=0.3)
     generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
 
