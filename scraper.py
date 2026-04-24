@@ -138,6 +138,58 @@ def resolve_dart_api_key():
             continue
     return None
 
+_THEME_MAP_CACHE = None
+
+def load_theme_map():
+    """
+    theme_map.csv를 로드해 {종목코드/종목명 -> 테마} 매핑을 구성합니다.
+    파일 형식 예: 종목코드,종목명,테마
+    """
+    global _THEME_MAP_CACHE
+    if _THEME_MAP_CACHE is not None:
+        return _THEME_MAP_CACHE
+    path = Path("theme_map.csv")
+    code_map, name_map = {}, {}
+    if not path.exists():
+        _THEME_MAP_CACHE = (code_map, name_map)
+        return _THEME_MAP_CACHE
+    try:
+        df = pd.read_csv(path, dtype=str)
+        cols = {str(c).strip(): c for c in df.columns}
+        code_col = cols.get("종목코드")
+        name_col = cols.get("종목명")
+        theme_col = cols.get("테마")
+        if theme_col is None:
+            _THEME_MAP_CACHE = (code_map, name_map)
+            return _THEME_MAP_CACHE
+        for _, row in df.iterrows():
+            theme = str(row.get(theme_col, "") or "").strip()
+            if not theme:
+                continue
+            if code_col:
+                code = str(row.get(code_col, "") or "").strip().zfill(6)
+                if len(code) == 6 and code.isdigit():
+                    code_map[code] = theme
+            if name_col:
+                name = str(row.get(name_col, "") or "").strip()
+                if name:
+                    name_map[name] = theme
+    except Exception as e:
+        print(f"[WARN] theme_map.csv 로드 실패: {e}")
+    _THEME_MAP_CACHE = (code_map, name_map)
+    return _THEME_MAP_CACHE
+
+def resolve_theme_label(stock_code, stock_name, sector_name):
+    """수동 테마 사전 우선, 없으면 기존 섹터를 테마로 사용."""
+    code_map, name_map = load_theme_map()
+    code = str(stock_code or "").strip().zfill(6)
+    name = str(stock_name or "").strip()
+    if code in code_map:
+        return code_map[code]
+    if name in name_map:
+        return name_map[name]
+    return sector_name or "분류안됨"
+
 _DART_STOCK_TO_CORP = None
 
 def load_dart_stock_to_corp_map():
@@ -939,8 +991,9 @@ def run_scraper(manual_full_parse=False):
                 current_vix=current_vix,
                 dip_buying_ratio=dip_buying_ratio
             )
+            theme_name = resolve_theme_label(row_dict.get('종목코드', ''), row_dict.get('종목명', ''), row_dict.get('섹터', '분류안됨'))
             qual_score = calculate_qualitative_score(
-                sector_name=row_dict.get('섹터', '분류안됨'),
+                sector_name=theme_name,
                 per_val=row_dict.get('PER', 0),
                 roe_val=row_dict.get('ROE', 0),
                 foreign_streak=row_dict.get('외인연속', 0),
@@ -955,6 +1008,7 @@ def run_scraper(manual_full_parse=False):
             row_dict['정성보정치'] = qual_adj
             row_dict['점수모드'] = score_mode
             row_dict['AI수급점수'] = final_score
+            row_dict['테마'] = theme_name
             updated_rows.append(row_dict)
 
         df_final = pd.DataFrame(updated_rows).sort_values('AI수급점수', ascending=False)
@@ -986,6 +1040,7 @@ def run_scraper(manual_full_parse=False):
                 if sector_tag: sector_name = sector_tag.text.strip()
             except Exception as e:
                 print(f"[WARN] 섹터 수집 실패({name}/{code}): {e}")
+            theme_name = resolve_theme_label(code, name, sector_name)
 
             params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": target_kis_date, "FID_ORG_ADJ_PRC": "0", "FID_ETC_CLS_CODE": "0"}
             
@@ -1071,7 +1126,7 @@ def run_scraper(manual_full_parse=False):
                     dip_buying_ratio=dip_buying_ratio
                 )
                 qual_score = calculate_qualitative_score(
-                    sector_name=sector_name,
+                    sector_name=theme_name,
                     per_val=row.PER,
                     roe_val=row.ROE,
                     foreign_streak=foreign_streak,
@@ -1083,7 +1138,7 @@ def run_scraper(manual_full_parse=False):
                 final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
 
                 data_list.append({
-                    '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, 'AI수급점수': final_score,
+                    '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, '테마': theme_name, 'AI수급점수': final_score,
                     'Quant점수': int(round(quant_score)), '정성점수': round(qual_score, 2), '정성보정치': qual_adj, '점수모드': score_mode,
                     '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
