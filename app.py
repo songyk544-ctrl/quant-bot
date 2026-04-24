@@ -363,7 +363,7 @@ def pick_watch_candidate(ranked_df, macro_news_refs):
 
     def _score_row(r):
         name = str(r.get("종목명", "") or "").lower()
-        sector = str(r.get("섹터", "") or "").lower()
+        sector = str(r.get("테마표시", r.get("섹터", "")) or "").lower()
         text = f"{name} {sector}"
         theme_hits = sum(1 for kw in theme_keywords if kw in macro_text and kw in text)
         rank_delta = float(rank_momentum.get(str(r.get("종목명", "")), 0.0))
@@ -798,6 +798,12 @@ if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다.")
 else:
     df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='first', ascending=False).astype(int)
+    if "테마" in df_summary.columns:
+        df_summary["테마표시"] = df_summary["테마"].fillna("").astype(str).str.strip()
+        fallback_sector = df_summary["섹터"] if "섹터" in df_summary.columns else "분류안됨"
+        df_summary["테마표시"] = df_summary["테마표시"].where(df_summary["테마표시"] != "", fallback_sector)
+    else:
+        df_summary["테마표시"] = df_summary["섹터"] if "섹터" in df_summary.columns else "분류안됨"
     
     if os.path.exists("score_trend.csv"):
         df_trend = load_score_trend_safe()
@@ -814,7 +820,7 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab_labels = ["매크로", "섹터 히트맵", "수급 스크리너", "종목 분석", "백테스트", "주도주 비교"]
+    tab_labels = ["매크로", "테마 히트맵", "수급 스크리너", "종목 분석", "백테스트", "주도주 비교"]
     if is_admin:
         tab_labels.append("🔒 포트폴리오")
     tabs = st.tabs(tab_labels)
@@ -847,23 +853,23 @@ else:
             else:
                 st.caption("- 시황 뉴스 데이터를 불러오지 못했습니다.")
 
-    # --- 탭 2: 섹터 히트맵 ---
+    # --- 탭 2: 테마 히트맵 ---
     with tab2:
-        st.subheader("시가총액 및 수급 섹터 히트맵")
-        st.caption("사각형의 크기는 '시가총액', 색상은 '당일 등락률'을 나타냅니다. 어느 섹터에 돈이 몰리는지 한눈에 파악하세요.")
+        st.subheader("시가총액 및 수급 테마 히트맵")
+        st.caption("사각형 크기는 시가총액, 색상은 당일 등락률입니다. 테마 단위 자금 흐름을 한눈에 파악하세요.")
 
         if not is_vip:
-            show_premium_paywall("전체 시장의 섹터별 자금 흐름 히트맵은 코드 인증 후 확인할 수 있습니다.")
+            show_premium_paywall("전체 시장의 테마별 자금 흐름 히트맵은 코드 인증 후 확인할 수 있습니다.")
         else:
             if not df_summary.empty:
                 df_hm = df_summary.copy()
-                df_hm['섹터'] = df_hm['섹터'].fillna("기타")
+                df_hm['테마표시'] = df_hm['테마표시'].fillna("기타")
                 df_hm['시가총액'] = pd.to_numeric(df_hm['시가총액'], errors='coerce').fillna(0)
                 df_hm['등락률'] = pd.to_numeric(df_hm['등락률'], errors='coerce').fillna(0)
 
                 fig = px.treemap(
                     df_hm,
-                    path=[px.Constant("국내 증시 주요 섹터"), '섹터', '종목명'],
+                    path=[px.Constant("국내 증시 주요 테마"), '테마표시', '종목명'],
                     values='시가총액',
                     color='등락률',
                     color_continuous_scale=['#E04B4B', '#242735', '#36C06A'],
@@ -914,7 +920,7 @@ else:
             for idx, row in df_display.iterrows():
                 rank = int(row['현재_순위'])
                 name = row['종목명']
-                sector = safe_get(row, '섹터', '분류안됨')
+                sector = safe_get(row, '테마표시', safe_get(row, '섹터', '분류안됨'))
                 price = f"{safe_get(row, '현재가', 0):,.0f}"
                 chg = float(safe_get(row, '등락률', 0))
                 chg_color = "#FF4B4B" if chg > 0 else "#3B82F6" if chg < 0 else "#AAAAAA"
@@ -987,7 +993,7 @@ else:
             if 'ROE' in df_display_table.columns: format_dict["ROE"] = "{:.1f}%"
             styled_df = styled_df.format(format_dict)
 
-            base_columns = ["_index", "섹터", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
+            base_columns = ["_index", "테마표시", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
             advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
             current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
@@ -995,7 +1001,7 @@ else:
                 styled_df, on_select="rerun", selection_mode="single-row",
                 column_config={
                     "_index": st.column_config.TextColumn("종목명", width="small"), 
-                    "섹터": st.column_config.Column("테마/섹터", width="medium"), 
+                    "테마표시": st.column_config.Column("테마", width="medium"), 
                     "랭킹추세": st.column_config.Column("순위변동", width="small"), 
                     "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small"), 
                     "현재가": st.column_config.Column("현재가(원)", width="small"), 
@@ -1047,7 +1053,7 @@ else:
         
         selected_row = df_summary[df_summary['종목명'] == target_stock].iloc[0]
         
-        sector_name = safe_get(selected_row, '섹터', '분류안됨')
+        sector_name = safe_get(selected_row, '테마표시', safe_get(selected_row, '섹터', '분류안됨'))
         cur_rank = safe_get(selected_row, '현재_순위', 0)
         ai_score = safe_get(selected_row, 'AI수급점수', 0)
         quant_score = float(safe_get(selected_row, 'Quant점수', ai_score))
@@ -1324,7 +1330,7 @@ else:
                         
                         prompt = f"""
                         너는 국내 주식시장을 분석하는 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
-                        내가 제공하는 아래의 [팩트 데이터]만을 기반으로 종목명 '{target_stock}'(섹터: {sector_name})에 대한 심층 브리핑을 작성해.
+                        내가 제공하는 아래의 [팩트 데이터]만을 기반으로 종목명 '{target_stock}'(테마: {sector_name})에 대한 심층 브리핑을 작성해.
                         인터넷 검색을 시도하지 말고 오직 제공된 텍스트만 활용해. 주요 시황 뉴스를 통해 현재 시장의 분위기를 파악하고, 이것이 해당 종목에 미칠 영향을 반드시 연계해서 분석해.
                         
                         [팩트 데이터: 수급 및 펀더멘털]
@@ -1596,7 +1602,7 @@ else:
                                 
                                 matchup_data.append(f"""
                                 === [후보 종목: {ms}] ===
-                                - 섹터: {safe_get(s_row, '섹터', '분류안됨')} / AI점수: {safe_get(s_row, 'AI수급점수', 0)}점
+                                - 테마: {safe_get(s_row, '테마표시', safe_get(s_row, '섹터', '분류안됨'))} / AI점수: {safe_get(s_row, 'AI수급점수', 0)}점
                                 - 이격도: {safe_get(s_row, '이격도(%)', 100)}% / 외국인연속: {safe_get(s_row, '외인연속', 0)}일 / 연기금연속: {safe_get(s_row, '연기금연속', 0)}일
                                 - 최근 뉴스 (요약 포함): {chr(10).join(n_news[:3]) if n_news else '없음'}
                                 - 최근 공시/리포트: {event_context}
