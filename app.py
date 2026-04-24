@@ -251,6 +251,66 @@ def load_performance_trend_safe():
     df = df.dropna(subset=['날짜'])
     return df[base_cols]
 
+def load_theme_suggestions_safe():
+    base_cols = ["날짜", "종목코드", "종목명", "현재섹터", "추천테마", "신뢰도", "근거", "승인상태"]
+    if not os.path.exists("theme_suggestions.csv"):
+        return pd.DataFrame(columns=base_cols)
+    try:
+        df = pd.read_csv("theme_suggestions.csv", dtype=str, on_bad_lines="skip")
+    except Exception:
+        return pd.DataFrame(columns=base_cols)
+    if df.empty:
+        return pd.DataFrame(columns=base_cols)
+    df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
+    for c in base_cols:
+        if c not in df.columns:
+            df[c] = ""
+    return df[base_cols]
+
+def promote_themes_to_map(approved_df):
+    """
+    승인된 추천 테마를 theme_map.csv로 승격하고,
+    theme_suggestions.csv의 승인상태를 approved로 반영합니다.
+    """
+    if approved_df.empty:
+        return 0
+    map_path = "theme_map.csv"
+    if os.path.exists(map_path):
+        try:
+            df_map = pd.read_csv(map_path, dtype=str)
+        except Exception:
+            df_map = pd.DataFrame(columns=["종목코드", "종목명", "테마"])
+    else:
+        df_map = pd.DataFrame(columns=["종목코드", "종목명", "테마"])
+    for c in ["종목코드", "종목명", "테마"]:
+        if c not in df_map.columns:
+            df_map[c] = ""
+    df_map["종목코드"] = df_map["종목코드"].fillna("").astype(str).str.strip().str.zfill(6)
+
+    promoted_rows = []
+    for _, row in approved_df.iterrows():
+        code = str(row.get("종목코드", "") or "").strip().zfill(6)
+        name = str(row.get("종목명", "") or "").strip()
+        theme = str(row.get("추천테마", "") or "").strip()
+        if not code or not name or not theme:
+            continue
+        promoted_rows.append({"종목코드": code, "종목명": name, "테마": theme})
+    if not promoted_rows:
+        return 0
+    df_new = pd.DataFrame(promoted_rows)
+    df_map = pd.concat([df_map, df_new], ignore_index=True)
+    df_map = df_map.drop_duplicates(subset=["종목코드"], keep="last").sort_values("종목코드")
+    df_map.to_csv(map_path, index=False, encoding="utf-8-sig")
+
+    # suggestions 승인상태 업데이트
+    sugg = load_theme_suggestions_safe()
+    if not sugg.empty:
+        approved_codes = set(df_new["종목코드"].astype(str).tolist())
+        sugg["종목코드"] = sugg["종목코드"].fillna("").astype(str).str.strip().str.zfill(6)
+        sugg.loc[sugg["종목코드"].isin(approved_codes), "승인상태"] = "approved"
+        sugg.to_csv("theme_suggestions.csv", index=False, encoding="utf-8-sig")
+    return len(df_new)
+
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
 
@@ -1662,6 +1722,39 @@ else:
         with tab7:
             st.subheader("🔒 관리자 포트폴리오")
             st.caption("웹에서 포트폴리오를 직접 편집하고 수급 이탈 리스크를 실시간 점검합니다.")
+            with st.expander("테마 추천 승인 (Top40 자동 추천)", expanded=False):
+                df_sugg = load_theme_suggestions_safe()
+                if df_sugg.empty:
+                    st.info("아직 추천 테마가 없습니다. scraper 배치 실행 후 확인하세요.")
+                else:
+                    df_sugg = df_sugg[df_sugg["승인상태"].astype(str).str.lower() != "approved"].copy()
+                    if df_sugg.empty:
+                        st.success("승인 대기 중인 추천 테마가 없습니다.")
+                    else:
+                        df_sugg["선택"] = False
+                        df_sugg["신뢰도"] = pd.to_numeric(df_sugg["신뢰도"], errors="coerce").fillna(0.0)
+                        df_sugg = df_sugg.sort_values(["신뢰도", "종목명"], ascending=[False, True])
+                        edited_sugg = st.data_editor(
+                            df_sugg,
+                            use_container_width=True,
+                            num_rows="fixed",
+                            key="theme_suggestion_editor",
+                            column_config={
+                                "선택": st.column_config.CheckboxColumn("승인"),
+                                "추천테마": st.column_config.TextColumn("추천테마"),
+                                "신뢰도": st.column_config.NumberColumn("신뢰도", format="%.2f"),
+                                "근거": st.column_config.TextColumn("근거"),
+                            },
+                        )
+                        st.caption("승인할 행을 체크하고 [승인 테마 승격]을 누르면 theme_map.csv로 반영됩니다.")
+                        if st.button("승인 테마 승격", use_container_width=True, type="primary", key="promote_theme_btn"):
+                            picked = edited_sugg[edited_sugg["선택"] == True].copy()
+                            promoted = promote_themes_to_map(picked)
+                            if promoted > 0:
+                                st.success(f"{promoted}개 테마를 theme_map.csv로 승격했습니다.")
+                                st.rerun()
+                            else:
+                                st.warning("승격할 항목이 없습니다. 체크 또는 추천테마 값을 확인하세요.")
             with st.expander("리스크 경보 임계값 설정", expanded=False):
                 st.markdown(
                     """

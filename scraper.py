@@ -190,6 +190,92 @@ def resolve_theme_label(stock_code, stock_name, sector_name):
         return name_map[name]
     return sector_name or "분류안됨"
 
+def infer_theme_candidate(stock_name, sector_name):
+    """종목명/섹터 기반 경량 테마 추론."""
+    name = str(stock_name or "").lower()
+    sector = str(sector_name or "").lower()
+    name_rules = [
+        (["로보", "robot"], "로봇;자동화", "종목명 키워드(로보/robot)", 0.92),
+        (["태양", "solar", "에너지솔루션"], "태양광;신재생", "종목명 키워드(태양/solar)", 0.9),
+        (["전선", "전기"], "전력망;전선", "종목명 키워드(전선/전기)", 0.88),
+        (["이노텍", "모듈"], "IT부품;카메라모듈", "종목명 키워드(이노텍/모듈)", 0.85),
+        (["반도체", "세미", "hpsp", "isc"], "반도체;반도체장비", "종목명 키워드(반도체/세미)", 0.86),
+        (["바이오", "제약"], "바이오;제약", "종목명 키워드(바이오/제약)", 0.84),
+    ]
+    for keys, theme, reason, conf in name_rules:
+        if any(k in name for k in keys):
+            return theme, reason, conf
+
+    sector_rules = [
+        ("반도체", "반도체;반도체장비", "섹터 기반(반도체)", 0.78),
+        ("전기", "2차전지;전력", "섹터 기반(전기)", 0.72),
+        ("전자장비", "PCB;전자부품", "섹터 기반(전자장비)", 0.7),
+        ("기계", "기계;자동화", "섹터 기반(기계)", 0.68),
+        ("화학", "화학소재;2차전지소재", "섹터 기반(화학)", 0.66),
+        ("에너지", "신재생;에너지", "섹터 기반(에너지)", 0.72),
+        ("건설", "건설;플랜트", "섹터 기반(건설)", 0.7),
+        ("조선", "조선;방산", "섹터 기반(조선)", 0.72),
+        ("제약", "바이오;제약", "섹터 기반(제약)", 0.72),
+    ]
+    for key, theme, reason, conf in sector_rules:
+        if key in sector:
+            return theme, reason, conf
+    return str(sector_name or "분류안됨"), "섹터 fallback", 0.5
+
+def generate_theme_suggestions(df_final, today_date, top_n=40):
+    """
+    상위 후보(top_n)에 대해 theme_suggestions.csv를 생성/갱신합니다.
+    - 수동 theme_map에 없는 종목만 pending 추천으로 기록
+    - 기존 pending은 최신 값으로 갱신
+    """
+    if df_final.empty:
+        return
+    code_map, name_map = load_theme_map()
+    top_df = df_final.sort_values("AI수급점수", ascending=False).head(top_n).copy()
+    rows = []
+    for _, row in top_df.iterrows():
+        code = str(row.get("종목코드", "") or "").strip().zfill(6)
+        name = str(row.get("종목명", "") or "").strip()
+        sector = str(row.get("섹터", "") or "").strip()
+        if not name:
+            continue
+        # 수동 확정값이 있는 종목은 추천 큐에서 제외
+        if (code and code in code_map) or (name in name_map):
+            continue
+        theme, reason, conf = infer_theme_candidate(name, sector)
+        rows.append({
+            "날짜": str(today_date),
+            "종목코드": code,
+            "종목명": name,
+            "현재섹터": sector,
+            "추천테마": theme,
+            "신뢰도": round(float(conf), 3),
+            "근거": reason,
+            "승인상태": "pending",
+        })
+
+    if not rows:
+        return
+
+    path = Path("theme_suggestions.csv")
+    new_df = pd.DataFrame(rows)
+    if path.exists():
+        old_df = safe_read_csv_with_conflict_guard(path, dtype=str)
+        if old_df.empty:
+            out_df = new_df
+        else:
+            for col in ["날짜", "종목코드", "종목명", "현재섹터", "추천테마", "신뢰도", "근거", "승인상태"]:
+                if col not in old_df.columns:
+                    old_df[col] = ""
+            # pending/rejected만 최신 추천으로 갱신하고 approved 이력은 유지
+            old_keep = old_df[old_df["승인상태"].astype(str) == "approved"].copy()
+            merged = pd.concat([old_keep, new_df], ignore_index=True)
+            merged = merged.drop_duplicates(subset=["종목코드"], keep="last")
+            out_df = merged
+    else:
+        out_df = new_df
+    out_df.to_csv(path, index=False, encoding="utf-8-sig")
+
 _DART_STOCK_TO_CORP = None
 
 def load_dart_stock_to_corp_map():
@@ -1166,6 +1252,7 @@ def run_scraper(manual_full_parse=False):
     
     # 상위 후보군 정성 심화(공시/리포트) 재보정
     df_final = apply_enhanced_qual_for_top_candidates(df_final, current_vix=current_vix, top_n=40)
+    generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
 
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
