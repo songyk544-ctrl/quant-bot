@@ -979,6 +979,29 @@ else:
             """,
             unsafe_allow_html=True,
         )
+        with st.expander("지표 해설", expanded=False):
+            st.markdown(
+                """
+                <div style="background:linear-gradient(135deg,#121827,#0f172a); border:1px solid #2B364C; border-radius:14px; padding:12px 14px; margin:2px 0 4px 0;">
+                    <div style="color:#E5E7EB; font-weight:800; font-size:0.98em; margin-bottom:8px;">지표 해설</div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px;">
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#A5B4FC; font-size:0.78em; font-weight:700;">신호등급</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">High/Medium/Low. VIX 레짐별 기준이 다릅니다.</div>
+                        </div>
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#93C5FD; font-size:0.78em; font-weight:700;">신호신뢰도</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">Quant/AI/정성/부정뉴스를 합친 0~100 점수입니다.</div>
+                        </div>
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#86EFAC; font-size:0.78em; font-weight:700;">안정화Δ</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">전일 대비 스무딩 반영 후 점수 변화량입니다.</div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
             
@@ -1064,12 +1087,11 @@ else:
 
             df_display_table = df_display.set_index('종목명')
 
-            styled_df = (
-                df_display_table.style
-                .applymap(color_score, subset=['AI수급점수'])
-                .applymap(color_fluctuation, subset=['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)'])
-                .applymap(color_momentum, subset=['랭킹추세'])
-            )
+            style_target = df_display_table
+            styled_df = style_target
+            score_cols = [c for c in ['AI수급점수'] if c in style_target.columns]
+            flow_cols = [c for c in ['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)'] if c in style_target.columns]
+            momentum_cols = [c for c in ['랭킹추세'] if c in style_target.columns]
             
             format_dict = {
                 "현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%",
@@ -1079,7 +1101,29 @@ else:
             }
             if 'PER' in df_display_table.columns: format_dict["PER"] = "{:.1f}"
             if 'ROE' in df_display_table.columns: format_dict["ROE"] = "{:.1f}%"
-            styled_df = styled_df.format(format_dict)
+            try:
+                styler = style_target.style
+                # pandas 버전 호환: map 지원 시 우선 사용, 아니면 applymap 사용
+                if score_cols:
+                    if hasattr(styler, "map"):
+                        styler = styler.map(color_score, subset=score_cols)
+                    else:
+                        styler = styler.applymap(color_score, subset=score_cols)
+                if flow_cols:
+                    if hasattr(styler, "map"):
+                        styler = styler.map(color_fluctuation, subset=flow_cols)
+                    else:
+                        styler = styler.applymap(color_fluctuation, subset=flow_cols)
+                if momentum_cols:
+                    if hasattr(styler, "map"):
+                        styler = styler.map(color_momentum, subset=momentum_cols)
+                    else:
+                        styler = styler.applymap(color_momentum, subset=momentum_cols)
+                styled_df = styler.format(format_dict)
+            except Exception as e:
+                # 모바일/서버 런타임에서 Styler 호환 이슈 시 plain dataframe으로 안전하게 대체
+                print(f"[WARN] 스크리너 Styler 적용 실패, 기본 테이블로 대체: {e}")
+                styled_df = style_target
 
             base_columns = ["_index", "테마표시", "랭킹추세", "AI수급점수", "신호등급", "신호신뢰도", "점수변화(안정화)", "현재가", "등락률", "시가총액", "소속"]
             advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
@@ -1478,6 +1522,25 @@ else:
             """,
             unsafe_allow_html=True,
         )
+        with st.expander("리스크 해설", expanded=False):
+            st.markdown(
+                """
+                <div style="background:linear-gradient(135deg,#121827,#0f172a); border:1px solid #2B364C; border-radius:14px; padding:12px 14px; margin:2px 0 4px 0;">
+                    <div style="color:#E5E7EB; font-weight:800; font-size:0.98em; margin-bottom:8px;">백테스트 리스크 해설</div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:8px;">
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#FCA5A5; font-size:0.78em; font-weight:700;">MDD (최대낙폭)</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">누적수익이 고점 대비 얼마나 하락했는지 보여주는 핵심 리스크 지표입니다.</div>
+                        </div>
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#FCD34D; font-size:0.78em; font-weight:700;">리스크상태</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">MDD 기반 위험 단계(Low/Medium/High)이며 High는 방어 우선 구간입니다.</div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         if not is_vip:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 코드 인증 후 확인할 수 있습니다.")
         else:
@@ -1490,6 +1553,14 @@ else:
                     
                     selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
                     df_filtered = df_perf[df_perf['날짜_dt'].dt.date >= selected_start_date].copy()
+                    # 주말/공휴일 제거: history.csv의 실제 거래일 기준 우선, 없으면 주말만 제거
+                    if not df_filtered.empty:
+                        if not df_history.empty and '일자' in df_history.columns:
+                            trading_dates = pd.to_datetime(df_history['일자'], errors='coerce').dt.normalize().dropna()
+                            trading_date_set = set(trading_dates.astype(str))
+                            df_filtered = df_filtered[df_filtered['날짜_dt'].dt.normalize().astype(str).isin(trading_date_set)].copy()
+                        else:
+                            df_filtered = df_filtered[df_filtered['날짜_dt'].dt.weekday < 5].copy()
                     
                     if not df_filtered.empty:
                         base_port_ret = df_filtered.iloc[0]['누적수익률']
