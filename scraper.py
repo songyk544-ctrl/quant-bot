@@ -400,7 +400,10 @@ def calculate_dynamic_score(
 
     return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score + zombie_penalty)))
 
-def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, pension_streak, macro_news_text, macro_recency_score=50.0, repeated_topics_text=""):
+def calculate_qualitative_score(
+    sector_name, per_val, roe_val, foreign_streak, pension_streak,
+    macro_news_text, macro_recency_score=50.0, repeated_topics_text="", return_details=False
+):
     """
     정성 점수(0~100): 뉴스-섹터 정합성 + 펀더멘털 힌트 + 연속 순매수 안정성
     데이터가 부족하면 기본 50점(중립)을 유지합니다.
@@ -476,7 +479,19 @@ def calculate_qualitative_score(sector_name, per_val, roe_val, foreign_streak, p
     score += min(5, pension_streak * 0.8)
     score += min(2, foreign_streak * 0.2)
 
-    return max(0, min(100, score))
+    final_score = max(0, min(100, score))
+    if not return_details:
+        return final_score
+    details = {
+        "theme_boost_raw": round(float(theme_boost), 3),
+        "theme_boost_applied": round(float(min(4.5, theme_boost)), 3),
+        "theme_tone_mult": round(float(theme_tone_mult), 3),
+        "positive_hits": int(positive_hits),
+        "neutral_hits": int(neutral_hits),
+        "negative_hits": int(negative_hits),
+        "decay_factor": round(float(decay_factor), 3),
+    }
+    return final_score, details
 
 def blend_quant_qual_score(quant_score, qual_score, current_vix):
     """
@@ -580,6 +595,90 @@ def apply_theme_crowding_penalty(df_final, top_n=40, crowd_ratio=0.3):
         new_score = float(df_out.at[idx, "AI수급점수"]) - penalty
         df_out.at[idx, "AI수급점수"] = max(0.0, round(new_score, 2))
     return df_out.sort_values("AI수급점수", ascending=False)
+
+def apply_score_stability(df_final, today_date, max_daily_delta=8.0, smooth_alpha=0.7):
+    """
+    1) 점수 변동성 관리:
+    - 전일 점수와 EMA 블렌딩(smooth_alpha)
+    - 일일 점수 변화 상한(max_daily_delta) 적용
+    """
+    if df_final.empty or "AI수급점수" not in df_final.columns or "종목명" not in df_final.columns:
+        return df_final
+    if not os.path.exists("score_trend.csv"):
+        return df_final
+    try:
+        df_tr = load_score_trend_safe()
+    except Exception:
+        return df_final
+    if df_tr.empty or "날짜" not in df_tr.columns:
+        return df_final
+
+    dates = sorted(df_tr["날짜"].astype(str).unique(), reverse=True)
+    prev_date = None
+    for d in dates:
+        if str(d) != str(today_date):
+            prev_date = str(d)
+            break
+    if not prev_date:
+        return df_final
+    prev_df = df_tr[df_tr["날짜"].astype(str) == prev_date][["종목명", "AI수급점수"]].copy()
+    prev_df["AI수급점수"] = pd.to_numeric(prev_df["AI수급점수"], errors="coerce")
+    prev_map = dict(zip(prev_df["종목명"].astype(str), prev_df["AI수급점수"]))
+
+    out = df_final.copy()
+    smoothed = []
+    deltas = []
+    for _, row in out.iterrows():
+        name = str(row.get("종목명", ""))
+        cur = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
+        prev = prev_map.get(name, None)
+        if prev is None or pd.isna(prev):
+            new_score = cur
+            delta = 0.0
+        else:
+            ema_score = (smooth_alpha * cur) + ((1.0 - smooth_alpha) * float(prev))
+            low = float(prev) - max_daily_delta
+            high = float(prev) + max_daily_delta
+            new_score = max(low, min(high, ema_score))
+            delta = new_score - float(prev)
+        smoothed.append(round(float(new_score), 2))
+        deltas.append(round(float(delta), 2))
+    out["AI수급점수"] = smoothed
+    out["점수변화(안정화)"] = deltas
+    return out.sort_values("AI수급점수", ascending=False)
+
+def add_signal_confidence(df_final):
+    """
+    2) 신호 신뢰도 계층화:
+    Quant/정성/점수모드/뉴스톤 정보를 합쳐 0~100 신뢰도 산출 및 등급 부여.
+    """
+    if df_final.empty:
+        return df_final
+    out = df_final.copy()
+    conf_scores = []
+    conf_labels = []
+    for _, row in out.iterrows():
+        q = float(pd.to_numeric(row.get("Quant점수"), errors="coerce") or 0.0)
+        qual = float(pd.to_numeric(row.get("정성점수"), errors="coerce") or 50.0)
+        ai = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
+        tone_neg = float(pd.to_numeric(row.get("뉴스부정키워드수"), errors="coerce") or 0.0)
+        mode = str(row.get("점수모드", ""))
+
+        score = 0.45 * q + 0.35 * ai + 0.2 * qual
+        if "하락장" in mode:
+            score -= 3.0
+        score -= min(8.0, tone_neg * 1.5)
+        score = max(0.0, min(100.0, score))
+        conf_scores.append(round(score, 2))
+        if score >= 75:
+            conf_labels.append("High")
+        elif score >= 55:
+            conf_labels.append("Medium")
+        else:
+            conf_labels.append("Low")
+    out["신호신뢰도"] = conf_scores
+    out["신호등급"] = conf_labels
+    return out
 
 def get_target_stock_list():
     target_list = []
@@ -1133,7 +1232,7 @@ def run_scraper(manual_full_parse=False):
                 dip_buying_ratio=dip_buying_ratio
             )
             theme_name = resolve_theme_label(row_dict.get('종목코드', ''), row_dict.get('종목명', ''), row_dict.get('섹터', '분류안됨'))
-            qual_score = calculate_qualitative_score(
+            qual_score, qual_details = calculate_qualitative_score(
                 sector_name=theme_name,
                 per_val=row_dict.get('PER', 0),
                 roe_val=row_dict.get('ROE', 0),
@@ -1141,7 +1240,8 @@ def run_scraper(manual_full_parse=False):
                 pension_streak=row_dict.get('연기금연속', 0),
                 macro_news_text=news_str_for_scoring,
                 macro_recency_score=macro_recency_score,
-                repeated_topics_text=repeated_topics_text
+                repeated_topics_text=repeated_topics_text,
+                return_details=True
             )
             final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
             row_dict['Quant점수'] = int(round(quant_score))
@@ -1150,6 +1250,9 @@ def run_scraper(manual_full_parse=False):
             row_dict['점수모드'] = score_mode
             row_dict['AI수급점수'] = final_score
             row_dict['테마'] = theme_name
+            row_dict['뉴스테마가점'] = qual_details.get("theme_boost_applied", 0.0)
+            row_dict['뉴스톤계수'] = qual_details.get("theme_tone_mult", 0.0)
+            row_dict['뉴스부정키워드수'] = qual_details.get("negative_hits", 0)
             updated_rows.append(row_dict)
 
         df_final = pd.DataFrame(updated_rows).sort_values('AI수급점수', ascending=False)
@@ -1266,7 +1369,7 @@ def run_scraper(manual_full_parse=False):
                     row.PER, row.ROE, current_vix,
                     dip_buying_ratio=dip_buying_ratio
                 )
-                qual_score = calculate_qualitative_score(
+                qual_score, qual_details = calculate_qualitative_score(
                     sector_name=theme_name,
                     per_val=row.PER,
                     roe_val=row.ROE,
@@ -1274,7 +1377,8 @@ def run_scraper(manual_full_parse=False):
                     pension_streak=pension_streak,
                     macro_news_text=news_str_for_scoring,
                     macro_recency_score=macro_recency_score,
-                    repeated_topics_text=repeated_topics_text
+                    repeated_topics_text=repeated_topics_text,
+                    return_details=True
                 )
                 final_score, qual_adj, score_mode = blend_quant_qual_score(quant_score, qual_score, current_vix)
 
@@ -1286,7 +1390,10 @@ def run_scraper(manual_full_parse=False):
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
                     '추세상승': is_ma20_rising,
                     '음봉매집률': round(dip_buying_ratio, 4),
-                    '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE
+                    '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE,
+                    '뉴스테마가점': qual_details.get("theme_boost_applied", 0.0),
+                    '뉴스톤계수': qual_details.get("theme_tone_mult", 0.0),
+                    '뉴스부정키워드수': qual_details.get("negative_hits", 0)
                 })
             except Exception as e:
                 print(f"[WARN] 종목 처리 실패({name}/{code}): {e}")
@@ -1309,6 +1416,10 @@ def run_scraper(manual_full_parse=False):
     df_final = apply_enhanced_qual_for_top_candidates(df_final, current_vix=current_vix, top_n=40)
     # 상위권 특정 테마 쏠림 완화
     df_final = apply_theme_crowding_penalty(df_final, top_n=40, crowd_ratio=0.3)
+    # 일별 점수 변동성 완화(스윙 관점 안정화)
+    df_final = apply_score_stability(df_final, today_date=today_date, max_daily_delta=8.0, smooth_alpha=0.7)
+    # 신호 신뢰도 계층화
+    df_final = add_signal_confidence(df_final)
     generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
 
@@ -1360,9 +1471,20 @@ def run_scraper(manual_full_parse=False):
                         cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
                     else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
                 else: df_perf = pd.DataFrame(columns=['날짜', '일간수익률', '누적수익률'])
-                    
-                new_perf = pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])
-                pd.concat([df_perf, new_perf], ignore_index=True).to_csv(perf_file, index=False, encoding='utf-8-sig')
+
+                perf_concat = pd.concat(
+                    [df_perf, pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])],
+                    ignore_index=True
+                )
+                perf_concat['누적수익률'] = pd.to_numeric(perf_concat['누적수익률'], errors='coerce').fillna(0.0)
+                equity = 1.0 + (perf_concat['누적수익률'] / 100.0)
+                rolling_peak = equity.cummax().replace(0, 1e-9)
+                drawdown = ((equity / rolling_peak) - 1.0) * 100.0
+                perf_concat['최대낙폭(%)'] = drawdown.round(2)
+                perf_concat['리스크상태'] = perf_concat['최대낙폭(%)'].apply(
+                    lambda x: "High" if x <= -8 else ("Medium" if x <= -4 else "Low")
+                )
+                perf_concat.to_csv(perf_file, index=False, encoding='utf-8-sig')
 
             if is_eod_updated:
                 eval_msg += "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
