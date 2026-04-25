@@ -647,7 +647,7 @@ def apply_score_stability(df_final, today_date, max_daily_delta=8.0, smooth_alph
     out["점수변화(안정화)"] = deltas
     return out.sort_values("AI수급점수", ascending=False)
 
-def add_signal_confidence(df_final):
+def add_signal_confidence(df_final, current_vix=20.0):
     """
     2) 신호 신뢰도 계층화:
     Quant/정성/점수모드/뉴스톤 정보를 합쳐 0~100 신뢰도 산출 및 등급 부여.
@@ -656,7 +656,19 @@ def add_signal_confidence(df_final):
         return df_final
     out = df_final.copy()
     conf_scores = []
-    conf_labels = []
+    if current_vix >= 28:
+        high_cut, mid_cut = 72.0, 52.0
+        regime_penalty = 2.0
+        regime_label = "RiskOff"
+    elif current_vix >= 22:
+        high_cut, mid_cut = 74.0, 54.0
+        regime_penalty = 1.0
+        regime_label = "Neutral"
+    else:
+        high_cut, mid_cut = 76.0, 56.0
+        regime_penalty = 0.0
+        regime_label = "RiskOn"
+
     for _, row in out.iterrows():
         q = float(pd.to_numeric(row.get("Quant점수"), errors="coerce") or 0.0)
         qual = float(pd.to_numeric(row.get("정성점수"), errors="coerce") or 50.0)
@@ -667,18 +679,156 @@ def add_signal_confidence(df_final):
         score = 0.45 * q + 0.35 * ai + 0.2 * qual
         if "하락장" in mode:
             score -= 3.0
+        score -= regime_penalty
         score -= min(8.0, tone_neg * 1.5)
         score = max(0.0, min(100.0, score))
         conf_scores.append(round(score, 2))
-        if score >= 75:
+    score_s = pd.Series(conf_scores, dtype=float)
+    # 당일 횡단면 기반 임계치(등급 분별력 확보) + 레짐별 가산
+    q_high = float(score_s.quantile(0.88)) if len(score_s) else high_cut
+    q_mid = float(score_s.quantile(0.62)) if len(score_s) else mid_cut
+    if regime_label == "RiskOff":
+        high_bias, mid_bias = 1.2, 0.8
+    elif regime_label == "Neutral":
+        high_bias, mid_bias = 0.6, 0.4
+    else:
+        high_bias, mid_bias = 0.0, 0.0
+    eff_high = q_high + high_bias
+    eff_mid = q_mid + mid_bias
+    if eff_mid >= eff_high:
+        eff_mid = eff_high - 4.0
+    conf_labels = []
+    for s in score_s:
+        if s >= eff_high:
             conf_labels.append("High")
-        elif score >= 55:
+        elif s >= eff_mid:
             conf_labels.append("Medium")
         else:
             conf_labels.append("Low")
-    out["신호신뢰도"] = conf_scores
+    out["신호신뢰도"] = score_s.round(2)
     out["신호등급"] = conf_labels
+    out["신호레짐"] = regime_label
     return out
+
+def apply_theme_contribution_guard(df_final, today_date, current_vix=20.0, top_n=40):
+    """
+    4) 테마/뉴스 품질 모니터링 자동화:
+    - 상위권 뉴스테마가점 분포를 기록(theme_quality_trend.csv)
+    - 과도 기여 시 자동 완화(가점 과열 구간만 부분 감점)
+    """
+    if df_final.empty or "뉴스테마가점" not in df_final.columns:
+        return df_final, {}
+
+    out = df_final.copy()
+    out["뉴스테마가점"] = pd.to_numeric(out["뉴스테마가점"], errors="coerce").fillna(0.0)
+    top_slice = out.sort_values("AI수급점수", ascending=False).head(top_n).copy()
+    if top_slice.empty:
+        return out, {}
+
+    avg_bonus = float(top_slice["뉴스테마가점"].mean())
+    p90_bonus = float(top_slice["뉴스테마가점"].quantile(0.9))
+    median_bonus = float(top_slice["뉴스테마가점"].median())
+    max_bonus = float(top_slice["뉴스테마가점"].max())
+
+    dominant_theme = "-"
+    dominant_ratio = 0.0
+    if "테마" in top_slice.columns:
+        tc = top_slice["테마"].fillna("기타").astype(str).value_counts(normalize=True)
+        if len(tc) > 0:
+            dominant_theme = str(tc.index[0])
+            dominant_ratio = float(tc.iloc[0])
+
+    # VIX가 높을수록 테마 과열 허용치를 낮춰 더 빨리 완화
+    if current_vix >= 28:
+        avg_thr, p90_thr = 2.4, 4.2
+    elif current_vix >= 22:
+        avg_thr, p90_thr = 2.7, 4.4
+    else:
+        avg_thr, p90_thr = 3.0, 4.6
+
+    over_avg = max(0.0, avg_bonus - avg_thr)
+    over_p90 = max(0.0, p90_bonus - p90_thr)
+    guard_strength = min(2.2, (over_avg * 0.9) + (over_p90 * 0.7))
+
+    affected = 0
+    if guard_strength > 0:
+        hot_mask = out["뉴스테마가점"] >= max(median_bonus, 0.8)
+        if hot_mask.any():
+            scale = ((out.loc[hot_mask, "뉴스테마가점"] - median_bonus).clip(lower=0) / max(0.5, max_bonus - median_bonus)).clip(0, 1)
+            penalty = (guard_strength * scale).round(2)
+            out.loc[hot_mask, "AI수급점수"] = (pd.to_numeric(out.loc[hot_mask, "AI수급점수"], errors="coerce").fillna(0.0) - penalty).clip(lower=0.0)
+            out.loc[hot_mask, "테마가점완화"] = penalty
+            affected = int(hot_mask.sum())
+    if "테마가점완화" not in out.columns:
+        out["테마가점완화"] = 0.0
+    out["AI수급점수"] = pd.to_numeric(out["AI수급점수"], errors="coerce").fillna(0.0).round(2)
+
+    metric = {
+        "날짜": str(today_date),
+        "상위N": int(top_n),
+        "평균테마가점": round(avg_bonus, 3),
+        "P90테마가점": round(p90_bonus, 3),
+        "지배테마": dominant_theme,
+        "지배테마비중": round(dominant_ratio, 3),
+        "완화강도": round(float(guard_strength), 3),
+        "완화종목수": int(affected),
+        "VIX": round(float(current_vix), 2),
+    }
+    trend_path = "theme_quality_trend.csv"
+    try:
+        if os.path.exists(trend_path):
+            tr = pd.read_csv(trend_path, on_bad_lines="skip")
+        else:
+            tr = pd.DataFrame(columns=list(metric.keys()))
+        if not tr.empty and "날짜" in tr.columns:
+            tr = tr[tr["날짜"].astype(str) != str(today_date)]
+        pd.concat([tr, pd.DataFrame([metric])], ignore_index=True).to_csv(trend_path, index=False, encoding="utf-8-sig")
+    except Exception as e:
+        print(f"[WARN] theme_quality_trend.csv 저장 실패: {e}")
+
+    return out.sort_values("AI수급점수", ascending=False), metric
+
+def apply_pullback_trade_rules(df_final, current_vix=20.0):
+    """
+    눌림목 매매용 미세 조정(과최적화 방지 목적의 소폭 가감):
+    1) 정상 눌림 진입 우대
+    2) 추세 유지 + 유동성 확인 시 우대
+    3) 과열 추격 구간 감점
+    4) 약세 붕괴 구간 감점
+    """
+    if df_final.empty or "AI수급점수" not in df_final.columns:
+        return df_final
+    out = df_final.copy()
+    ai = pd.to_numeric(out.get("AI수급점수"), errors="coerce").fillna(0.0)
+    gap = pd.to_numeric(out.get("이격도(%)"), errors="coerce").fillna(100.0)
+    rsi = pd.to_numeric(out.get("RSI"), errors="coerce").fillna(50.0)
+    turn = pd.to_numeric(out.get("손바뀜(%)"), errors="coerce").fillna(0.0)
+    trend_up = out.get("추세상승", True).astype(bool) if "추세상승" in out.columns else pd.Series([True] * len(out), index=out.index)
+
+    # 레짐별 가중치: 변동성 높은 장에서 추격 패널티를 조금 더 강화
+    if current_vix >= 28:
+        pos_mult, neg_mult = 0.8, 1.25
+    elif current_vix >= 22:
+        pos_mult, neg_mult = 0.9, 1.1
+    else:
+        pos_mult, neg_mult = 1.0, 1.0
+
+    good_pullback = (gap.between(98, 106)) & (rsi.between(48, 68))
+    trend_liquidity_ok = trend_up & (turn.between(4, 18))
+    overheated = (gap > 112) | (rsi > 84)
+    breakdown = (gap < 95) | (rsi < 40) | (turn < 1.2)
+
+    pullback_bonus = ((good_pullback.astype(float) * 1.1) + (trend_liquidity_ok.astype(float) * 0.6)) * pos_mult
+    pullback_penalty = ((overheated.astype(float) * 1.0) + (breakdown.astype(float) * 1.4)) * neg_mult
+    adj = (pullback_bonus - pullback_penalty).clip(-2.6, 1.8).round(2)
+
+    out["눌림목가감"] = adj
+    out["AI수급점수"] = (ai + adj).clip(lower=0.0, upper=100.0).round(2)
+    signal_series = pd.Series("대기", index=out.index, dtype="object")
+    signal_series.loc[good_pullback & trend_liquidity_ok] = "관심"
+    signal_series.loc[breakdown] = "회피"
+    out["눌림목신호"] = signal_series
+    return out.sort_values("AI수급점수", ascending=False)
 
 def get_target_stock_list():
     target_list = []
@@ -1160,7 +1310,11 @@ def run_scraper(manual_full_parse=False):
     macro_str_for_scoring, news_str_for_scoring, macro_recency_score, repeated_topics_text = get_live_macro_and_news()
 
     is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
-    target_kis_date = now_kst.strftime("%Y%m%d") if is_eod_updated else (now_kst - timedelta(days=1)).strftime("%Y%m%d")
+    ref_date = now_kst.date() if is_eod_updated else (now_kst - timedelta(days=1)).date()
+    # 주말에는 직전 영업일(금요일) 기준으로 캐시/수집 일자를 맞춤
+    while ref_date.weekday() >= 5:
+        ref_date = ref_date - timedelta(days=1)
+    target_kis_date = ref_date.strftime("%Y%m%d")
     today_date = now_kst.strftime("%Y-%m-%d")
 
     already_fetched_kis = False
@@ -1416,10 +1570,16 @@ def run_scraper(manual_full_parse=False):
     df_final = apply_enhanced_qual_for_top_candidates(df_final, current_vix=current_vix, top_n=40)
     # 상위권 특정 테마 쏠림 완화
     df_final = apply_theme_crowding_penalty(df_final, top_n=40, crowd_ratio=0.3)
+    # 테마 가점 품질 모니터링 + 과열 자동 완화
+    df_final, theme_quality_metric = apply_theme_contribution_guard(
+        df_final, today_date=today_date, current_vix=current_vix, top_n=40
+    )
+    # 눌림목 전용 미세 룰(과열 추격 억제 + 정상 눌림 우대)
+    df_final = apply_pullback_trade_rules(df_final, current_vix=current_vix)
     # 일별 점수 변동성 완화(스윙 관점 안정화)
     df_final = apply_score_stability(df_final, today_date=today_date, max_daily_delta=8.0, smooth_alpha=0.7)
-    # 신호 신뢰도 계층화
-    df_final = add_signal_confidence(df_final)
+    # 신호 신뢰도 계층화(VIX 레짐별 임계치)
+    df_final = add_signal_confidence(df_final, current_vix=current_vix)
     generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
     df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
 
@@ -1441,6 +1601,13 @@ def run_scraper(manual_full_parse=False):
     portfolio_file = "portfolio.csv"
     perf_file = "performance_trend.csv"
     top3_names = df_final.head(3)['종목명'].tolist() 
+    tq = theme_quality_metric if isinstance(theme_quality_metric, dict) else {}
+    theme_quality_text = (
+        f"- 평균테마가점: {float(tq.get('평균테마가점', 0.0)):.2f}\n"
+        f"- P90테마가점: {float(tq.get('P90테마가점', 0.0)):.2f}\n"
+        f"- 지배테마/비중: {tq.get('지배테마', '-')} / {float(tq.get('지배테마비중', 0.0))*100:.1f}%\n"
+        f"- 완화강도/완화종목수: {float(tq.get('완화강도', 0.0)):.2f} / {int(tq.get('완화종목수', 0))}"
+    )
 
     if os.path.exists(portfolio_file):
         try:
@@ -1553,11 +1720,15 @@ def run_scraper(manual_full_parse=False):
             [4. Top 3 최근 공시/증권사 리포트]
             {top3_event_context}
 
+            [5. 테마 가점 품질 모니터링]
+            {theme_quality_text}
+
             다음 순서로 전문가 수준의 리포트를 작성해 줘.
             1. 글로벌 매크로 요약
             2. 섹터 및 수급 동향
             3. Top 3 관심종목 및 근거
             4. 공시/리포트 체크포인트
+            5. 테마 과열 여부와 완화 상태
             [주의] 제공 텍스트 외의 외부 검색 없이 작성.
             """
             
@@ -1598,6 +1769,9 @@ AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
 
 ### Repeated Topics
 {repeated_topics_text if repeated_topics_text else '- 데이터 없음'}
+
+### Theme Quality Monitor
+{theme_quality_text}
 """
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(fallback_report)
@@ -1624,6 +1798,9 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 
 ### Repeated Topics
 {repeated_topics_text if repeated_topics_text else '- 데이터 없음'}
+
+### Theme Quality Monitor
+{theme_quality_text}
 """
         with open("report.md", "w", encoding="utf-8") as f:
             f.write(fallback_report)

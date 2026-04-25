@@ -969,6 +969,16 @@ else:
 
     # --- 탭 3: 수급 스크리너 ---
     with tab3:
+        st.markdown(
+            """
+            <div style="display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 10px 0;">
+                <span title="신호등급: High/Medium/Low. VIX 레짐(시장 변동성 구간)에 따라 임계치가 동적으로 달라집니다." style="cursor:help; color:#A5B4FC; font-size:0.86em;">ℹ️ 신호등급</span>
+                <span title="신호신뢰도(0~100): Quant점수, AI점수, 정성점수, 뉴스 부정키워드를 합산한 신뢰 지표입니다." style="cursor:help; color:#93C5FD; font-size:0.86em;">ℹ️ 신호신뢰도</span>
+                <span title="안정화Δ: 전일 대비 스무딩·변동상한 적용 후 점수 변화량입니다. +면 개선, -면 약화입니다." style="cursor:help; color:#86EFAC; font-size:0.86em;">ℹ️ 안정화Δ</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
             
@@ -1459,6 +1469,15 @@ else:
     # --- 탭 5: 백테스트 ---
     with tab5:
         st.subheader("QEdge 모델 가상 포트폴리오 백테스트")
+        st.markdown(
+            """
+            <div style="display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 10px 0;">
+                <span title="MDD(최대낙폭): 누적수익 곡선이 고점 대비 얼마나 내려왔는지 보여주는 핵심 리스크 지표입니다." style="cursor:help; color:#FCA5A5; font-size:0.86em;">ℹ️ MDD</span>
+                <span title="리스크상태: 최대낙폭 기반으로 Low/Medium/High를 표시합니다. High는 변동성 방어가 필요한 구간입니다." style="cursor:help; color:#FCD34D; font-size:0.86em;">ℹ️ 리스크상태</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         if not is_vip:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 코드 인증 후 확인할 수 있습니다.")
         else:
