@@ -460,6 +460,8 @@ def render_action_brief(df_summary_local, macro_news_refs):
         risk_detail = "시황 뉴스 지연"
 
     updated_at = datetime.now().strftime("%H:%M")
+    buy_conf = str(buy_row.get("신호등급", "-"))
+    watch_conf = str(watch_row.get("신호등급", "-"))
     st.markdown(
         f"""
         <div class="kpi-grid">
@@ -467,13 +469,13 @@ def render_action_brief(df_summary_local, macro_news_refs):
                 <div class="kpi-title">오늘의 매수 후보</div>
                 <div class="kpi-value" style="font-size:1.45em;">{buy_row.get('종목명', '-')}</div>
                 <span class="kpi-delta" style="background:rgba(54,192,106,0.18); color:#36C06A;">AI {float(buy_row.get('AI수급점수', 0)):.1f}</span>
-                <div class="kpi-meta">{build_quality_badge(buy_row)} · 갱신 {updated_at}</div>
+                <div class="kpi-meta">{build_quality_badge(buy_row)} · 신호 {buy_conf} · 갱신 {updated_at}</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">관망 후보</div>
                 <div class="kpi-value" style="font-size:1.45em;">{watch_row.get('종목명', '-')}</div>
                 <span class="kpi-delta" style="background:rgba(59,130,246,0.16); color:#60A5FA;">AI {float(watch_row.get('AI수급점수', 0)):.1f}</span>
-                <div class="kpi-meta">추세 확인 필요 · 갱신 {updated_at}</div>
+                <div class="kpi-meta">신호 {watch_conf} · 추세 확인 필요 · 갱신 {updated_at}</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">리스크 경보</div>
@@ -857,6 +859,17 @@ df_summary, df_history = load_data()
 if df_summary.empty:
     st.warning("⏳ 시장 데이터를 집계 중입니다.")
 else:
+    if "신호신뢰도" in df_summary.columns:
+        df_summary["신호신뢰도"] = pd.to_numeric(df_summary["신호신뢰도"], errors="coerce").fillna(0.0)
+    else:
+        df_summary["신호신뢰도"] = 0.0
+    if "신호등급" not in df_summary.columns:
+        df_summary["신호등급"] = "-"
+    if "점수변화(안정화)" in df_summary.columns:
+        df_summary["점수변화(안정화)"] = pd.to_numeric(df_summary["점수변화(안정화)"], errors="coerce").fillna(0.0)
+    else:
+        df_summary["점수변화(안정화)"] = 0.0
+
     df_summary['현재_순위'] = df_summary['AI수급점수'].rank(method='first', ascending=False).astype(int)
     if "테마" in df_summary.columns:
         df_summary["테마표시"] = df_summary["테마"].fillna("").astype(str).str.strip()
@@ -985,7 +998,7 @@ else:
                 chg = float(safe_get(row, '등락률', 0))
                 chg_color = "#FF4B4B" if chg > 0 else "#3B82F6" if chg < 0 else "#AAAAAA"
                 chg_str = f"▲ {chg:.2f}%" if chg > 0 else f"▼ {abs(chg):.2f}%" if chg < 0 else "0.00%"
-                ai_score = int(safe_get(row, 'AI수급점수', 0))
+                ai_score = float(safe_get(row, 'AI수급점수', 0))
                 rank_chg = safe_get(row, '랭킹추세', '-')
                 f_str = f"{float(safe_get(row, '외인강도(%)', 0)):.1f}%"
                 p_str = f"{float(safe_get(row, '연기금강도(%)', 0)):.1f}%"
@@ -1009,7 +1022,7 @@ else:
 </div>
 </div>
 <div style="display: flex; justify-content: space-between; font-size: 0.85em; color: #DDD; background: #181825; padding: 10px; border-radius: 8px; align-items: center; flex-wrap: wrap; gap: 8px;">
-<div>⚡ AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score}점</b></div>
+<div>⚡ AI점수: <b style="color:#FFD700; font-size: 1.1em;">{ai_score:.1f}점</b></div>
 <div>외인 <b style="color:#36C06A;">{f_str}</b> <span style="color:#444;">|</span> 기금 <b style="color:#E04B4B;">{p_str}</b></div>
 </div>
 </div>
@@ -1048,12 +1061,17 @@ else:
                 .applymap(color_momentum, subset=['랭킹추세'])
             )
             
-            format_dict = {"현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%", "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%", "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%"}
+            format_dict = {
+                "현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%",
+                "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%",
+                "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%",
+                "신호신뢰도": "{:.1f}", "점수변화(안정화)": "{:+.2f}"
+            }
             if 'PER' in df_display_table.columns: format_dict["PER"] = "{:.1f}"
             if 'ROE' in df_display_table.columns: format_dict["ROE"] = "{:.1f}%"
             styled_df = styled_df.format(format_dict)
 
-            base_columns = ["_index", "테마표시", "랭킹추세", "AI수급점수", "현재가", "등락률", "시가총액", "소속"]
+            base_columns = ["_index", "테마표시", "랭킹추세", "AI수급점수", "신호등급", "신호신뢰도", "점수변화(안정화)", "현재가", "등락률", "시가총액", "소속"]
             advanced_columns = ["외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속"]
             current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
@@ -1064,6 +1082,9 @@ else:
                     "테마표시": st.column_config.Column("테마", width="medium"), 
                     "랭킹추세": st.column_config.Column("순위변동", width="small"), 
                     "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small"), 
+                    "신호등급": st.column_config.Column("신호등급", width="small"),
+                    "신호신뢰도": st.column_config.NumberColumn("신뢰도", width="small"),
+                    "점수변화(안정화)": st.column_config.NumberColumn("안정화Δ", width="small"),
                     "현재가": st.column_config.Column("현재가(원)", width="small"), 
                     "등락률": st.column_config.Column("등락(%)", width="small"), 
                     "외인강도(%)": st.column_config.Column("외인(1M)", width="small"), 
@@ -1121,6 +1142,9 @@ else:
         qual_adj = float(safe_get(selected_row, '정성보정치', 0))
         score_mode = safe_get(selected_row, '점수모드', '기본')
         rank_trend = safe_get(selected_row, '랭킹추세', '-')
+        signal_grade = safe_get(selected_row, '신호등급', '-')
+        signal_conf = float(safe_get(selected_row, '신호신뢰도', 0))
+        score_delta = float(safe_get(selected_row, '점수변화(안정화)', 0))
         marcap = safe_get(selected_row, '시가총액', 0)
         per_val = safe_get(selected_row, 'PER', 0.0)
         roe_val = safe_get(selected_row, 'ROE', 0.0)
@@ -1159,8 +1183,8 @@ else:
                 <div class="stock-grid">
                     <div class="stock-card">
                         <div class="stock-label">🏆 AI 점수</div>
-                        <div class="stock-value">{int(ai_score)}점</div>
-                        <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend}</div>
+                        <div class="stock-value">{float(ai_score):.1f}점</div>
+                        <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend} / 신호 {signal_grade}({signal_conf:.1f})</div>
                     </div>
                     <div class="stock-card">
                         <div class="stock-label">💰 시가총액</div>
@@ -1173,7 +1197,7 @@ else:
                     <div class="stock-card">
                         <div class="stock-label">📈 20일선 이격도</div>
                         <div class="stock-value">{gap_20}%</div>
-                        <div class="stock-sub">{tech_status}</div>
+                        <div class="stock-sub">{tech_status} · 안정화Δ {score_delta:+.2f}</div>
                     </div>
                 </div>
                 """,
@@ -1513,6 +1537,8 @@ else:
 
                         current_port_ret = _safe_last(df_filtered['조정_포트수익률'])
                         current_kospi_ret = _safe_last(df_filtered['KOSPI 누적수익률'])
+                        current_mdd = float(df_filtered["최대낙폭(%)"].min()) if "최대낙폭(%)" in df_filtered.columns else 0.0
+                        current_risk_state = str(df_filtered["리스크상태"].iloc[-1]) if "리스크상태" in df_filtered.columns else "-"
 
                         port_daily_diff = _safe_daily_diff(df_filtered['조정_포트수익률'])
                         kospi_daily_diff = _safe_daily_diff(df_filtered['KOSPI 누적수익률'])
@@ -1537,6 +1563,12 @@ else:
                                     <div class="kpi-value">{current_kospi_ret:+.2f}%</div>
                                     <span class="kpi-delta" style="background: rgba(59,130,246,0.16); color:{kospi_delta_color};">일간 {kospi_daily_diff:+.2f}%</span>
                                     <div class="kpi-meta">초과 성과 <span style="color:{alpha_color}; font-weight:700;">{alpha_kospi:+.2f}%p</span></div>
+                                </div>
+                                <div class="kpi-card">
+                                    <div class="kpi-title">리스크 지표 (MDD)</div>
+                                    <div class="kpi-value">{current_mdd:.2f}%</div>
+                                    <span class="kpi-delta" style="background: rgba(224,75,75,0.16); color:#FCA5A5;">상태 {current_risk_state}</span>
+                                    <div class="kpi-meta">낙폭 기반 안정성 모니터링</div>
                                 </div>
                             </div>
                             """,
@@ -1823,7 +1855,7 @@ else:
             if df_port_saved.empty:
                 st.info("저장된 포트폴리오가 없습니다. 상단 에디터에서 종목을 추가하세요.")
             else:
-                join_cols = ["종목명", "현재가", "등락률", "AI수급점수", "외인강도(%)", "연기금강도(%)"]
+                join_cols = ["종목명", "현재가", "등락률", "AI수급점수", "신호등급", "신호신뢰도", "외인강도(%)", "연기금강도(%)"]
                 df_joined = pd.merge(
                     df_port_saved,
                     df_summary[join_cols].copy(),
@@ -1905,6 +1937,7 @@ else:
                         ai = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
                         fs = float(pd.to_numeric(row.get("외인강도(%)"), errors="coerce") or 0.0)
                         ps = float(pd.to_numeric(row.get("연기금강도(%)"), errors="coerce") or 0.0)
+                        sig = float(pd.to_numeric(row.get("신호신뢰도"), errors="coerce") or 0.0)
                         pnl = ((cur - buy) / buy * 100.0) if buy > 0 and cur > 0 else None
                         eval_amt = qty * cur
                         weight_pct = (eval_amt / total_eval_amount * 100.0) if total_eval_amount > 0 else 0.0
@@ -1930,7 +1963,7 @@ else:
                                 <div style="color:#9CA3AF; margin-top:5px; font-size:0.85em;">비중 {weight_pct:.1f}% | 등락률 <span style="color:{chg_color}; font-weight:700;">{chg:+.2f}%</span></div>
                                 <div style="color:#D1D5DB; margin-top:6px; font-size:0.87em;">현재가 {cur:,.0f}원 · 보유 {qty:,.0f}주 · 매수가 {buy:,.0f}원</div>
                                 <div style="margin-top:8px;">{risk_badge}</div>
-                                <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">🏆 AI {ai:.1f} | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
+                                <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">🏆 AI {ai:.1f} | 신호 {row.get('신호등급','-')} ({sig:.1f}) | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
                             </div>
                             """,
                             unsafe_allow_html=True,

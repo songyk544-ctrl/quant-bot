@@ -510,7 +510,7 @@ def blend_quant_qual_score(quant_score, qual_score, current_vix):
     qual_adj = (qual_score - 50) * sensitivity
     qual_adj = max(-limit, min(limit, qual_adj))
     final_score = max(0, min(100, quant_score + qual_adj))
-    return int(round(final_score)), round(qual_adj, 2), mode
+    return round(final_score, 2), round(qual_adj, 2), mode
 
 def score_disclosures_and_reports(disclosures, reports):
     """공시/리포트 이벤트를 점수화해 정성점수(0~100)로 반환."""
