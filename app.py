@@ -1556,9 +1556,19 @@ else:
                     # 주말/공휴일 제거: history.csv의 실제 거래일 기준 우선, 없으면 주말만 제거
                     if not df_filtered.empty:
                         if not df_history.empty and '일자' in df_history.columns:
-                            trading_dates = pd.to_datetime(df_history['일자'], errors='coerce').dt.normalize().dropna()
+                            raw_dates = df_history['일자'].astype(str).str.replace("-", "", regex=False).str.strip()
+                            # history.csv 일자 포맷은 보통 YYYYMMDD 이므로 해당 포맷 우선 파싱
+                            trading_dates = pd.to_datetime(raw_dates, format="%Y%m%d", errors='coerce')
+                            if trading_dates.notna().sum() == 0:
+                                # 예외 케이스(YYYY-MM-DD 등) fallback
+                                trading_dates = pd.to_datetime(df_history['일자'], errors='coerce')
+                            trading_dates = trading_dates.dt.normalize().dropna()
                             trading_date_set = set(trading_dates.astype(str))
                             df_filtered = df_filtered[df_filtered['날짜_dt'].dt.normalize().astype(str).isin(trading_date_set)].copy()
+                            # 거래일 매칭이 실패하면 차트 전체 소실을 막기 위해 주말 필터로 안전 대체
+                            if df_filtered.empty:
+                                df_filtered = df_perf[df_perf['날짜_dt'].dt.date >= selected_start_date].copy()
+                                df_filtered = df_filtered[df_filtered['날짜_dt'].dt.weekday < 5].copy()
                         else:
                             df_filtered = df_filtered[df_filtered['날짜_dt'].dt.weekday < 5].copy()
                     
