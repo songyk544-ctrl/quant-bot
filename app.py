@@ -12,6 +12,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import urllib.parse
 import re
+import json
+from textwrap import dedent
 from email.utils import parsedate_to_datetime
 from news_utils import (
     normalize_text as _normalize_text,
@@ -58,6 +60,13 @@ else:
     st.sidebar.info("현재 공개 화면만 표시 중입니다. 코드를 입력하면 전체 화면이 열립니다.")
 if is_admin:
     st.sidebar.success("관리자 모드가 활성화되었습니다.")
+
+ui_fx_mode = st.sidebar.selectbox(
+    "UI 연출 모드",
+    options=["프로", "시그니처"],
+    index=0,
+    help="프로: 절제된 애니메이션 / 시그니처: 강조 연출",
+)
 
 st.title("QEdge")
 st.caption("수급·뉴스·매크로를 한 화면에서 보는 퀀트 대시보드")
@@ -132,11 +141,63 @@ def render_macro_cards(ticker_names):
 st.markdown(
     """
     <style>
+    div[data-testid="stButton"] > button {
+      border-radius: 10px !important;
+      border: 1px solid #334155 !important;
+      background: linear-gradient(145deg, #172033, #111827) !important;
+      color: #E5E7EB !important;
+      font-weight: 700 !important;
+      transition: all .14s ease !important;
+    }
+    div[data-testid="stButton"] > button:hover {
+      border-color: #475569 !important;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.24) !important;
+      transform: translateY(-1px);
+    }
+    div[data-testid="stButton"] > button:focus:not(:active) {
+      border-color: #60A5FA !important;
+      box-shadow: 0 0 0 1px rgba(96,165,250,.55) !important;
+    }
+    [data-testid="stToggle"] label { color:#D1D5DB !important; font-weight:600 !important; }
+    [data-testid="stRadio"] label { color:#CBD5E1 !important; }
+    [data-testid="stRadio"] div[role="radiogroup"] > label {
+      background: linear-gradient(145deg, #111827, #0f172a);
+      border: 1px solid #334155;
+      border-radius: 999px;
+      padding: 6px 10px;
+      margin-right: 8px;
+      transition: all .14s ease;
+    }
+    [data-testid="stRadio"] div[role="radiogroup"] > label:hover {
+      border-color: #475569;
+      box-shadow: 0 8px 18px rgba(0,0,0,0.2);
+    }
+    :root {
+      --qe-bg-1: #171A24;
+      --qe-bg-2: #151A25;
+      --qe-bg-3: #181825;
+      --qe-border: #2B3242;
+      --qe-border-soft: #2A3242;
+      --qe-text-main: #F5F7FA;
+      --qe-text-sub: #AAB2C5;
+      --qe-shadow: 0 10px 26px rgba(0,0,0,0.26);
+      --qe-radius-sm: 10px;
+      --qe-radius-md: 12px;
+    }
     .macro-strip { display:flex; gap:8px; overflow-x:auto; margin-bottom: 8px; padding-bottom:2px; -webkit-overflow-scrolling: touch; }
     .macro-strip::-webkit-scrollbar { display:none; }
-    .macro-card { background:#151A25; border:1px solid #2A3242; border-radius:10px; padding:8px 10px; min-width:120px; flex:0 0 auto; }
+    .macro-card {
+      background:linear-gradient(140deg, var(--qe-bg-2), #111827);
+      border:1px solid var(--qe-border-soft);
+      border-radius:var(--qe-radius-sm);
+      padding:8px 10px;
+      min-width:120px;
+      flex:0 0 auto;
+      transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .macro-card:hover { transform:translateY(-1px); border-color:#41516E; box-shadow:var(--qe-shadow); }
     .macro-label { color:#A7B0C2; font-size:0.74em; margin-bottom:4px; white-space: nowrap; overflow:hidden; text-overflow: ellipsis; }
-    .macro-value { color:#F5F7FA; font-size:0.98em; font-weight:700; line-height:1.2; }
+    .macro-value { color:var(--qe-text-main); font-size:0.98em; font-weight:700; line-height:1.2; }
     .macro-change { font-size:0.8em; font-weight:700; margin-top:3px; }
     @media (max-width: 900px) {
       .macro-card { min-width:108px; padding:7px 9px; }
@@ -149,6 +210,30 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+if ui_fx_mode == "프로":
+    st.markdown(
+        """
+        <style>
+        .podium-card-1, .podium-card-2, .podium-card-3 {
+          box-shadow:0 8px 18px rgba(0,0,0,0.2) !important;
+        }
+        .podium-badge-1, .podium-badge-2, .podium-badge-3 {
+          animation-duration:3.8s !important;
+        }
+        .podium-name-1, .podium-name-2, .podium-name-3 {
+          animation-duration:4.8s !important;
+          text-shadow:none !important;
+        }
+        .pf-animated-glow {
+          animation-duration:4.2s !important;
+          opacity:0.6;
+          filter:drop-shadow(0 0 3px rgba(80,130,255,0.38));
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 core_tickers = ["🇰🇷 KOSPI", "🇰🇷 KOSDAQ", "💵 환율"]
 extra_tickers = ["🛢️ WTI유", "📉 미 국채(10y)", "😨 VIX"]
 st.markdown(render_macro_cards(core_tickers), unsafe_allow_html=True)
@@ -159,16 +244,155 @@ st.markdown(
     """
     <style>
     .stock-title-wrap { display:flex; align-items:center; margin-top:5px; margin-bottom:16px; gap:8px; flex-wrap:wrap; }
+    .podium-card-1 { border-color:#6A5520 !important; box-shadow:0 10px 24px rgba(0,0,0,0.24), 0 0 0 1px rgba(212,175,55,0.28), 0 0 18px rgba(212,175,55,0.18); }
+    .podium-card-2 { border-color:#5A6270 !important; box-shadow:0 10px 24px rgba(0,0,0,0.24), 0 0 0 1px rgba(192,198,210,0.24), 0 0 16px rgba(192,198,210,0.14); }
+    .podium-card-3 { border-color:#6D4A2C !important; box-shadow:0 10px 24px rgba(0,0,0,0.24), 0 0 0 1px rgba(184,115,51,0.26), 0 0 16px rgba(184,115,51,0.14); }
+    .podium-badge-1 { background:linear-gradient(135deg,#6A5520,#3A2F13); border:1px solid #9D7A2F !important; color:#F9E3A0 !important; animation:top3PulseGold 2.2s ease-in-out infinite; }
+    .podium-badge-2 { background:linear-gradient(135deg,#5E6777,#3A404B); border:1px solid #8A94A8 !important; color:#E8ECF5 !important; animation:top3PulseSilver 2.2s ease-in-out infinite; }
+    .podium-badge-3 { background:linear-gradient(135deg,#6D4A2C,#3D2A1B); border:1px solid #A66A3A !important; color:#F0C5A0 !important; animation:top3PulseBronze 2.2s ease-in-out infinite; }
+    .podium-name-1 {
+      background:linear-gradient(100deg,#F7E7A3 0%, #D9B24C 35%, #FFF0B8 55%, #C9962A 70%, #F7E7A3 100%);
+      background-size:220% auto;
+      -webkit-background-clip:text;
+      -webkit-text-fill-color:transparent;
+      animation:goldShine 2.7s linear infinite;
+      text-shadow:0 0 10px rgba(217,178,76,0.2);
+    }
+    .podium-name-2 {
+      background:linear-gradient(100deg,#F2F6FF 0%, #C8CFDC 35%, #FFFFFF 55%, #A8B0C0 70%, #F2F6FF 100%);
+      background-size:220% auto;
+      -webkit-background-clip:text;
+      -webkit-text-fill-color:transparent;
+      animation:goldShine 2.9s linear infinite;
+      text-shadow:0 0 9px rgba(190,200,220,0.2);
+    }
+    .podium-name-3 {
+      background:linear-gradient(100deg,#F2CCAE 0%, #C07B4A 35%, #FFDABF 55%, #9A5F35 70%, #F2CCAE 100%);
+      background-size:220% auto;
+      -webkit-background-clip:text;
+      -webkit-text-fill-color:transparent;
+      animation:goldShine 3.1s linear infinite;
+      text-shadow:0 0 9px rgba(184,115,51,0.2);
+    }
+    @keyframes goldShine {
+      0% { background-position:0% 50%; }
+      100% { background-position:220% 50%; }
+    }
+    @keyframes top3PulseGold {
+      0%, 100% { box-shadow:0 0 0 rgba(217,178,76,0.0); }
+      50% { box-shadow:0 0 12px rgba(217,178,76,0.28); }
+    }
+    @keyframes top3PulseSilver {
+      0%, 100% { box-shadow:0 0 0 rgba(196,204,217,0.0); }
+      50% { box-shadow:0 0 12px rgba(196,204,217,0.26); }
+    }
+    @keyframes top3PulseBronze {
+      0%, 100% { box-shadow:0 0 0 rgba(184,115,51,0.0); }
+      50% { box-shadow:0 0 12px rgba(184,115,51,0.28); }
+    }
+    .premium-panel {
+      background:linear-gradient(140deg, #101827, #0b1220);
+      border:1px solid #27324A;
+      border-radius:14px;
+      padding:11px 13px;
+      margin:6px 0 10px 0;
+      box-shadow:0 10px 28px rgba(0,0,0,0.28);
+    }
+    .premium-chip-row { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+    .premium-chip {
+      background:#151f31;
+      border:1px solid #2A344A;
+      border-radius:999px;
+      padding:4px 10px;
+      font-size:0.78em;
+      color:#D1D5DB;
+      letter-spacing:.01em;
+    }
+    .hero-grid { display:grid; grid-template-columns:repeat(2,minmax(140px,1fr)); gap:10px; margin:8px 0 10px 0; }
+    .hero-card {
+      background:linear-gradient(145deg, #141C2E, #101827);
+      border:1px solid #2C3A56;
+      border-radius:12px;
+      padding:10px 12px;
+      box-shadow:0 8px 22px rgba(0,0,0,0.22);
+    }
+    .hero-label { color:#9FB0CC; font-size:0.76em; margin-bottom:4px; }
+    .hero-value { color:#F8FAFC; font-size:1.4em; font-weight:800; line-height:1.15; }
+    .hero-sub { color:#A7B0C2; font-size:0.8em; margin-top:4px; }
+    .pf-kpi-grid { display:grid; grid-template-columns:repeat(4,minmax(120px,1fr)); gap:8px; margin:6px 0 10px 0; }
+    .pf-kpi-card {
+      background:linear-gradient(145deg,#131c2f,#0f1728);
+      border:1px solid #2A344A;
+      border-radius:12px;
+      padding:9px 10px;
+      box-shadow:0 8px 20px rgba(0,0,0,0.2);
+      transition:transform .2s ease, border-color .2s ease, box-shadow .2s ease;
+    }
+    .pf-kpi-card:hover { transform:translateY(-1px); border-color:#3A4A69; box-shadow:0 10px 24px rgba(0,0,0,0.26); }
+    .pf-kpi-label { color:#9FB0CC; font-size:0.74em; }
+    .pf-kpi-value { color:#F8FAFC; font-size:1.12em; font-weight:800; margin-top:4px; line-height:1.15; }
+    .pf-animated-card { position:relative; overflow:hidden; }
+    .pf-animated-glow {
+      position:absolute;
+      top:0;
+      left:-45%;
+      width:42%;
+      height:2px;
+      background:linear-gradient(90deg, rgba(80,130,255,0.0), rgba(80,130,255,0.85), rgba(80,130,255,0.0));
+      filter:drop-shadow(0 0 6px rgba(80,130,255,0.6));
+      animation:pfGlowSweep 2.8s linear infinite;
+      pointer-events:none;
+    }
+    @keyframes pfGlowSweep {
+      0% { left:-45%; opacity:0.18; }
+      20% { opacity:0.95; }
+      80% { opacity:0.95; }
+      100% { left:103%; opacity:0.18; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pf-animated-glow { animation:none; opacity:0.45; left:0; width:100%; }
+      .pf-kpi-card, .stock-card, .kpi-card { transition:none; }
+      .podium-name-1, .podium-name-2, .podium-name-3,
+      .podium-badge-1, .podium-badge-2, .podium-badge-3 { animation:none; }
+    }
+    .trend-strip { margin-top:8px; display:grid; grid-template-columns:repeat(2,minmax(160px,1fr)); gap:8px; }
+    .trend-item {
+      background:#101a2c;
+      border:1px solid #263650;
+      border-radius:10px;
+      padding:7px 9px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:6px;
+    }
+    .trend-name { color:#9FB0CC; font-size:0.74em; }
+    .trend-line { display:flex; align-items:center; justify-content:flex-end; min-width:100px; }
     .stock-sector-chip { background: linear-gradient(135deg, #36C06A, #1E9A52); color:white; padding:4px 12px; border-radius:20px; font-size:0.85em; font-weight:700; }
     .stock-grid { display:grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap:10px; margin:8px 0 14px 0; }
-    .stock-card { background:#181825; border:1px solid #2B2B3A; border-radius:10px; padding:10px 12px; }
-    .stock-label { color:#A8A8B3; font-size:0.78em; margin-bottom:4px; }
-    .stock-value { color:#FFF; font-size:1.15em; font-weight:800; line-height:1.15; }
+    .stock-card {
+      background:linear-gradient(145deg, var(--qe-bg-3), #121826);
+      border:1px solid var(--qe-border);
+      border-radius:var(--qe-radius-sm);
+      padding:10px 12px;
+      transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .stock-card:hover { transform:translateY(-1px); border-color:#42506A; box-shadow:var(--qe-shadow); }
+    .stock-label { color:#A8A8B3; font-size:0.78em; margin-bottom:4px; letter-spacing:.02em; }
+    .stock-value { color:var(--qe-text-main); font-size:1.15em; font-weight:800; line-height:1.15; }
     .stock-sub { color:#9AA0B1; font-size:0.78em; margin-top:3px; }
     .kpi-grid { display:grid; grid-template-columns: repeat(2, minmax(170px, 1fr)); gap:10px; margin:10px 0 8px 0; }
-    .kpi-card { background:#171A24; border:1px solid #2C3242; border-radius:12px; padding:12px 14px; }
-    .kpi-title { color:#AAB2C5; font-size:0.8em; margin-bottom:6px; }
-    .kpi-value { color:#F5F7FA; font-size:2.0em; font-weight:800; line-height:1.1; }
+    .kpi-card {
+      background:linear-gradient(150deg, var(--qe-bg-1), #121826);
+      border:1px solid var(--qe-border);
+      border-radius:var(--qe-radius-md);
+      padding:12px 14px;
+      box-shadow:0 6px 18px rgba(0,0,0,0.18);
+      transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .kpi-card:hover { transform:translateY(-1px); border-color:#42506A; box-shadow:var(--qe-shadow); }
+    .kpi-title { color:var(--qe-text-sub); font-size:0.8em; margin-bottom:6px; letter-spacing:.02em; }
+    .kpi-value { color:var(--qe-text-main); font-size:2.0em; font-weight:800; line-height:1.1; }
     .kpi-delta { font-size:0.9em; font-weight:700; margin-top:8px; display:inline-block; padding:2px 8px; border-radius:999px; }
     .kpi-meta { color:#9CA3AF; font-size:0.82em; margin-top:8px; }
     .score-kpi-grid { display:grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap:8px; margin-top:8px; }
@@ -176,6 +400,14 @@ st.markdown(
     .score-kpi-label { color:#9CA3AF; font-size:0.74em; margin-bottom:4px; }
     .score-kpi-value { color:#E5E7EB; font-size:1.35em; font-weight:800; line-height:1.15; }
     @media (max-width: 900px) {
+        .premium-panel { padding:10px 11px; border-radius:12px; }
+        .premium-chip { font-size:0.74em; padding:3px 9px; }
+        .hero-grid { grid-template-columns:repeat(2,minmax(120px,1fr)); gap:8px; }
+        .hero-value { font-size:1.2em; }
+        .pf-kpi-grid { grid-template-columns:repeat(2,minmax(120px,1fr)); }
+        .pf-kpi-value { font-size:1.02em; }
+        .trend-strip { grid-template-columns:repeat(1,minmax(140px,1fr)); gap:6px; }
+        .trend-line { min-width:88px; }
         .stock-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
         .kpi-grid { grid-template-columns: repeat(2, minmax(140px, 1fr)); gap:8px; }
         .kpi-value { font-size:1.8em; }
@@ -311,6 +543,37 @@ def promote_themes_to_map(approved_df):
         sugg.to_csv("theme_suggestions.csv", index=False, encoding="utf-8-sig")
     return len(df_new)
 
+def load_admin_risk_thresholds():
+    """관리자 리스크 임계값을 파일에서 로드(없으면 기본값)."""
+    defaults = {"ai_warn_threshold": 65, "ai_critical_threshold": 55}
+    path = "admin_ui_settings.json"
+    if not os.path.exists(path):
+        return defaults
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        warn = int(obj.get("ai_warn_threshold", defaults["ai_warn_threshold"]))
+        critical = int(obj.get("ai_critical_threshold", defaults["ai_critical_threshold"]))
+        return {
+            "ai_warn_threshold": max(0, min(100, warn)),
+            "ai_critical_threshold": max(0, min(100, critical)),
+        }
+    except Exception:
+        return defaults
+
+def save_admin_risk_thresholds(ai_warn_threshold, ai_critical_threshold):
+    """관리자 리스크 임계값을 파일에 저장."""
+    path = "admin_ui_settings.json"
+    payload = {
+        "ai_warn_threshold": int(max(0, min(100, ai_warn_threshold))),
+        "ai_critical_threshold": int(max(0, min(100, ai_critical_threshold))),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[WARN] 관리자 임계값 저장 실패: {e}")
+
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
 
@@ -328,6 +591,58 @@ def resolve_daily_return(df_hist, trade_date, stock_name):
     if matched.empty:
         return None
     return float(matched.iloc[-1]["등락률"])
+
+def make_trend_svg(values, width=96, height=24):
+    """최근 값 흐름을 미니 라인(SVG)으로 렌더링."""
+    arr = [float(v) for v in values if pd.notna(v)]
+    if not arr:
+        return '<svg width="96" height="24" viewBox="0 0 96 24"><line x1="0" y1="12" x2="96" y2="12" stroke="#334155" stroke-width="1.2"/></svg>'
+    if len(arr) > 12:
+        arr = arr[-12:]
+    mn, mx = min(arr), max(arr)
+    if mx - mn < 1e-9:
+        mx = mn + 1.0
+    n = len(arr)
+    pad = 2.0
+    step = (width - pad * 2) / max(1, n - 1)
+    points = []
+    for i, v in enumerate(arr):
+        x = pad + i * step
+        y = pad + (height - pad * 2) * (1.0 - ((v - mn) / (mx - mn)))
+        points.append(f"{x:.2f},{y:.2f}")
+    trend_up = arr[-1] >= arr[0]
+    line_color = "#36C06A" if trend_up else "#E04B4B"
+    fill_color = "rgba(54,192,106,0.16)" if trend_up else "rgba(224,75,75,0.16)"
+    baseline_y = pad + (height - pad * 2) * (1.0 - ((0.0 - mn) / (mx - mn))) if (mn <= 0.0 <= mx) else (height - pad)
+    poly_points = " ".join(points + [f"{width - pad:.2f},{height - pad:.2f}", f"{pad:.2f},{height - pad:.2f}"])
+    return (
+        f'<svg width="{int(width)}" height="{int(height)}" viewBox="0 0 {int(width)} {int(height)}">'
+        f'<line x1="{pad:.2f}" y1="{baseline_y:.2f}" x2="{width-pad:.2f}" y2="{baseline_y:.2f}" stroke="#2A3347" stroke-width="1"/>'
+        f'<polygon points="{poly_points}" fill="{fill_color}"/>'
+        f'<polyline points="{" ".join(points)}" fill="none" stroke="{line_color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+        f'</svg>'
+    )
+
+def calc_signed_streak(values):
+    """최근 연속 순매수/순매도 일수 계산(+면 매수, -면 매도)."""
+    arr = [float(v) for v in values if pd.notna(v)]
+    if not arr:
+        return 0
+    streak = 0
+    direction = 0
+    for v in reversed(arr):
+        sign = 1 if v > 0 else (-1 if v < 0 else 0)
+        if sign == 0:
+            break
+        if direction == 0:
+            direction = sign
+            streak = 1
+            continue
+        if sign == direction:
+            streak += 1
+        else:
+            break
+    return direction * streak
 
 def fetch_yahoo_chart_history(ticker_symbol, range_period="2y", interval="1d"):
     """yfinance 실패 시 Yahoo Chart API 직접 호출 fallback."""
@@ -363,6 +678,45 @@ def format_report_for_readability(report_text):
     for marker in ["**날짜:**", "**시장 상태:**", "**시장상태:**", "**작성자:**"]:
         formatted = formatted.replace(f" {marker}", f"\n{marker}")
     return formatted
+
+def render_section_header(title, subtitle="", badge_text=""):
+    badge_html = (
+        f'<span style="background:#172033; border:1px solid #33435F; color:#BFDBFE; border-radius:999px; padding:3px 10px; font-size:0.76em; font-weight:700;">{badge_text}</span>'
+        if badge_text else ""
+    )
+    html = dedent(f"""
+<div style="background:linear-gradient(140deg,#101827,#0e1524); border:1px solid #27324A; border-radius:14px; padding:12px 14px; margin:4px 0 10px 0;">
+  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+    <div style="color:#F3F6FB; font-size:1.04em; font-weight:800;">{title}</div>
+    {badge_html}
+  </div>
+  <div style="color:#9FB0CC; font-size:0.84em; margin-top:4px;">{subtitle}</div>
+</div>
+""").strip()
+    st.markdown(html, unsafe_allow_html=True)
+
+def apply_altair_theme(chart):
+    return chart.configure_view(strokeOpacity=0).configure_axis(
+        gridColor="#263247",
+        domainColor="#334155",
+        tickColor="#334155",
+        labelColor="#CBD5E1",
+        titleColor="#CBD5E1"
+    ).configure_legend(
+        labelColor="#CBD5E1",
+        titleColor="#CBD5E1"
+    )
+
+def render_empty_state(title, message):
+    st.markdown(
+        dedent(f"""
+<div style="background:linear-gradient(145deg,#111827,#0f172a); border:1px solid #2A344A; border-radius:12px; padding:12px 14px; margin:8px 0;">
+  <div style="color:#E5E7EB; font-weight:800; font-size:0.95em;">{title}</div>
+  <div style="color:#94A3B8; font-size:0.84em; margin-top:4px;">{message}</div>
+</div>
+""").strip(),
+        unsafe_allow_html=True,
+    )
 
 def build_quality_badge(row):
     """종목 데이터 충실도 기반 간단 신뢰도 배지."""
@@ -462,31 +816,35 @@ def render_action_brief(df_summary_local, macro_news_refs):
     updated_at = datetime.now().strftime("%H:%M")
     buy_conf = str(buy_row.get("신호등급", "-"))
     watch_conf = str(watch_row.get("신호등급", "-"))
-    st.markdown(
-        f"""
-        <div class="kpi-grid">
-            <div class="kpi-card">
-                <div class="kpi-title">오늘의 매수 후보</div>
-                <div class="kpi-value" style="font-size:1.45em;">{buy_row.get('종목명', '-')}</div>
-                <span class="kpi-delta" style="background:rgba(54,192,106,0.18); color:#36C06A;">AI {float(buy_row.get('AI수급점수', 0)):.1f}</span>
-                <div class="kpi-meta">{build_quality_badge(buy_row)} · 신호 {buy_conf} · 갱신 {updated_at}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">관망 후보</div>
-                <div class="kpi-value" style="font-size:1.45em;">{watch_row.get('종목명', '-')}</div>
-                <span class="kpi-delta" style="background:rgba(59,130,246,0.16); color:#60A5FA;">AI {float(watch_row.get('AI수급점수', 0)):.1f}</span>
-                <div class="kpi-meta">신호 {watch_conf} · 추세 확인 필요 · 갱신 {updated_at}</div>
-            </div>
-            <div class="kpi-card">
-                <div class="kpi-title">리스크 경보</div>
-                <div class="kpi-value" style="font-size:1.45em;">{risk_text}</div>
-                <span class="kpi-delta" style="background:rgba(224,75,75,0.16); color:#E04B4B;">{risk_detail}</span>
-                <div class="kpi-meta">뉴스 {len(macro_news_refs or [])}건 반영 · 갱신 {updated_at}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
+    def _brief_card(title, value, badge_html, meta_text):
+        return (
+            f'<div class="kpi-card">'
+            f'<div class="kpi-title">{title}</div>'
+            f'<div class="kpi-value" style="font-size:1.45em;">{value}</div>'
+            f'{badge_html}'
+            f'<div class="kpi-meta">{meta_text}</div>'
+            f'</div>'
+        )
+
+    card_buy = _brief_card(
+        "오늘의 매수 후보",
+        buy_row.get("종목명", "-"),
+        f'<span class="kpi-delta" style="background:rgba(54,192,106,0.18); color:#36C06A;">AI {float(buy_row.get("AI수급점수", 0)):.1f}</span>',
+        f"{build_quality_badge(buy_row)} · 신호 {buy_conf} · 갱신 {updated_at}"
     )
+    card_watch = _brief_card(
+        "관망 후보",
+        watch_row.get("종목명", "-"),
+        f'<span class="kpi-delta" style="background:rgba(59,130,246,0.16); color:#60A5FA;">AI {float(watch_row.get("AI수급점수", 0)):.1f}</span>',
+        f"신호 {watch_conf} · 추세 확인 필요 · 갱신 {updated_at}"
+    )
+    card_risk = _brief_card(
+        "리스크 경보",
+        risk_text,
+        f'<span class="kpi-delta" style="background:rgba(224,75,75,0.16); color:#E04B4B;">{risk_detail}</span>',
+        f"뉴스 {len(macro_news_refs or [])}건 반영 · 갱신 {updated_at}"
+    )
+    st.markdown(f'<div class="kpi-grid">{card_buy}{card_watch}{card_risk}</div>', unsafe_allow_html=True)
 
 def _request_html(url, headers, timeout=4, retries=2):
     """가벼운 재시도로 일시적 네트워크 실패를 완화합니다."""
@@ -893,7 +1251,7 @@ else:
     if "selected_stock" not in st.session_state:
         st.session_state.selected_stock = df_summary['종목명'].iloc[0]
 
-    tab_labels = ["매크로", "테마 히트맵", "수급 스크리너", "종목 분석", "백테스트", "주도주 비교"]
+    tab_labels = ["매크로", "테마 히트맵", "알파 레이더", "종목 분석", "백테스트", "주도주 비교"]
     if is_admin:
         tab_labels.append("🔒 포트폴리오")
     tabs = st.tabs(tab_labels)
@@ -902,7 +1260,7 @@ else:
 
     # --- 탭 1: 매크로 인사이트 ---
     with tab1:
-        st.subheader("오늘의 매크로 리포트")
+        render_section_header("오늘의 매크로 리포트", "핵심 매크로/뉴스/리스크를 먼저 확인하고 세부 분석으로 내려갑니다.")
         macro_refs = get_macro_headline_news()
         st.markdown("##### 오늘의 액션 브리프")
         st.caption("매수/관망/리스크를 먼저 확인하고 세부 탭으로 내려가세요.")
@@ -918,7 +1276,8 @@ else:
                 teaser_text = report_content[:250] + "...\n\n"
                 st.markdown(teaser_text)
                 show_premium_paywall("심층 매크로 분석 리포트 전문은 코드 인증 후 확인할 수 있습니다.")
-        else: st.info("⏳ AI 매크로 리포트를 생성 중입니다.")
+        else:
+            render_empty_state("리포트 생성 대기", "AI 매크로 리포트를 준비 중입니다. 잠시 후 새로고침해 주세요.")
         with st.expander("참고한 시황 뉴스 제목 보기"):
             if macro_refs:
                 for item in macro_refs:
@@ -928,8 +1287,7 @@ else:
 
     # --- 탭 2: 테마 히트맵 ---
     with tab2:
-        st.subheader("시가총액 및 수급 테마 히트맵")
-        st.caption("사각형 크기는 시가총액, 색상은 당일 등락률입니다. 테마 단위 자금 흐름을 한눈에 파악하세요.")
+        render_section_header("시가총액 및 수급 테마 히트맵", "사각형 크기는 시가총액, 색상은 당일 등락률입니다.", badge_text="Theme Flow")
 
         if not is_vip:
             show_premium_paywall("전체 시장의 테마별 자금 흐름 히트맵은 코드 인증 후 확인할 수 있습니다.")
@@ -960,48 +1318,17 @@ else:
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                     height=550,
-                    coloraxis_showscale=False
+                    coloraxis_showscale=False,
+                    font=dict(color="#CBD5E1")
                 )
 
                 st.plotly_chart(fig, width='stretch')
             else:
-                st.info("데이터 대기 중입니다.")
+                render_empty_state("데이터 대기", "테마 히트맵 데이터가 아직 준비되지 않았습니다.")
 
     # --- 탭 3: 수급 스크리너 ---
     with tab3:
-        st.markdown(
-            """
-            <div style="display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 10px 0;">
-                <span title="신호등급: High/Medium/Low. VIX 레짐(시장 변동성 구간)에 따라 임계치가 동적으로 달라집니다." style="cursor:help; color:#A5B4FC; font-size:0.86em;">ℹ️ 신호등급</span>
-                <span title="신호신뢰도(0~100): Quant점수, AI점수, 정성점수, 뉴스 부정키워드를 합산한 신뢰 지표입니다." style="cursor:help; color:#93C5FD; font-size:0.86em;">ℹ️ 신호신뢰도</span>
-                <span title="안정화Δ: 전일 대비 스무딩·변동상한 적용 후 점수 변화량입니다. +면 개선, -면 약화입니다." style="cursor:help; color:#86EFAC; font-size:0.86em;">ℹ️ 안정화Δ</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        with st.expander("지표 해설", expanded=False):
-            st.markdown(
-                """
-                <div style="background:linear-gradient(135deg,#121827,#0f172a); border:1px solid #2B364C; border-radius:14px; padding:12px 14px; margin:2px 0 4px 0;">
-                    <div style="color:#E5E7EB; font-weight:800; font-size:0.98em; margin-bottom:8px;">지표 해설</div>
-                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px;">
-                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
-                            <div style="color:#A5B4FC; font-size:0.78em; font-weight:700;">신호등급</div>
-                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">High/Medium/Low. VIX 레짐별 기준이 다릅니다.</div>
-                        </div>
-                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
-                            <div style="color:#93C5FD; font-size:0.78em; font-weight:700;">신호신뢰도</div>
-                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">Quant/AI/정성/부정뉴스를 합친 0~100 점수입니다.</div>
-                        </div>
-                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
-                            <div style="color:#86EFAC; font-size:0.78em; font-weight:700;">안정화Δ</div>
-                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">전일 대비 스무딩 반영 후 점수 변화량입니다.</div>
-                        </div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        render_section_header("알파 레이더", "핵심 후보를 카드/테이블로 빠르게 스캔하고, 상세 지표는 필요 시 확장해서 확인합니다.")
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
             
@@ -1038,14 +1365,17 @@ else:
                 
                 rc_color = "#FF4B4B" if "▲" in str(rank_chg) else ("#3B82F6" if "▼" in str(rank_chg) else "#888888")
                 
+                card_cls = {1: "podium-card-1", 2: "podium-card-2", 3: "podium-card-3"}.get(rank, "")
+                rank_badge_cls = {1: "podium-badge-1", 2: "podium-badge-2", 3: "podium-badge-3"}.get(rank, "")
+                name_cls = {1: "podium-name-1", 2: "podium-name-2", 3: "podium-name-3"}.get(rank, "")
                 card_html = f"""
-<div style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+<div class="{card_cls}" style="background-color: #1E1E2E; padding: 16px; border-radius: 12px; margin-bottom: 12px; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
 <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 10px;">
 <div style="display: flex; flex-direction: column; gap: 8px;">
 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-<span style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.7em; font-weight: 800; padding: 4px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); white-space: nowrap;">🏆 {rank}위</span>
+<span class="{rank_badge_cls}" style="background: #2b2b36; border: 1px solid #444; color: #FFD700; font-size: 0.7em; font-weight: 800; padding: 4px 8px; border-radius: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); white-space: nowrap;">🏆 {rank}위</span>
 <span style="font-size: 0.8em; font-weight: bold; color: {rc_color}; white-space: nowrap;">{rank_chg}</span>
-<span style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
+<span class="{name_cls}" style="font-size: 1.15em; font-weight: 800; color: #FFF; line-height: 1.2;">{name}</span>
 </div>
 <div><span style="font-size: 0.75em; color: #AAA; padding: 3px 6px; background: #2A2A35; border-radius: 4px;">{sector}</span></div>
 </div>
@@ -1094,6 +1424,7 @@ else:
             momentum_cols = [c for c in ['랭킹추세'] if c in style_target.columns]
             
             format_dict = {
+                "AI수급점수": "{:.2f}",
                 "현재가": "{:,.0f}", "시가총액": "{:,.0f}", "등락률": "{:.2f}%",
                 "외인강도(%)": "{:.2f}%", "연기금강도(%)": "{:.2f}%", "투신강도(%)": "{:.2f}%",
                 "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%",
@@ -1135,7 +1466,7 @@ else:
                     "_index": st.column_config.TextColumn("종목명", width="small"), 
                     "테마표시": st.column_config.Column("테마", width="medium"), 
                     "랭킹추세": st.column_config.Column("순위변동", width="small"), 
-                    "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small"), 
+                    "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small", format="%.2f"),
                     "신호등급": st.column_config.Column("신호등급", width="small"),
                     "신호신뢰도": st.column_config.NumberColumn("신뢰도", width="small"),
                     "점수변화(안정화)": st.column_config.NumberColumn("안정화Δ", width="small"),
@@ -1166,6 +1497,7 @@ else:
 
     # --- 탭 4: 종목 분석 (네이버 통합 검색 뉴스 + 매크로 시황 융합 분석) ---
     with tab4:
+        render_section_header("종목 분석", "핵심 점수와 실행 신호를 먼저 확인하고, 상세 분석은 펼쳐서 점검합니다.", badge_text="Focused View")
         free_tier_stocks = df_summary.head(5)['종목명'].values
         stock_list = df_summary['종목명'].tolist()
         
@@ -1190,6 +1522,8 @@ else:
         
         sector_name = safe_get(selected_row, '테마표시', safe_get(selected_row, '섹터', '분류안됨'))
         cur_rank = safe_get(selected_row, '현재_순위', 0)
+        selected_rank = int(pd.to_numeric(cur_rank, errors="coerce") or 0)
+        selected_name_cls = {1: "podium-name-1", 2: "podium-name-2", 3: "podium-name-3"}.get(selected_rank, "")
         ai_score = safe_get(selected_row, 'AI수급점수', 0)
         quant_score = float(safe_get(selected_row, 'Quant점수', ai_score))
         qual_score = float(safe_get(selected_row, '정성점수', 50))
@@ -1209,17 +1543,56 @@ else:
         day_chg_color = "#FF4B4B" if day_chg > 0 else "#3B82F6" if day_chg < 0 else "#A0A0A0"
         day_chg_text = f"+{day_chg:.2f}%" if day_chg > 0 else f"{day_chg:.2f}%"
 
-        st.markdown(
+        title_html = dedent(
             f"""
             <div class="stock-title-wrap">
-                <h2 style="margin: 0; color: #FFFFFF;">{target_stock}</h2>
+                <h2 class="{selected_name_cls}" style="margin: 0; color: #FFFFFF;">{target_stock}</h2>
                 <span class="stock-sector-chip">{sector_name}</span>
                 <span style="padding:4px 10px; border-radius:16px; background:#242735; color:#D6DAE5; font-size:0.82em;">현재가 {cur_price:,.0f}원</span>
                 <span style="padding:4px 10px; border-radius:16px; background:#242735; color:{day_chg_color}; font-size:0.82em; font-weight:700;">당일 {day_chg_text}</span>
             </div>
+            """
+        ).strip()
+        st.markdown(title_html, unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="premium-panel">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <div style="color:#E5E7EB; font-size:0.95em; font-weight:800;">실전 해설</div>
+                    <div style="color:#9CA3AF; font-size:0.78em;">모바일은 터치 기반으로 아래 해설을 확인하세요</div>
+                </div>
+                <div class="premium-chip-row">
+                    <span class="premium-chip">신호등급 {signal_grade}</span>
+                    <span class="premium-chip">신호신뢰도 {signal_conf:.1f}</span>
+                    <span class="premium-chip">안정화Δ {score_delta:+.2f}</span>
+                </div>
+            </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
+        with st.expander("지표 해설", expanded=False):
+            st.markdown(
+                """
+                <div style="background:linear-gradient(135deg,#121827,#0f172a); border:1px solid #2B364C; border-radius:14px; padding:12px 14px; margin:2px 0 4px 0;">
+                    <div style="color:#E5E7EB; font-weight:800; font-size:0.98em; margin-bottom:8px;">종목 분석 지표 해설</div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px;">
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#A5B4FC; font-size:0.78em; font-weight:700;">신호등급</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">High/Medium/Low. VIX 레짐별 기준으로 등급이 조정됩니다.</div>
+                        </div>
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#93C5FD; font-size:0.78em; font-weight:700;">신호신뢰도</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">Quant/AI/정성/부정뉴스를 합친 0~100 신뢰 점수입니다.</div>
+                        </div>
+                        <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
+                            <div style="color:#86EFAC; font-size:0.78em; font-weight:700;">안정화Δ</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">전일 대비 스무딩 적용 후 점수 변화량입니다.</div>
+                        </div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
         if not is_vip and target_stock not in free_tier_stocks:
             show_premium_paywall(f"'{target_stock}'의 상세 수급 분석과 차트는 코드 인증 후 확인할 수 있습니다.")
@@ -1231,109 +1604,177 @@ else:
             pef_str_val = float(safe_get(selected_row, '사모강도(%)', 0))
             f_streak = int(safe_get(selected_row, '외인연속', 0))
             p_streak = int(safe_get(selected_row, '연기금연속', 0))
-
-            st.markdown(
-                f"""
-                <div class="stock-grid">
-                    <div class="stock-card">
-                        <div class="stock-label">🏆 AI 점수</div>
-                        <div class="stock-value">{float(ai_score):.1f}점</div>
-                        <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend} / 신호 {signal_grade}({signal_conf:.1f})</div>
-                    </div>
-                    <div class="stock-card">
-                        <div class="stock-label">💰 시가총액</div>
-                        <div class="stock-value">{marcap:,.0f}억</div>
-                    </div>
-                    <div class="stock-card">
-                        <div class="stock-label">📊 PER / ROE</div>
-                        <div class="stock-value">{per_val:.1f} / {roe_val:.1f}%</div>
-                    </div>
-                    <div class="stock-card">
-                        <div class="stock-label">📈 20일선 이격도</div>
-                        <div class="stock-value">{gap_20}%</div>
-                        <div class="stock-sub">{tech_status} · 안정화Δ {score_delta:+.2f}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-            st.markdown("##### 점수 산출 구조")
             display_final = round(float(ai_score), 1)
-            gauge = go.Figure(go.Indicator(
-                mode="gauge",
-                value=display_final,
-                gauge={
-                    "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#64748B", "tickfont": {"size": 10}},
-                    "bar": {"color": "#A78BFA", "thickness": 0.42},
-                    "bgcolor": "#0F172A",
-                    "borderwidth": 0,
-                    "steps": [
-                        {"range": [0, 40], "color": "#2B3445"},
-                        {"range": [40, 70], "color": "#334155"},
-                        {"range": [70, 100], "color": "#475569"}
-                    ],
-                }
-            ))
-            gauge.update_layout(
-                height=145,
-                margin=dict(l=8, r=8, t=8, b=2),
-                paper_bgcolor="rgba(0,0,0,0)",
-                font={"color": "#E5E7EB"},
-                annotations=[{
-                    "x": 0.5, "y": 0.13, "xref": "paper", "yref": "paper",
-                    "text": f"<b>{display_final:.1f}점</b>",
-                    "showarrow": False, "font": {"size": 24, "color": "#E5E7EB"}
-                }]
-            )
-            st.plotly_chart(gauge, width='stretch')
-            st.markdown(
-                f"""
-                <div class="score-kpi-grid">
-                    <div class="score-kpi">
-                        <div class="score-kpi-label">최종 점수</div>
-                        <div class="score-kpi-value">{display_final:.1f}</div>
-                    </div>
-                    <div class="score-kpi">
-                        <div class="score-kpi-label">정량 점수</div>
-                        <div class="score-kpi-value">{quant_score:.1f}</div>
-                    </div>
-                    <div class="score-kpi">
-                        <div class="score-kpi-label">정성 보정</div>
-                        <div class="score-kpi-value">{qual_adj:+.1f}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            st.caption(f"정성 점수 {qual_score:.1f} | {score_mode}")
 
-            st.markdown("##### 최근 1개월 수급 강도")
+            trend_map = {"외인": make_trend_svg([]), "연기금": make_trend_svg([]), "투신": make_trend_svg([]), "사모": make_trend_svg([])}
+            signed_streak = {"외인": f_streak, "연기금": p_streak, "투신": 0, "사모": 0}
+            if not df_history.empty and {"종목명", "일자", "외인", "연기금", "투신", "사모"}.issubset(df_history.columns):
+                h = df_history[df_history["종목명"] == target_stock].copy()
+                if not h.empty:
+                    raw_dates = h["일자"].astype(str).str.replace("-", "", regex=False).str.strip()
+                    h["일자_dt"] = pd.to_datetime(raw_dates, format="%Y%m%d", errors="coerce")
+                    if h["일자_dt"].notna().sum() == 0:
+                        h["일자_dt"] = pd.to_datetime(h["일자"], errors="coerce")
+                    h = h.dropna(subset=["일자_dt"]).sort_values("일자_dt")
+                    for col in ["외인", "연기금", "투신", "사모"]:
+                        vals = pd.to_numeric(h[col], errors="coerce").dropna().tolist()[-8:]
+                        trend_map[col] = make_trend_svg(vals, width=96, height=24)
+                    signed_streak["외인"] = calc_signed_streak(pd.to_numeric(h["외인"], errors="coerce").tolist()[-20:])
+                    signed_streak["연기금"] = calc_signed_streak(pd.to_numeric(h["연기금"], errors="coerce").tolist()[-20:])
+                    signed_streak["투신"] = calc_signed_streak(pd.to_numeric(h["투신"], errors="coerce").tolist()[-20:])
+                    signed_streak["사모"] = calc_signed_streak(pd.to_numeric(h["사모"], errors="coerce").tolist()[-20:])
+
+            def _streak_text(v):
+                if v > 0:
+                    return f"매수 {v}일"
+                if v < 0:
+                    return f"매도 {abs(v)}일"
+                return "중립"
+
             st.markdown(
                 f"""
-                <div class="stock-grid">
-                    <div class="stock-card">
-                        <div class="stock-label">🔴 외인 강도</div>
-                        <div class="stock-value">{f_str_val:.1f}%</div>
-                        <div class="stock-sub">{f_streak}일 연속 순매수</div>
+                <div class="hero-grid">
+                    <div class="hero-card">
+                        <div class="hero-label">핵심 점수</div>
+                        <div class="hero-value">{display_final:.1f}점</div>
+                        <div class="hero-sub">전체 {int(cur_rank)}위 · {rank_trend}</div>
                     </div>
-                    <div class="stock-card">
-                        <div class="stock-label">🔵 연기금 강도</div>
-                        <div class="stock-value">{p_str_val:.1f}%</div>
-                        <div class="stock-sub">{p_streak}일 연속 순매수</div>
-                    </div>
-                    <div class="stock-card">
-                        <div class="stock-label">🟡 투신 강도</div>
-                        <div class="stock-value">{t_str_val:.1f}%</div>
-                    </div>
-                    <div class="stock-card">
-                        <div class="stock-label">🟣 사모 강도</div>
-                        <div class="stock-value">{pef_str_val:.1f}%</div>
+                    <div class="hero-card">
+                        <div class="hero-label">실행 신호</div>
+                        <div class="hero-value">{signal_grade}</div>
+                        <div class="hero-sub">신뢰도 {signal_conf:.1f} · 안정화Δ {score_delta:+.2f}</div>
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True
             )
+            st.markdown(
+                f"""
+                <div class="trend-strip">
+                    <div class="trend-item">
+                        <div class="trend-name">외인 {f_str_val:+.1f}% · {_streak_text(signed_streak['외인'])}</div>
+                        <div class="trend-line">{trend_map['외인']}</div>
+                    </div>
+                    <div class="trend-item">
+                        <div class="trend-name">연기금 {p_str_val:+.1f}% · {_streak_text(signed_streak['연기금'])}</div>
+                        <div class="trend-line">{trend_map['연기금']}</div>
+                    </div>
+                    <div class="trend-item">
+                        <div class="trend-name">투신 {t_str_val:+.1f}% · {_streak_text(signed_streak['투신'])}</div>
+                        <div class="trend-line">{trend_map['투신']}</div>
+                    </div>
+                    <div class="trend-item">
+                        <div class="trend-name">사모 {pef_str_val:+.1f}% · {_streak_text(signed_streak['사모'])}</div>
+                        <div class="trend-line">{trend_map['사모']}</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.caption("라인 색상: 최근 흐름이 시작점 대비 상승이면 초록, 하락이면 빨강입니다.")
+
+            with st.expander("상세 분석 펼치기", expanded=False):
+                st.markdown(
+                    f"""
+                    <div class="stock-grid">
+                        <div class="stock-card">
+                            <div class="stock-label">🏆 AI 점수</div>
+                            <div class="stock-value">{float(ai_score):.1f}점</div>
+                            <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend} / 신호 {signal_grade}({signal_conf:.1f})</div>
+                        </div>
+                        <div class="stock-card">
+                            <div class="stock-label">💰 시가총액</div>
+                            <div class="stock-value">{marcap:,.0f}억</div>
+                        </div>
+                        <div class="stock-card">
+                            <div class="stock-label">📊 PER / ROE</div>
+                            <div class="stock-value">{per_val:.1f} / {roe_val:.1f}%</div>
+                        </div>
+                        <div class="stock-card">
+                            <div class="stock-label">📈 20일선 이격도</div>
+                            <div class="stock-value">{gap_20}%</div>
+                            <div class="stock-sub">{tech_status} · 안정화Δ {score_delta:+.2f}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+                st.markdown("##### 점수 산출 구조")
+                gauge = go.Figure(go.Indicator(
+                    mode="gauge",
+                    value=display_final,
+                    gauge={
+                        "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#64748B", "tickfont": {"size": 10}},
+                        "bar": {"color": "#A78BFA", "thickness": 0.42},
+                        "bgcolor": "#0F172A",
+                        "borderwidth": 0,
+                        "steps": [
+                            {"range": [0, 40], "color": "#2B3445"},
+                            {"range": [40, 70], "color": "#334155"},
+                            {"range": [70, 100], "color": "#475569"}
+                        ],
+                    }
+                ))
+                gauge.update_layout(
+                    height=145,
+                    margin=dict(l=8, r=8, t=8, b=2),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    font={"color": "#E5E7EB"},
+                    annotations=[{
+                        "x": 0.5, "y": 0.13, "xref": "paper", "yref": "paper",
+                        "text": f"<b>{display_final:.1f}점</b>",
+                        "showarrow": False, "font": {"size": 24, "color": "#E5E7EB"}
+                    }]
+                )
+                st.plotly_chart(gauge, width='stretch')
+                st.markdown(
+                    f"""
+                    <div class="score-kpi-grid">
+                        <div class="score-kpi">
+                            <div class="score-kpi-label">최종 점수</div>
+                            <div class="score-kpi-value">{display_final:.1f}</div>
+                        </div>
+                        <div class="score-kpi">
+                            <div class="score-kpi-label">정량 점수</div>
+                            <div class="score-kpi-value">{quant_score:.1f}</div>
+                        </div>
+                        <div class="score-kpi">
+                            <div class="score-kpi-label">정성 보정</div>
+                            <div class="score-kpi-value">{qual_adj:+.1f}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+                st.caption(f"정성 점수 {qual_score:.1f} | {score_mode}")
+
+                st.markdown("##### 최근 1개월 수급 강도")
+                st.markdown(
+                    f"""
+                    <div class="stock-grid">
+                        <div class="stock-card">
+                            <div class="stock-label">🔴 외인 강도</div>
+                            <div class="stock-value">{f_str_val:.1f}%</div>
+                            <div class="stock-sub">{_streak_text(signed_streak['외인'])}</div>
+                        </div>
+                        <div class="stock-card">
+                            <div class="stock-label">🔵 연기금 강도</div>
+                            <div class="stock-value">{p_str_val:.1f}%</div>
+                            <div class="stock-sub">{_streak_text(signed_streak['연기금'])}</div>
+                        </div>
+                        <div class="stock-card">
+                            <div class="stock-label">🟡 투신 강도</div>
+                            <div class="stock-value">{t_str_val:.1f}%</div>
+                        </div>
+                        <div class="stock-card">
+                            <div class="stock-label">🟣 사모 강도</div>
+                            <div class="stock-value">{pef_str_val:.1f}%</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
             st.markdown("---")
 
@@ -1353,75 +1794,158 @@ else:
                     for investor in ["외인", "연기금", "투신", "사모"]:
                         wk_amt = float(wk_slice[investor].sum()) if investor in wk_slice.columns else 0.0
                         mo_amt = float(mo_slice[investor].sum()) if investor in mo_slice.columns else 0.0
+                        wk_ratio = (wk_amt / marcap_in_million) * 100 if marcap_in_million > 0 else 0.0
                         mo_ratio = (mo_amt / marcap_in_million) * 100 if marcap_in_million > 0 else 0.0
                         flow_rows.append({
                             "주체": investor,
                             "1주 순매입(백만 원)": wk_amt,
                             "1개월 순매입(백만 원)": mo_amt,
+                            "시총 대비(1주)": wk_ratio,
                             "시총 대비(1개월)": mo_ratio
                         })
 
                     df_flow = pd.DataFrame(flow_rows)
 
-                    def calc_consecutive_buy_days(df_hist_local, investor_col):
+                    def calc_consecutive_signed_days(df_hist_local, investor_col):
                         if investor_col not in df_hist_local.columns:
                             return 0
                         streak = 0
-                        # 최신일 기준으로 연속 순매수 일수를 계산
+                        direction = 0
+                        # 최신일 기준으로 연속 순매수/순매도 일수를 계산
                         for val in df_hist_local.sort_values('일자', ascending=False)[investor_col].tolist():
-                            if pd.isna(val) or float(val) <= 0:
+                            if pd.isna(val):
                                 break
-                            streak += 1
-                        return streak
+                            sign = 1 if float(val) > 0 else (-1 if float(val) < 0 else 0)
+                            if sign == 0:
+                                break
+                            if direction == 0:
+                                direction = sign
+                                streak = 1
+                            elif sign == direction:
+                                streak += 1
+                            else:
+                                break
+                        return direction * streak
 
                     streak_df = pd.DataFrame([
-                        {"주체": "외인", "연속순매수일": calc_consecutive_buy_days(target_hist, "외인")},
-                        {"주체": "연기금", "연속순매수일": calc_consecutive_buy_days(target_hist, "연기금")},
-                        {"주체": "투신", "연속순매수일": calc_consecutive_buy_days(target_hist, "투신")},
-                        {"주체": "사모", "연속순매수일": calc_consecutive_buy_days(target_hist, "사모")},
+                        {"주체": "외인", "연속순수급일": calc_consecutive_signed_days(target_hist, "외인")},
+                        {"주체": "연기금", "연속순수급일": calc_consecutive_signed_days(target_hist, "연기금")},
+                        {"주체": "투신", "연속순수급일": calc_consecutive_signed_days(target_hist, "투신")},
+                        {"주체": "사모", "연속순수급일": calc_consecutive_signed_days(target_hist, "사모")},
                     ])
-                    streak_df["표시"] = streak_df["연속순매수일"].astype(str) + "일"
-                    streak_df["강도"] = streak_df["연속순매수일"].apply(
+                    streak_df["표시"] = streak_df["연속순수급일"].apply(
+                        lambda x: f"매수 {int(x)}일" if x > 0 else (f"매도 {abs(int(x))}일" if x < 0 else "중립")
+                    )
+                    streak_df["강도"] = streak_df["연속순수급일"].abs().apply(
                         lambda x: "strong" if x >= 5 else ("mid" if x >= 2 else ("weak" if x >= 1 else "none"))
                     )
+                    streak_df["방향"] = streak_df["연속순수급일"].apply(lambda x: "buy" if x > 0 else ("sell" if x < 0 else "flat"))
 
                     col1, col2 = st.columns(2)
                     color_scale = alt.Scale(domain=['외인', '연기금', '투신', '사모'], range=['#36C06A', '#E04B4B', '#3BA7FF', '#B08CFF'])
                     with col1:
                         st.markdown("##### 20일 종가 추이")
-                        st.altair_chart(alt.Chart(target_hist).mark_line(color='#36C06A', point=True).encode(x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)), y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)).properties(height=280), width='stretch')
+                        st.altair_chart(
+                            apply_altair_theme(
+                                alt.Chart(target_hist).mark_line(color='#36C06A', point=True).encode(
+                                    x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
+                                    y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)
+                                ).properties(height=280)
+                            ),
+                            width='stretch'
+                        )
                     with col2:
-                        st.markdown("##### 주체별 연속 순매수")
-                        streak_chart = alt.Chart(streak_df).mark_bar(cornerRadiusEnd=6).encode(
+                        chart_mode_options = ["연속 순수급", "1주 강도(시총대비)", "1개월 강도(시총대비)"]
+                        st.markdown(
+                            "<div style='color:#94A3B8; font-size:0.78em; margin-bottom:4px;'>수급 차트 모드</div>",
+                            unsafe_allow_html=True,
+                        )
+                        if hasattr(st, "segmented_control"):
+                            chart_mode = st.segmented_control(
+                                "수급 차트 모드",
+                                options=chart_mode_options,
+                                default=chart_mode_options[0],
+                                key="detail_flow_chart_mode",
+                                label_visibility="collapsed",
+                            )
+                            if not chart_mode:
+                                chart_mode = chart_mode_options[0]
+                        else:
+                            chart_mode = st.radio(
+                                "수급 차트 모드",
+                                chart_mode_options,
+                                horizontal=True,
+                                key="detail_flow_chart_mode_fallback",
+                                label_visibility="collapsed"
+                            )
+
+                        if chart_mode == "연속 순수급":
+                            chart_df = streak_df.copy()
+                            val_col = "연속순수급일"
+                            label_col = "표시"
+                            x_title = "연속 순수급일"
+                        elif chart_mode == "1주 강도(시총대비)":
+                            chart_df = df_flow.copy()
+                            chart_df["값"] = pd.to_numeric(chart_df["시총 대비(1주)"], errors="coerce").fillna(0.0)
+                            chart_df["표시"] = chart_df["값"].apply(lambda v: f"{v:+.2f}%")
+                            chart_df["방향"] = chart_df["값"].apply(lambda v: "buy" if v > 0 else ("sell" if v < 0 else "flat"))
+                            val_col = "값"
+                            label_col = "표시"
+                            x_title = "시총 대비 1주 순수급(%)"
+                        else:
+                            chart_df = df_flow.copy()
+                            chart_df["값"] = pd.to_numeric(chart_df["시총 대비(1개월)"], errors="coerce").fillna(0.0)
+                            chart_df["표시"] = chart_df["값"].apply(lambda v: f"{v:+.2f}%")
+                            chart_df["방향"] = chart_df["값"].apply(lambda v: "buy" if v > 0 else ("sell" if v < 0 else "flat"))
+                            val_col = "값"
+                            label_col = "표시"
+                            x_title = "시총 대비 1개월 순수급(%)"
+
+                        abs_max = float(pd.to_numeric(chart_df[val_col], errors="coerce").abs().max()) if not chart_df.empty else 1.0
+                        abs_max = max(1.0, round(abs_max, 2))
+                        x_domain = [-abs_max, abs_max]
+
+                        st.markdown(f"##### 주체별 {chart_mode}")
+                        bar = alt.Chart(chart_df).mark_bar().encode(
                             y=alt.Y('주체:N', sort=['외인', '연기금', '투신', '사모'], axis=alt.Axis(title=None)),
-                            x=alt.X('연속순매수일:Q', axis=alt.Axis(title=None, tickMinStep=1)),
+                            x=alt.X(
+                                f'{val_col}:Q',
+                                axis=alt.Axis(title=x_title, tickMinStep=1),
+                                scale=alt.Scale(domain=x_domain)
+                            ),
                             color=alt.Color(
-                                "강도:N",
+                                "방향:N",
                                 scale=alt.Scale(
-                                    domain=["none", "weak", "mid", "strong"],
-                                    range=["#4B5563", "#4FAF78", "#93D8A8", "#36C06A"]
+                                    domain=["sell", "flat", "buy"],
+                                    range=["#E04B4B", "#64748B", "#36C06A"]
                                 ),
                                 legend=None
                             ),
-                            tooltip=[alt.Tooltip('주체:N'), alt.Tooltip('연속순매수일:Q', title='연속 순매수일')]
+                            tooltip=[alt.Tooltip('주체:N'), alt.Tooltip(f'{label_col}:N', title='값')]
                         ).properties(height=280)
-                        streak_text = alt.Chart(streak_df).mark_text(align='left', baseline='middle', dx=6, color='#E5E7EB').encode(
+                        zero_rule = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(
+                            color="#94A3B8", strokeDash=[5, 4], opacity=0.7
+                        ).encode(x="x:Q")
+                        text = alt.Chart(chart_df).mark_text(
+                            align='left', baseline='middle', dx=6, color='#E5E7EB'
+                        ).encode(
                             y=alt.Y('주체:N', sort=['외인', '연기금', '투신', '사모']),
-                            x=alt.X('연속순매수일:Q'),
-                            text='표시:N'
+                            x=alt.X(f'{val_col}:Q', scale=alt.Scale(domain=x_domain)),
+                            text=f'{label_col}:N'
                         )
-                        st.altair_chart(streak_chart + streak_text, width='stretch')
+                        st.altair_chart(apply_altair_theme(zero_rule + bar + text), width='stretch')
 
-                    st.markdown("##### 주체별 순매입 현황 (1주 / 1개월)")
-                    st.dataframe(
-                        df_flow.style.format({
-                            "1주 순매입(백만 원)": "{:+,.0f}",
-                            "1개월 순매입(백만 원)": "{:+,.0f}",
-                            "시총 대비(1개월)": "{:+.2f}%"
-                        }),
-                        hide_index=True,
-                        width='stretch'
-                    )
+                    with st.expander("주체별 순매입 현황 표 (1주 / 1개월)", expanded=False):
+                        st.dataframe(
+                            df_flow.style.format({
+                                "1주 순매입(백만 원)": "{:+,.0f}",
+                                "1개월 순매입(백만 원)": "{:+,.0f}",
+                                "시총 대비(1주)": "{:+.2f}%",
+                                "시총 대비(1개월)": "{:+.2f}%"
+                            }),
+                            hide_index=True,
+                            width='stretch'
+                        )
 
                     with st.expander("주체별 순매수 대금 추이(백만 원)"):
                         amount_df = target_hist.melt(
@@ -1431,12 +1955,14 @@ else:
                             value_name='금액'
                         )
                         st.altair_chart(
-                            alt.Chart(amount_df).mark_bar().encode(
-                                x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
-                                y=alt.Y('금액:Q', title=None),
-                                color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
-                                order=alt.Order('투자자:N', sort='descending')
-                            ).properties(height=280),
+                            apply_altair_theme(
+                                alt.Chart(amount_df).mark_bar().encode(
+                                    x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
+                                    y=alt.Y('금액:Q', title=None),
+                                    color=alt.Color('투자자:N', scale=color_scale, legend=alt.Legend(title=None, orient='bottom', direction='horizontal')),
+                                    order=alt.Order('투자자:N', sort='descending')
+                                ).properties(height=280)
+                            ),
                             width='stretch'
                         )
 
@@ -1512,7 +2038,7 @@ else:
 
     # --- 탭 5: 백테스트 ---
     with tab5:
-        st.subheader("QEdge 모델 가상 포트폴리오 백테스트")
+        render_section_header("QEdge 모델 가상 포트폴리오 백테스트", "수익률뿐 아니라 낙폭(MDD)과 리스크 상태까지 함께 확인합니다.", badge_text="Backtest")
         st.markdown(
             """
             <div style="display:flex; gap:10px; flex-wrap:wrap; margin:4px 0 10px 0;">
@@ -1698,7 +2224,7 @@ else:
                             )
                         ).properties(height=300)
 
-                        st.altair_chart(base_chart, width='stretch')
+                        st.altair_chart(apply_altair_theme(base_chart), width='stretch')
                         if benchmark_fetch_errors:
                             labels = {
                                 '^KS11': 'KOSPI'
@@ -1743,13 +2269,15 @@ else:
                                     with st.expander("날짜별 Top3 구성 종목 및 성과", expanded=False):
                                         st.dataframe(pd.DataFrame(rank_rows), hide_index=True, width='stretch')
                     else:
-                        st.info("선택하신 날짜에 해당하는 백테스트 데이터가 없습니다.")
-                else: st.info("⏳ 데이터 대기 중")
-            else: st.info("⏳ 데이터 대기 중")
+                        render_empty_state("백테스트 데이터 없음", "선택하신 기간에 해당하는 데이터가 없습니다.")
+                else:
+                    render_empty_state("데이터 대기", "백테스트 데이터를 준비 중입니다.")
+            else:
+                render_empty_state("데이터 대기", "백테스트 파일이 아직 생성되지 않았습니다.")
 
     # --- 탭 6: 리더스 페어 분석 ---
     with tab6:
-        st.subheader("리더스 페어 분석")
+        render_section_header("리더스 페어 분석", "두 종목의 뉴스/수급/정량 지표를 교차 비교해 상대 우위를 평가합니다.")
         st.caption("두 종목의 뉴스, 시황, 퀀트 데이터를 교차 검토해 단기 상대 우위를 비교합니다.")
 
         if not is_vip:
@@ -1852,86 +2380,15 @@ else:
     # --- 탭 7: 관리자 전용 포트폴리오 ---
     if is_admin and tab7 is not None:
         with tab7:
-            st.subheader("🔒 관리자 포트폴리오")
+            render_section_header("🔒 관리자 포트폴리오", "웹에서 포트폴리오를 직접 편집하고 리스크를 실시간 점검합니다.", badge_text="Admin")
             st.caption("웹에서 포트폴리오를 직접 편집하고 수급 이탈 리스크를 실시간 점검합니다.")
-            with st.expander("테마 추천 승인 (Top40 자동 추천)", expanded=False):
-                df_sugg = load_theme_suggestions_safe()
-                if df_sugg.empty:
-                    st.info("아직 추천 테마가 없습니다. scraper 배치 실행 후 확인하세요.")
-                else:
-                    df_sugg = df_sugg[df_sugg["승인상태"].astype(str).str.lower() != "approved"].copy()
-                    if df_sugg.empty:
-                        st.success("승인 대기 중인 추천 테마가 없습니다.")
-                    else:
-                        df_sugg["선택"] = False
-                        df_sugg["신뢰도"] = pd.to_numeric(df_sugg["신뢰도"], errors="coerce").fillna(0.0)
-                        df_sugg = df_sugg.sort_values(["신뢰도", "종목명"], ascending=[False, True])
-                        edited_sugg = st.data_editor(
-                            df_sugg,
-                            use_container_width=True,
-                            num_rows="fixed",
-                            key="theme_suggestion_editor",
-                            column_config={
-                                "선택": st.column_config.CheckboxColumn("승인"),
-                                "추천테마": st.column_config.TextColumn("추천테마"),
-                                "신뢰도": st.column_config.NumberColumn("신뢰도", format="%.2f"),
-                                "근거": st.column_config.TextColumn("근거"),
-                            },
-                        )
-                        st.caption("승인할 행을 체크하고 [승인 테마 승격]을 누르면 theme_map.csv로 반영됩니다.")
-                        if st.button("승인 테마 승격", use_container_width=True, type="primary", key="promote_theme_btn"):
-                            picked = edited_sugg[edited_sugg["선택"] == True].copy()
-                            promoted = promote_themes_to_map(picked)
-                            if promoted > 0:
-                                st.success(f"{promoted}개 테마를 theme_map.csv로 승격했습니다.")
-                                st.rerun()
-                            else:
-                                st.warning("승격할 항목이 없습니다. 체크 또는 추천테마 값을 확인하세요.")
-            with st.expander("리스크 경보 임계값 설정", expanded=False):
-                st.markdown(
-                    """
-                    <div style="background:linear-gradient(135deg, #141A26, #101624); border:1px solid #2A344A; border-radius:12px; padding:12px 14px; margin-bottom:10px;">
-                        <div style="color:#E5E7EB; font-weight:700; margin-bottom:6px;">경보 규칙 안내</div>
-                        <div style="color:#AAB2C5; font-size:0.92em; line-height:1.55;">
-                            • <b>복합 경보</b>: 외인/연기금이 <b>동시에 매도 전환</b>이고, AI 점수가 기준 미만일 때<br/>
-                            • <b>단독 급락 경보</b>: AI 점수만 급락 기준 미만일 때
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                col_thr1, col_thr2 = st.columns(2)
-                with col_thr1:
-                    ai_warn_threshold = st.slider(
-                        "복합 경보 AI 기준 (외인·연기금 동반 매도일 때 적용)",
-                        min_value=50,
-                        max_value=80,
-                        value=65,
-                        step=1,
-                        key="admin_ai_warn_threshold",
-                    )
-                with col_thr2:
-                    ai_critical_threshold = st.slider(
-                        "단독 급락 경보 AI 기준 (AI만으로 경보)",
-                        min_value=40,
-                        max_value=70,
-                        value=55,
-                        step=1,
-                        key="admin_ai_critical_threshold",
-                    )
-                st.markdown(
-                    f"""
-                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
-                        <span style="background:rgba(59,130,246,0.16); color:#93C5FD; border:1px solid rgba(59,130,246,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
-                            복합 경보 AI 기준: {int(ai_warn_threshold)}
-                        </span>
-                        <span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
-                            단독 급락 기준: {int(ai_critical_threshold)}
-                        </span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+            saved_thr = load_admin_risk_thresholds()
+            if "admin_ai_warn_threshold" not in st.session_state:
+                st.session_state["admin_ai_warn_threshold"] = int(saved_thr["ai_warn_threshold"])
+            if "admin_ai_critical_threshold" not in st.session_state:
+                st.session_state["admin_ai_critical_threshold"] = int(saved_thr["ai_critical_threshold"])
+            ai_warn_threshold = int(st.session_state.get("admin_ai_warn_threshold", saved_thr["ai_warn_threshold"]))
+            ai_critical_threshold = int(st.session_state.get("admin_ai_critical_threshold", saved_thr["ai_critical_threshold"]))
 
             portfolio_save_file = "my_portfolio.csv"
             base_cols = ["종목명", "수량", "매수가"]
@@ -1953,7 +2410,7 @@ else:
             stock_options = sorted(df_summary["종목명"].dropna().astype(str).unique().tolist())
 
             if df_port_saved.empty:
-                st.info("저장된 포트폴리오가 없습니다. 상단 에디터에서 종목을 추가하세요.")
+                render_empty_state("포트폴리오 비어 있음", "상단 에디터에서 보유 종목을 추가해 주세요.")
             else:
                 join_cols = ["종목명", "현재가", "등락률", "AI수급점수", "신호등급", "신호신뢰도", "외인강도(%)", "연기금강도(%)"]
                 df_joined = pd.merge(
@@ -1981,93 +2438,127 @@ else:
                 pnl_color = "#36C06A" if total_profit_amount >= 0 else "#E04B4B"
                 profit_amount_color = "#36C06A" if total_profit_amount >= 0 else "#E04B4B"
                 st.markdown("#### 포트폴리오 손익 요약")
-                s1, s2 = st.columns(2)
-                s3, s4 = st.columns(2)
-                with s1:
-                    st.markdown(
-                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
-                        <div style="color:#9CA3AF; font-size:0.76em;">총 매수금액</div>
-                        <div style="color:#F5F7FA; font-weight:800; margin-top:3px;">{total_buy_amount:,.0f}원</div>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-                with s2:
-                    st.markdown(
-                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
-                        <div style="color:#9CA3AF; font-size:0.76em;">현재 평가금액</div>
-                        <div style="color:#F5F7FA; font-weight:800; margin-top:3px;">{total_eval_amount:,.0f}원</div>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-                with s3:
-                    st.markdown(
-                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
-                        <div style="color:#9CA3AF; font-size:0.76em;">총 손익 금액</div>
-                        <div style="color:{profit_amount_color}; font-weight:900; margin-top:3px;">{total_profit_amount:+,.0f}원</div>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-                with s4:
-                    st.markdown(
-                        f"""<div style="background:#1b2233; border:1px solid #2B364C; border-radius:10px; padding:9px 10px; margin-bottom:8px;">
-                        <div style="color:#9CA3AF; font-size:0.76em;">현재 수익률</div>
-                        <div style="color:{pnl_color}; font-weight:900; margin-top:3px;">{total_profit_pct:+.2f}%</div>
-                        </div>""",
-                        unsafe_allow_html=True,
-                    )
-
-                risk_rows = df_joined[df_joined["수급이탈위험"]].copy()
-
                 st.markdown(
-                    """
-                    <div style="background:linear-gradient(135deg, #121827, #0f1523); border:1px solid #2A344A; border-radius:14px; padding:10px 14px; margin:10px 0 10px 0;">
-                        <div style="color:#E5E7EB; font-size:1.0em; font-weight:800;">내 포트폴리오 현황</div>
-                        <div style="color:#9CA3AF; font-size:0.84em; margin-top:2px;">리스크 종목은 카드 배경/테두리가 붉게 강조됩니다.</div>
+                    f"""
+                    <div class="pf-kpi-grid">
+                        <div class="pf-kpi-card">
+                            <div class="pf-kpi-label">총 매수금액</div>
+                            <div class="pf-kpi-value">{total_buy_amount:,.0f}원</div>
+                        </div>
+                        <div class="pf-kpi-card">
+                            <div class="pf-kpi-label">현재 평가금액</div>
+                            <div class="pf-kpi-value">{total_eval_amount:,.0f}원</div>
+                        </div>
+                        <div class="pf-kpi-card">
+                            <div class="pf-kpi-label">총 수익 금액</div>
+                            <div class="pf-kpi-value" style="color:{profit_amount_color};">{total_profit_amount:+,.0f}원</div>
+                        </div>
+                        <div class="pf-kpi-card">
+                            <div class="pf-kpi-label">현재 수익률</div>
+                            <div class="pf-kpi-value" style="color:{pnl_color};">{total_profit_pct:+.2f}%</div>
+                        </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
-                card_cols = st.columns(2)
-                for i, (_, row) in enumerate(df_joined.iterrows()):
-                    with card_cols[i % 2]:
-                        cur = float(pd.to_numeric(row.get("현재가"), errors="coerce") or 0.0)
-                        chg = float(pd.to_numeric(row.get("등락률"), errors="coerce") or 0.0)
-                        qty = float(pd.to_numeric(row.get("수량"), errors="coerce") or 0.0)
-                        buy = float(pd.to_numeric(row.get("매수가"), errors="coerce") or 0.0)
-                        ai = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
-                        fs = float(pd.to_numeric(row.get("외인강도(%)"), errors="coerce") or 0.0)
-                        ps = float(pd.to_numeric(row.get("연기금강도(%)"), errors="coerce") or 0.0)
-                        sig = float(pd.to_numeric(row.get("신호신뢰도"), errors="coerce") or 0.0)
-                        pnl = ((cur - buy) / buy * 100.0) if buy > 0 and cur > 0 else None
-                        eval_amt = qty * cur
-                        weight_pct = (eval_amt / total_eval_amount * 100.0) if total_eval_amount > 0 else 0.0
-                        risk_flag = bool(row.get("수급이탈위험", False))
-                        border = "#E04B4B" if risk_flag else "#2C3242"
-                        bg = "rgba(224,75,75,0.14)" if risk_flag else "linear-gradient(135deg, #171A24, #131A28)"
-                        pnl_txt = f"{pnl:+.2f}%" if pnl is not None else "-"
-                        pnl_color = "#36C06A" if pnl is not None and pnl >= 0 else "#E04B4B"
-                        chg_color = "#36C06A" if chg >= 0 else "#E04B4B"
-                        risk_badge = (
-                            '<span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">⚠ 비중 축소 권고</span>'
-                            if risk_flag
-                            else '<span style="background:rgba(54,192,106,0.16); color:#86EFAC; border:1px solid rgba(54,192,106,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">안정</span>'
-                        )
 
-                        st.markdown(
-                            f"""
-                            <div style="background:{bg}; border:1px solid {border}; border-radius:16px; padding:12px 14px; margin-bottom:10px; box-shadow:0 8px 22px rgba(0,0,0,0.28);">
-                                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
-                                    <div style="color:#F5F7FA; font-size:1.15em; font-weight:800;">{row.get('종목명', '-')}</div>
-                                    <div style="color:{pnl_color}; font-size:1.25em; font-weight:900;">{pnl_txt}</div>
+                risk_rows = df_joined[df_joined["수급이탈위험"]].copy()
+
+                st.markdown(
+                    f"""
+                    <div style="background:linear-gradient(135deg, #121827, #0f1523); border:1px solid #2A344A; border-radius:14px; padding:10px 14px; margin:10px 0 10px 0;">
+                        <div style="color:#E5E7EB; font-size:1.0em; font-weight:800;">내 포트폴리오 현황</div>
+                        <div style="color:#9CA3AF; font-size:0.84em; margin-top:2px;">종목별 매수금액/수익금액을 테이블과 카드에서 바로 확인하세요.</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                df_view = df_joined.copy()
+                df_view["매수금액"] = (pd.to_numeric(df_view["수량"], errors="coerce").fillna(0.0) * pd.to_numeric(df_view["매수가"], errors="coerce").fillna(0.0))
+                df_view["평가금액"] = (pd.to_numeric(df_view["수량"], errors="coerce").fillna(0.0) * pd.to_numeric(df_view["현재가"], errors="coerce").fillna(0.0))
+                df_view["수익금액"] = df_view["평가금액"] - df_view["매수금액"]
+                df_view["비중(%)"] = (df_view["평가금액"] / total_eval_amount * 100.0) if total_eval_amount > 0 else 0.0
+                df_view["수익률(%)"] = (
+                    (pd.to_numeric(df_view["현재가"], errors="coerce").fillna(0.0) - pd.to_numeric(df_view["매수가"], errors="coerce").fillna(0.0))
+                    / pd.to_numeric(df_view["매수가"], errors="coerce").replace(0, pd.NA)
+                ) * 100.0
+                df_view["상태"] = df_view["수급이탈위험"].apply(lambda x: "⚠ 경보" if bool(x) else "정상")
+                display_cols = [
+                    "종목명", "상태", "비중(%)", "매수금액", "수익금액", "수익률(%)", "AI수급점수", "신호등급", "신호신뢰도",
+                    "외인강도(%)", "연기금강도(%)", "현재가", "수량", "매수가"
+                ]
+                df_display_port = df_view[display_cols].copy()
+
+                def _row_style(row):
+                    return ["background-color: rgba(224,75,75,0.12);" if row.get("상태") == "⚠ 경보" else "" for _ in row]
+
+                st.dataframe(
+                    df_display_port.style.apply(_row_style, axis=1).format({
+                        "비중(%)": "{:.1f}%",
+                        "매수금액": "{:,.0f}원",
+                        "수익금액": "{:+,.0f}원",
+                        "수익률(%)": "{:+.2f}%",
+                        "AI수급점수": "{:.2f}",
+                        "신호신뢰도": "{:.1f}",
+                        "외인강도(%)": "{:+.1f}%",
+                        "연기금강도(%)": "{:+.1f}%",
+                        "현재가": "{:,.0f}",
+                        "수량": "{:,.0f}",
+                        "매수가": "{:,.0f}"
+                    }),
+                    width='stretch',
+                    hide_index=True
+                )
+
+                with st.expander("카드형 상세 보기", expanded=False):
+                    card_cols = st.columns(2)
+                    for i, (_, row) in enumerate(df_joined.iterrows()):
+                        with card_cols[i % 2]:
+                            cur = float(pd.to_numeric(row.get("현재가"), errors="coerce") or 0.0)
+                            chg = float(pd.to_numeric(row.get("등락률"), errors="coerce") or 0.0)
+                            qty = float(pd.to_numeric(row.get("수량"), errors="coerce") or 0.0)
+                            buy = float(pd.to_numeric(row.get("매수가"), errors="coerce") or 0.0)
+                            ai = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
+                            fs = float(pd.to_numeric(row.get("외인강도(%)"), errors="coerce") or 0.0)
+                            ps = float(pd.to_numeric(row.get("연기금강도(%)"), errors="coerce") or 0.0)
+                            sig = float(pd.to_numeric(row.get("신호신뢰도"), errors="coerce") or 0.0)
+                            pnl = ((cur - buy) / buy * 100.0) if buy > 0 and cur > 0 else None
+                            buy_amt = qty * buy
+                            eval_amt = qty * cur
+                            profit_amt = eval_amt - buy_amt
+                            weight_pct = (eval_amt / total_eval_amount * 100.0) if total_eval_amount > 0 else 0.0
+                            risk_flag = bool(row.get("수급이탈위험", False))
+                            border = "#E04B4B" if risk_flag else "#2C3242"
+                            bg = "rgba(224,75,75,0.14)" if risk_flag else "linear-gradient(135deg, #171A24, #121A2C)"
+                            pnl_txt = f"{pnl:+.2f}%" if pnl is not None else "-"
+                            pnl_color = "#36C06A" if pnl is not None and pnl >= 0 else "#E04B4B"
+                            amt_color = "#36C06A" if profit_amt >= 0 else "#E04B4B"
+                            chg_color = "#36C06A" if chg >= 0 else "#E04B4B"
+                            risk_badge = (
+                                '<span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">⚠ 비중 축소 권고</span>'
+                                if risk_flag
+                                else '<span style="background:rgba(54,192,106,0.16); color:#86EFAC; border:1px solid rgba(54,192,106,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">안정</span>'
+                            )
+                            st.markdown(
+                                f"""
+                                <div class="pf-animated-card" style="background:{bg}; border:1px solid {border}; border-radius:16px; padding:12px 14px; margin-bottom:10px; box-shadow:0 10px 28px rgba(0,0,0,0.24);">
+                                    <div class="pf-animated-glow"></div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+                                        <div style="color:#F5F7FA; font-size:1.15em; font-weight:800;">{row.get('종목명', '-')}</div>
+                                        <div style="color:{pnl_color}; font-size:1.25em; font-weight:900;">{pnl_txt}</div>
+                                    </div>
+                                    <div style="color:#9CA3AF; margin-top:5px; font-size:0.85em;">비중 {weight_pct:.1f}% | 등락률 <span style="color:{chg_color}; font-weight:700;">{chg:+.2f}%</span></div>
+                                    <div style="color:#D1D5DB; margin-top:6px; font-size:0.87em;">현재가 {cur:,.0f}원 · 보유 {qty:,.0f}주 · 매수가 {buy:,.0f}원</div>
+                                    <div style="display:flex; gap:7px; flex-wrap:wrap; margin-top:8px;">
+                                        <span style="background:#182236; color:#D1D5DB; border:1px solid #2D3A55; border-radius:999px; padding:3px 9px; font-size:0.79em;">매수금액 {buy_amt:,.0f}원</span>
+                                        <span style="background:#182236; color:{amt_color}; border:1px solid #2D3A55; border-radius:999px; padding:3px 9px; font-size:0.79em;">수익금액 {profit_amt:+,.0f}원</span>
+                                    </div>
+                                    <div style="margin-top:8px;">{risk_badge}</div>
+                                    <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">🏆 AI {ai:.1f} | 신호 {row.get('신호등급','-')} ({sig:.1f}) | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
                                 </div>
-                                <div style="color:#9CA3AF; margin-top:5px; font-size:0.85em;">비중 {weight_pct:.1f}% | 등락률 <span style="color:{chg_color}; font-weight:700;">{chg:+.2f}%</span></div>
-                                <div style="color:#D1D5DB; margin-top:6px; font-size:0.87em;">현재가 {cur:,.0f}원 · 보유 {qty:,.0f}주 · 매수가 {buy:,.0f}원</div>
-                                <div style="margin-top:8px;">{risk_badge}</div>
-                                <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">🏆 AI {ai:.1f} | 신호 {row.get('신호등급','-')} ({sig:.1f}) | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
-                            </div>
-                            """,
-                            unsafe_allow_html=True,
-                        )
+                                """,
+                                unsafe_allow_html=True,
+                            )
 
             st.markdown("---")
             with st.expander("포트폴리오 편집 및 저장", expanded=False):
@@ -2119,3 +2610,91 @@ else:
                     save_df.to_csv(portfolio_save_file, index=False, encoding="utf-8-sig")
                     st.success("포트폴리오를 저장했습니다. 상단 현황에 즉시 반영됩니다.")
                     st.rerun()
+
+            st.markdown("---")
+            render_section_header("관리 설정", "내 포트폴리오 확인 이후에 사용하는 관리자 전용 설정입니다.")
+
+            with st.expander("리스크 경보 임계값 설정", expanded=False):
+                st.markdown(
+                    """
+                    <div style="background:linear-gradient(135deg, #141A26, #101624); border:1px solid #2A344A; border-radius:12px; padding:12px 14px; margin-bottom:10px;">
+                        <div style="color:#E5E7EB; font-weight:700; margin-bottom:6px;">경보 규칙 안내</div>
+                        <div style="color:#AAB2C5; font-size:0.92em; line-height:1.55;">
+                            • <b>복합 경보</b>: 외인/연기금이 <b>동시에 매도 전환</b>이고, AI 점수가 기준 미만일 때<br/>
+                            • <b>단독 급락 경보</b>: AI 점수만 급락 기준 미만일 때
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                col_thr1, col_thr2 = st.columns(2)
+                with col_thr1:
+                    ai_warn_threshold_new = st.slider(
+                        "복합 경보 AI 기준 (외인·연기금 동반 매도일 때 적용)",
+                        min_value=0,
+                        max_value=100,
+                        value=int(st.session_state.get("admin_ai_warn_threshold", 65)),
+                        step=1,
+                        key="admin_ai_warn_threshold",
+                    )
+                with col_thr2:
+                    ai_critical_threshold_new = st.slider(
+                        "단독 급락 경보 AI 기준 (AI만으로 경보)",
+                        min_value=0,
+                        max_value=100,
+                        value=int(st.session_state.get("admin_ai_critical_threshold", 55)),
+                        step=1,
+                        key="admin_ai_critical_threshold",
+                    )
+                if (
+                    int(ai_warn_threshold_new) != int(saved_thr["ai_warn_threshold"])
+                    or int(ai_critical_threshold_new) != int(saved_thr["ai_critical_threshold"])
+                ):
+                    save_admin_risk_thresholds(ai_warn_threshold_new, ai_critical_threshold_new)
+                st.markdown(
+                    f"""
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+                        <span style="background:rgba(59,130,246,0.16); color:#93C5FD; border:1px solid rgba(59,130,246,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
+                            복합 경보 AI 기준: {int(ai_warn_threshold_new)}
+                        </span>
+                        <span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
+                            단독 급락 기준: {int(ai_critical_threshold_new)}
+                        </span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            with st.expander("테마 추천 승인 (Top40 자동 추천)", expanded=False):
+                df_sugg = load_theme_suggestions_safe()
+                if df_sugg.empty:
+                    st.info("아직 추천 테마가 없습니다. scraper 배치 실행 후 확인하세요.")
+                else:
+                    df_sugg = df_sugg[df_sugg["승인상태"].astype(str).str.lower() != "approved"].copy()
+                    if df_sugg.empty:
+                        st.success("승인 대기 중인 추천 테마가 없습니다.")
+                    else:
+                        df_sugg["선택"] = False
+                        df_sugg["신뢰도"] = pd.to_numeric(df_sugg["신뢰도"], errors="coerce").fillna(0.0)
+                        df_sugg = df_sugg.sort_values(["신뢰도", "종목명"], ascending=[False, True])
+                        edited_sugg = st.data_editor(
+                            df_sugg,
+                            use_container_width=True,
+                            num_rows="fixed",
+                            key="theme_suggestion_editor",
+                            column_config={
+                                "선택": st.column_config.CheckboxColumn("승인"),
+                                "추천테마": st.column_config.TextColumn("추천테마"),
+                                "신뢰도": st.column_config.NumberColumn("신뢰도", format="%.2f"),
+                                "근거": st.column_config.TextColumn("근거"),
+                            },
+                        )
+                        st.caption("승인할 행을 체크하고 [승인 테마 승격]을 누르면 theme_map.csv로 반영됩니다.")
+                        if st.button("승인 테마 승격", use_container_width=True, type="primary", key="promote_theme_btn"):
+                            picked = edited_sugg[edited_sugg["선택"] == True].copy()
+                            promoted = promote_themes_to_map(picked)
+                            if promoted > 0:
+                                st.success(f"{promoted}개 테마를 theme_map.csv로 승격했습니다.")
+                                st.rerun()
+                            else:
+                                st.warning("승격할 항목이 없습니다. 체크 또는 추천테마 값을 확인하세요.")

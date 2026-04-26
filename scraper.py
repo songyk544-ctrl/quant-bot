@@ -1315,7 +1315,8 @@ def run_scraper(manual_full_parse=False):
     while ref_date.weekday() >= 5:
         ref_date = ref_date - timedelta(days=1)
     target_kis_date = ref_date.strftime("%Y%m%d")
-    today_date = now_kst.strftime("%Y-%m-%d")
+    # 성과/트렌드 기록일은 실제 거래 기준일(ref_date)로 고정해 주말 실행 시 날짜 왜곡을 방지
+    today_date = ref_date.strftime("%Y-%m-%d")
 
     already_fetched_kis = False
     if os.path.exists("history.csv"):
