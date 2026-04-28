@@ -14,6 +14,7 @@ from pathlib import Path
 import tomllib
 import argparse
 import io
+from db_utils import read_table, write_table, migrate_csv_to_sqlite_once, csv_exists, resolve_csv_path
 from news_utils import (
     normalize_text as _normalize_text,
     extract_source as _extract_source,
@@ -111,6 +112,86 @@ def safe_read_csv_with_conflict_guard(path, **kwargs):
     except Exception:
         return pd.DataFrame()
 
+
+def _table_name_for(csv_path):
+    return Path(csv_path).stem
+
+
+def read_table_prefer_db(csv_path, **kwargs):
+    return read_table(
+        _table_name_for(csv_path),
+        csv_fallback=csv_path,
+        read_csv_kwargs=kwargs,
+    )
+
+
+def write_table_dual(df, csv_path, **kwargs):
+    write_table(
+        _table_name_for(csv_path),
+        df,
+        csv_path=csv_path,
+        csv_kwargs=kwargs,
+    )
+
+
+def _bytes_to_mb(n_bytes):
+    return float(n_bytes) / (1024.0 * 1024.0)
+
+
+def emit_weekly_storage_report():
+    """
+    주간 1회 저장소 용량 로그를 출력하고 data/storage_report.csv에 누적합니다.
+    """
+    report_csv = "storage_report.csv"
+    report_path = resolve_csv_path(report_csv)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        existing = read_table_prefer_db(report_csv, on_bad_lines="skip")
+    except Exception:
+        existing = pd.DataFrame()
+
+    should_log = True
+    if not existing.empty and "날짜" in existing.columns:
+        try:
+            last_date = pd.to_datetime(existing["날짜"], errors="coerce").dropna().max()
+            if pd.notna(last_date):
+                should_log = (datetime.now() - last_date.to_pydatetime()).days >= 7
+        except Exception:
+            should_log = True
+
+    db_size = os.path.getsize("quantbot.db") if os.path.exists("quantbot.db") else 0
+    data_dir = Path("data")
+    csv_files = list(data_dir.glob("*.csv")) if data_dir.exists() else []
+    csv_size = sum(p.stat().st_size for p in csv_files if p.is_file())
+    total_size = db_size + csv_size
+
+    # 콘솔에는 매 실행 출력(운영 가시성)
+    print(
+        f"[STORAGE] DB={_bytes_to_mb(db_size):.2f}MB | "
+        f"CSV={_bytes_to_mb(csv_size):.2f}MB ({len(csv_files)} files) | "
+        f"TOTAL={_bytes_to_mb(total_size):.2f}MB"
+    )
+
+    if not should_log:
+        return
+
+    row = pd.DataFrame([{
+        "날짜": today,
+        "db_mb": round(_bytes_to_mb(db_size), 3),
+        "csv_mb": round(_bytes_to_mb(csv_size), 3),
+        "csv_files": int(len(csv_files)),
+        "total_mb": round(_bytes_to_mb(total_size), 3),
+    }])
+
+    if existing.empty:
+        out = row
+    else:
+        out = pd.concat([existing, row], ignore_index=True)
+        out = out.drop_duplicates(subset=["날짜"], keep="last")
+    write_table_dual(out, report_csv, index=False, encoding="utf-8-sig")
+    print(f"[STORAGE] Weekly report updated -> {report_path}")
+
 def resolve_dart_api_key():
     """
     DART Open API 키 로딩 (resolve_gemini_api_key와 동일 우선순위):
@@ -148,7 +229,7 @@ def load_theme_map():
     global _THEME_MAP_CACHE
     if _THEME_MAP_CACHE is not None:
         return _THEME_MAP_CACHE
-    path = Path("theme_map.csv")
+    path = Path(resolve_csv_path("theme_map.csv"))
     code_map, name_map = {}, {}
     if not path.exists():
         _THEME_MAP_CACHE = (code_map, name_map)
@@ -257,7 +338,7 @@ def generate_theme_suggestions(df_final, today_date, top_n=40):
     if not rows:
         return
 
-    path = Path("theme_suggestions.csv")
+    path = Path(resolve_csv_path("theme_suggestions.csv"))
     new_df = pd.DataFrame(rows)
     if path.exists():
         old_df = safe_read_csv_with_conflict_guard(path, dtype=str)
@@ -274,7 +355,7 @@ def generate_theme_suggestions(df_final, today_date, top_n=40):
             out_df = merged
     else:
         out_df = new_df
-    out_df.to_csv(path, index=False, encoding="utf-8-sig")
+    write_table_dual(out_df, str(path), index=False, encoding="utf-8-sig")
 
 _DART_STOCK_TO_CORP = None
 
@@ -283,12 +364,12 @@ def load_dart_stock_to_corp_map():
     global _DART_STOCK_TO_CORP
     if _DART_STOCK_TO_CORP is not None:
         return _DART_STOCK_TO_CORP
-    path = Path("dart_map.csv")
+    path = Path(resolve_csv_path("dart_map.csv"))
     if not path.exists():
         _DART_STOCK_TO_CORP = {}
         return _DART_STOCK_TO_CORP
     try:
-        df = pd.read_csv(path, dtype=str)
+        df = read_table_prefer_db(str(path), dtype=str)
         m = {}
         for _, row in df.iterrows():
             sc = str(row.get("stock_code", "") or "").strip()
@@ -604,7 +685,7 @@ def apply_score_stability(df_final, today_date, max_daily_delta=8.0, smooth_alph
     """
     if df_final.empty or "AI수급점수" not in df_final.columns or "종목명" not in df_final.columns:
         return df_final
-    if not os.path.exists("score_trend.csv"):
+    if not csv_exists("score_trend.csv"):
         return df_final
     try:
         df_tr = load_score_trend_safe()
@@ -777,12 +858,13 @@ def apply_theme_contribution_guard(df_final, today_date, current_vix=20.0, top_n
     trend_path = "theme_quality_trend.csv"
     try:
         if os.path.exists(trend_path):
-            tr = pd.read_csv(trend_path, on_bad_lines="skip")
+            tr = read_table_prefer_db(trend_path, on_bad_lines="skip")
         else:
             tr = pd.DataFrame(columns=list(metric.keys()))
         if not tr.empty and "날짜" in tr.columns:
             tr = tr[tr["날짜"].astype(str) != str(today_date)]
-        pd.concat([tr, pd.DataFrame([metric])], ignore_index=True).to_csv(trend_path, index=False, encoding="utf-8-sig")
+        tr_concat = pd.concat([tr, pd.DataFrame([metric])], ignore_index=True)
+        write_table_dual(tr_concat, trend_path, index=False, encoding="utf-8-sig")
     except Exception as e:
         print(f"[WARN] theme_quality_trend.csv 저장 실패: {e}")
 
@@ -885,11 +967,10 @@ def _request_html(url, headers, timeout=4, retries=2):
 def load_score_trend_safe():
     """머지 충돌/깨진 score_trend.csv를 방어적으로 로드."""
     base_cols = ['종목명', '종목코드', 'AI수급점수', '순위', '날짜']
-    if not os.path.exists("score_trend.csv"):
+    if not csv_exists("score_trend.csv"):
         return pd.DataFrame(columns=base_cols)
-    try:
-        df = pd.read_csv("score_trend.csv", on_bad_lines="skip")
-    except Exception:
+    df = read_table_prefer_db("score_trend.csv", on_bad_lines="skip")
+    if df is None:
         return pd.DataFrame(columns=base_cols)
     if df.empty:
         return pd.DataFrame(columns=base_cols)
@@ -1296,6 +1377,17 @@ def get_live_macro_and_news():
 
 def run_scraper(manual_full_parse=False):
     print("🚀 수집기 봇 가동 시작 (V40.4 기관 수급 눌림목 최적화 & 백테스트 방어)...")
+    migrate_csv_to_sqlite_once([
+        ("data", "data.csv"),
+        ("history", "history.csv"),
+        ("score_trend", "score_trend.csv"),
+        ("performance_trend", "performance_trend.csv"),
+        ("theme_suggestions", "theme_suggestions.csv"),
+        ("theme_quality_trend", "theme_quality_trend.csv"),
+        ("portfolio", "portfolio.csv"),
+        ("dart_map", "dart_map.csv"),
+        ("theme_map", "theme_map.csv"),
+    ])
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
     
@@ -1319,9 +1411,9 @@ def run_scraper(manual_full_parse=False):
     today_date = ref_date.strftime("%Y-%m-%d")
 
     already_fetched_kis = False
-    if os.path.exists("history.csv"):
+    if csv_exists("history.csv"):
         try:
-            df_hist_check = pd.read_csv("history.csv")
+            df_hist_check = read_table_prefer_db("history.csv")
             if not df_hist_check.empty and '일자' in df_hist_check.columns:
                 latest_kis_date = str(df_hist_check['일자'].max()).replace("-", "")
                 if latest_kis_date == target_kis_date:
@@ -1330,8 +1422,8 @@ def run_scraper(manual_full_parse=False):
             print(f"[WARN] history.csv 점검 실패: {e}")
 
     force_full_parse = False
-    if os.path.exists("data.csv"):
-        df_check = pd.read_csv("data.csv")
+    if csv_exists("data.csv"):
+        df_check = read_table_prefer_db("data.csv")
         if '추세상승' not in df_check.columns:
             force_full_parse = True
             print("⚠️ 기존 데이터에 [추세상승] 정보가 없습니다. 새로운 로직 적용을 위해 1회 한투 API를 강제 호출합니다.")
@@ -1344,12 +1436,12 @@ def run_scraper(manual_full_parse=False):
     # ==========================================
     # 1. 슈퍼 캐시 모드 (테스트 모드)
     # ==========================================
-    if already_fetched_kis and os.path.exists("data.csv") and not force_full_parse:
+    if already_fetched_kis and csv_exists("data.csv") and not force_full_parse:
         is_test_mode = True # KIS API를 스킵하는 테스트 워크플로우임을 확정
         print(f"⚡ [슈퍼 캐시 모드] 기준일({target_kis_date}) 수급 데이터 존재 확인. KIS API를 스킵합니다.")
         
         df_target = get_target_stock_list()
-        df_final = pd.read_csv("data.csv")
+        df_final = read_table_prefer_db("data.csv")
         
         updated_rows = []
         for idx, row in df_final.iterrows():
@@ -1560,7 +1652,7 @@ def run_scraper(manual_full_parse=False):
         
         df_history = pd.DataFrame(history_list)
         if not df_history.empty:
-            df_history.to_csv("history.csv", index=False, encoding='utf-8-sig')
+            write_table_dual(df_history, "history.csv", index=False, encoding='utf-8-sig')
         else:
             # 빈 수집 결과로 기존 history.csv를 덮어써서 파일이 깨지는 상황 방지
             print("⚠️ history_list가 비어 있어 history.csv 갱신을 건너뜁니다. (기존 파일 유지)")
@@ -1582,7 +1674,7 @@ def run_scraper(manual_full_parse=False):
     # 신호 신뢰도 계층화(VIX 레짐별 임계치)
     df_final = add_signal_confidence(df_final, current_vix=current_vix)
     generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
-    df_final.to_csv("data.csv", index=False, encoding='utf-8-sig')
+    write_table_dual(df_final, "data.csv", index=False, encoding='utf-8-sig')
 
     df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
@@ -1592,9 +1684,10 @@ def run_scraper(manual_full_parse=False):
     if os.path.exists(trend_file):
         df_trend_old = load_score_trend_safe()
         df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
-        pd.concat([df_trend_old, df_trend_new], ignore_index=True).to_csv(trend_file, index=False, encoding='utf-8-sig')
+        trend_concat = pd.concat([df_trend_old, df_trend_new], ignore_index=True)
+        write_table_dual(trend_concat, trend_file, index=False, encoding='utf-8-sig')
     else:
-        df_trend_new.to_csv(trend_file, index=False, encoding='utf-8-sig')
+        write_table_dual(df_trend_new, trend_file, index=False, encoding='utf-8-sig')
 
     # ==========================================
     # 백테스트 정산 로직
@@ -1652,7 +1745,7 @@ def run_scraper(manual_full_parse=False):
                 perf_concat['리스크상태'] = perf_concat['최대낙폭(%)'].apply(
                     lambda x: "High" if x <= -8 else ("Medium" if x <= -4 else "Low")
                 )
-                perf_concat.to_csv(perf_file, index=False, encoding='utf-8-sig')
+                write_table_dual(perf_concat, perf_file, index=False, encoding='utf-8-sig')
 
             if is_eod_updated:
                 eval_msg += "📝 *[전일 추천 Top 3 최종 성적표]*\n" + "\n".join(eval_details) + f"\n➡️ *오늘 포트폴리오 최종 수익률: {daily_ret:+.2f}%*\n\n"
@@ -1681,9 +1774,9 @@ def run_scraper(manual_full_parse=False):
             top3_str = ", ".join(top3_names)
             MY_STREAMLIT_URL = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
             top_N_names = df_final.head(20)['종목명'].tolist()
-            if os.path.exists("history.csv"):
+            if csv_exists("history.csv"):
                 try:
-                    df_history = pd.read_csv("history.csv")
+                    df_history = read_table_prefer_db("history.csv")
                     required_cols = {"일자", "종목명", "외인", "연기금"}
                     if not df_history.empty and required_cols.issubset(df_history.columns):
                         latest_date = df_history['일자'].max()
@@ -1805,6 +1898,9 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 """
         with open("report.md", "w", encoding="utf-8") as f:
             f.write(fallback_report)
+
+    # 주간 1회 용량 리포트 누적 + 매 실행 콘솔 요약
+    emit_weekly_storage_report()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="QEdge scraper runner")

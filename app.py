@@ -13,8 +13,10 @@ import plotly.graph_objects as go
 import urllib.parse
 import re
 import json
+import base64
 from textwrap import dedent
 from email.utils import parsedate_to_datetime
+from db_utils import read_table, write_table, migrate_csv_to_sqlite_once, table_exists, csv_exists, resolve_csv_path, DATA_DIR
 from news_utils import (
     normalize_text as _normalize_text,
     extract_source as _extract_source,
@@ -68,8 +70,25 @@ ui_fx_mode = st.sidebar.selectbox(
     help="프로: 절제된 애니메이션 / 시그니처: 강조 연출",
 )
 
-st.title("QEdge")
+db_ready = table_exists("data")
+csv_ready = csv_exists("data.csv")
+source_badge = "S" if db_ready else ("C" if csv_ready else "N")
+st.markdown(
+    f"""
+    <div style="display:flex; align-items:flex-end; gap:10px; margin-bottom:4px;">
+        <h1 style="margin:0; color:#F8FAFC;">QEdge</h1>
+        <span style="background:#172033; color:#AFC2E8; border:1px solid #2E3A55; border-radius:999px; padding:2px 8px; font-size:0.74em; margin-bottom:6px;">
+            {source_badge}
+        </span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 st.caption("수급·뉴스·매크로를 한 화면에서 보는 퀀트 대시보드")
+st.markdown(
+    "<div style='margin-bottom:4px;'></div>",
+    unsafe_allow_html=True,
+)
 
 # --- AI API 설정 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
@@ -420,20 +439,39 @@ st.markdown(
 )
 
 def load_data():
-    df_summary = pd.read_csv("data.csv") if os.path.exists("data.csv") else pd.DataFrame()
-    df_hist = pd.read_csv("history.csv") if os.path.exists("history.csv") else pd.DataFrame()
+    df_summary = read_table_prefer_db("data.csv")
+    df_hist = read_table_prefer_db("history.csv")
     return df_summary, df_hist
+
+
+def _table_name_for(csv_path):
+    base, _ = os.path.splitext(csv_path)
+    return os.path.basename(base)
+
+
+def read_table_prefer_db(csv_path, **kwargs):
+    return read_table(
+        _table_name_for(csv_path),
+        csv_fallback=csv_path,
+        read_csv_kwargs=kwargs,
+    )
+
+
+def write_table_dual(df, csv_path, **kwargs):
+    write_table(
+        _table_name_for(csv_path),
+        df,
+        csv_path=csv_path,
+        csv_kwargs=kwargs,
+    )
 
 def load_score_trend_safe():
     """머지 충돌/깨진 CSV를 방어적으로 읽어 앱 크래시를 막습니다."""
     base_cols = ['날짜', '종목명', '순위']
-    if not os.path.exists("score_trend.csv"):
+    if not csv_exists("score_trend.csv") and not table_exists("score_trend"):
         return pd.DataFrame(columns=base_cols)
-    try:
-        df = pd.read_csv("score_trend.csv", on_bad_lines="skip")
-    except Exception:
-        return pd.DataFrame(columns=base_cols)
-    if df.empty:
+    df = read_table_prefer_db("score_trend.csv", on_bad_lines="skip")
+    if df is None or df.empty:
         return pd.DataFrame(columns=base_cols)
 
     # BOM/공백 정리
@@ -459,13 +497,10 @@ def load_score_trend_safe():
 def load_performance_trend_safe():
     """머지 충돌/깨진 performance_trend.csv를 방어적으로 읽습니다."""
     base_cols = ['날짜', '일간수익률', '누적수익률']
-    if not os.path.exists("performance_trend.csv"):
+    if not csv_exists("performance_trend.csv") and not table_exists("performance_trend"):
         return pd.DataFrame(columns=base_cols)
-    try:
-        df = pd.read_csv("performance_trend.csv", on_bad_lines="skip")
-    except Exception:
-        return pd.DataFrame(columns=base_cols)
-    if df.empty:
+    df = read_table_prefer_db("performance_trend.csv", on_bad_lines="skip")
+    if df is None or df.empty:
         return pd.DataFrame(columns=base_cols)
 
     df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
@@ -485,13 +520,10 @@ def load_performance_trend_safe():
 
 def load_theme_suggestions_safe():
     base_cols = ["날짜", "종목코드", "종목명", "현재섹터", "추천테마", "신뢰도", "근거", "승인상태"]
-    if not os.path.exists("theme_suggestions.csv"):
+    if not csv_exists("theme_suggestions.csv") and not table_exists("theme_suggestions"):
         return pd.DataFrame(columns=base_cols)
-    try:
-        df = pd.read_csv("theme_suggestions.csv", dtype=str, on_bad_lines="skip")
-    except Exception:
-        return pd.DataFrame(columns=base_cols)
-    if df.empty:
+    df = read_table_prefer_db("theme_suggestions.csv", dtype=str, on_bad_lines="skip")
+    if df is None or df.empty:
         return pd.DataFrame(columns=base_cols)
     df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
     for c in base_cols:
@@ -506,7 +538,7 @@ def promote_themes_to_map(approved_df):
     """
     if approved_df.empty:
         return 0
-    map_path = "theme_map.csv"
+    map_path = resolve_csv_path("theme_map.csv")
     if os.path.exists(map_path):
         try:
             df_map = pd.read_csv(map_path, dtype=str)
@@ -540,39 +572,181 @@ def promote_themes_to_map(approved_df):
         approved_codes = set(df_new["종목코드"].astype(str).tolist())
         sugg["종목코드"] = sugg["종목코드"].fillna("").astype(str).str.strip().str.zfill(6)
         sugg.loc[sugg["종목코드"].isin(approved_codes), "승인상태"] = "approved"
-        sugg.to_csv("theme_suggestions.csv", index=False, encoding="utf-8-sig")
+        write_table_dual(sugg, "theme_suggestions.csv", index=False, encoding="utf-8-sig")
     return len(df_new)
 
-def load_admin_risk_thresholds():
-    """관리자 리스크 임계값을 파일에서 로드(없으면 기본값)."""
-    defaults = {"ai_warn_threshold": 65, "ai_critical_threshold": 55}
-    path = "admin_ui_settings.json"
+def _github_state_config():
+    repo = str(st.secrets.get("GITHUB_REPO", os.environ.get("GITHUB_REPO", "songyk544-ctrl/quant-bot"))).strip()
+    token = str(st.secrets.get("GITHUB_TOKEN", os.environ.get("GITHUB_TOKEN", ""))).strip()
+    branch = str(st.secrets.get("GITHUB_BRANCH", os.environ.get("GITHUB_BRANCH", "main"))).strip() or "main"
+    return {"repo": repo, "token": token, "branch": branch}
+
+
+def _github_get_json(path, default_obj):
+    cfg = _github_state_config()
+    if not cfg["repo"] or not cfg["token"]:
+        return default_obj
+    url = f"https://api.github.com/repos/{cfg['repo']}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {cfg['token']}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        resp = requests.get(url, headers=headers, params={"ref": cfg["branch"]}, timeout=8)
+        if resp.status_code == 404:
+            return default_obj
+        resp.raise_for_status()
+        data = resp.json()
+        raw = base64.b64decode(data.get("content", "").encode("utf-8")).decode("utf-8")
+        return json.loads(raw)
+    except Exception as e:
+        print(f"[WARN] GitHub state load failed ({path}): {e}")
+        return default_obj
+
+
+def _github_put_json(path, payload_obj, commit_message):
+    cfg = _github_state_config()
+    if not cfg["repo"] or not cfg["token"]:
+        return False
+    url = f"https://api.github.com/repos/{cfg['repo']}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {cfg['token']}",
+        "Accept": "application/vnd.github+json",
+    }
+    try:
+        sha = None
+        get_resp = requests.get(url, headers=headers, params={"ref": cfg["branch"]}, timeout=8)
+        if get_resp.status_code == 200:
+            sha = get_resp.json().get("sha")
+        body = {
+            "message": commit_message,
+            "branch": cfg["branch"],
+            "content": base64.b64encode(
+                json.dumps(payload_obj, ensure_ascii=False, indent=2).encode("utf-8")
+            ).decode("utf-8"),
+        }
+        if sha:
+            body["sha"] = sha
+        put_resp = requests.put(url, headers=headers, json=body, timeout=10)
+        put_resp.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"[WARN] GitHub state save failed ({path}): {e}")
+        return False
+
+
+def _load_local_json(path, default_obj):
     if not os.path.exists(path):
-        return defaults
+        return default_obj
     try:
         with open(path, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        warn = int(obj.get("ai_warn_threshold", defaults["ai_warn_threshold"]))
-        critical = int(obj.get("ai_critical_threshold", defaults["ai_critical_threshold"]))
-        return {
-            "ai_warn_threshold": max(0, min(100, warn)),
-            "ai_critical_threshold": max(0, min(100, critical)),
-        }
+            return json.load(f)
     except Exception:
-        return defaults
+        return default_obj
+
+
+def _save_local_json(path, payload_obj):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload_obj, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        print(f"[WARN] local state save failed ({path}): {e}")
+        return False
+
+
+def _load_user_state():
+    defaults = {
+        "thresholds": {"ai_warn_threshold": 65, "ai_critical_threshold": 55},
+        "portfolio": [],
+    }
+    state = _github_get_json("user_state_admin.json", default_obj=defaults)
+    if not isinstance(state, dict):
+        state = defaults.copy()
+    state.setdefault("thresholds", defaults["thresholds"])
+    state.setdefault("portfolio", defaults["portfolio"])
+    # 로컬 마이그레이션 (원격 미설정/최초 실행 시)
+    if not state.get("portfolio") and os.path.exists("my_portfolio.csv"):
+        try:
+            pf = pd.read_csv("my_portfolio.csv")
+            state["portfolio"] = pf.to_dict("records")
+        except Exception:
+            pass
+    if os.path.exists("admin_ui_settings.json"):
+        local_thr = _load_local_json("admin_ui_settings.json", {})
+        if isinstance(local_thr, dict):
+            state["thresholds"]["ai_warn_threshold"] = int(local_thr.get("ai_warn_threshold", state["thresholds"]["ai_warn_threshold"]))
+            state["thresholds"]["ai_critical_threshold"] = int(local_thr.get("ai_critical_threshold", state["thresholds"]["ai_critical_threshold"]))
+    return state
+
+
+def _save_user_state(state_obj, message):
+    _save_local_json("user_state_admin.json", state_obj)
+    _save_local_json("admin_ui_settings.json", state_obj.get("thresholds", {}))
+    try:
+        pf = pd.DataFrame(state_obj.get("portfolio", []))
+        if pf.empty:
+            pf = pd.DataFrame(columns=["종목명", "수량", "매수가"])
+        pf.to_csv("my_portfolio.csv", index=False, encoding="utf-8-sig")
+    except Exception:
+        pass
+    _github_put_json("user_state_admin.json", state_obj, message)
+
+
+def load_admin_risk_thresholds():
+    """관리자 리스크 임계값을 로드(원격 GitHub state 우선, 로컬 fallback)."""
+    defaults = {"ai_warn_threshold": 65, "ai_critical_threshold": 55}
+    state = _load_user_state()
+    obj = state.get("thresholds", defaults)
+    warn = int(obj.get("ai_warn_threshold", defaults["ai_warn_threshold"]))
+    critical = int(obj.get("ai_critical_threshold", defaults["ai_critical_threshold"]))
+    return {
+        "ai_warn_threshold": max(0, min(100, warn)),
+        "ai_critical_threshold": max(0, min(100, critical)),
+    }
+
 
 def save_admin_risk_thresholds(ai_warn_threshold, ai_critical_threshold):
-    """관리자 리스크 임계값을 파일에 저장."""
-    path = "admin_ui_settings.json"
-    payload = {
+    """관리자 리스크 임계값 저장(원격 GitHub state + 로컬 동시 반영)."""
+    state = _load_user_state()
+    state["thresholds"] = {
         "ai_warn_threshold": int(max(0, min(100, ai_warn_threshold))),
         "ai_critical_threshold": int(max(0, min(100, ai_critical_threshold))),
     }
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[WARN] 관리자 임계값 저장 실패: {e}")
+    _save_user_state(state, "chore(state): update admin risk thresholds")
+
+
+def load_admin_portfolio_df(base_cols):
+    state = _load_user_state()
+    rows = state.get("portfolio", [])
+    if not isinstance(rows, list):
+        rows = []
+    df_port = pd.DataFrame(rows) if rows else pd.DataFrame(columns=base_cols)
+    for c in base_cols:
+        if c not in df_port.columns:
+            df_port[c] = None
+    df_port = df_port[base_cols].copy()
+    df_port["종목명"] = df_port["종목명"].fillna("").astype(str).str.strip()
+    df_port["수량"] = pd.to_numeric(df_port["수량"], errors="coerce").fillna(0)
+    df_port["매수가"] = pd.to_numeric(df_port["매수가"], errors="coerce").fillna(0.0)
+    df_port = df_port[df_port["종목명"] != ""].copy()
+    return df_port
+
+
+def save_admin_portfolio_df(df_portfolio):
+    base_cols = ["종목명", "수량", "매수가"]
+    save_df = df_portfolio.copy()
+    for c in base_cols:
+        if c not in save_df.columns:
+            save_df[c] = None
+    save_df = save_df[base_cols]
+    save_df["종목명"] = save_df["종목명"].fillna("").astype(str).str.strip()
+    save_df = save_df[save_df["종목명"] != ""].copy()
+    save_df["수량"] = pd.to_numeric(save_df["수량"], errors="coerce").fillna(0)
+    save_df["매수가"] = pd.to_numeric(save_df["매수가"], errors="coerce").fillna(0.0)
+    state = _load_user_state()
+    state["portfolio"] = save_df.to_dict("records")
+    _save_user_state(state, "chore(state): update admin portfolio")
 
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
@@ -1212,6 +1386,18 @@ def get_naver_news(stock_name):
         
     return news_list
 
+migrate_csv_to_sqlite_once([
+    ("data", "data.csv"),
+    ("history", "history.csv"),
+    ("score_trend", "score_trend.csv"),
+    ("performance_trend", "performance_trend.csv"),
+    ("theme_suggestions", "theme_suggestions.csv"),
+    ("theme_map", "theme_map.csv"),
+    ("dart_map", "dart_map.csv"),
+    ("portfolio", "portfolio.csv"),
+    ("theme_quality_trend", "theme_quality_trend.csv"),
+])
+
 df_summary, df_history = load_data()
 
 if df_summary.empty:
@@ -1236,7 +1422,7 @@ else:
     else:
         df_summary["테마표시"] = df_summary["섹터"] if "섹터" in df_summary.columns else "분류안됨"
     
-    if os.path.exists("score_trend.csv"):
+    if csv_exists("score_trend.csv") or table_exists("score_trend"):
         df_trend = load_score_trend_safe()
         dates = sorted(df_trend['날짜'].unique(), reverse=True)
         if len(dates) >= 2:
@@ -2070,7 +2256,7 @@ else:
         if not is_vip:
             show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 코드 인증 후 확인할 수 있습니다.")
         else:
-            if os.path.exists("performance_trend.csv"):
+            if csv_exists("performance_trend.csv") or table_exists("performance_trend"):
                 df_perf = load_performance_trend_safe()
                 if not df_perf.empty:
                     df_perf['날짜_dt'] = pd.to_datetime(df_perf['날짜'])
@@ -2232,7 +2418,7 @@ else:
                             err_names = ", ".join(labels.get(x, x) for x in sorted(set(benchmark_fetch_errors)))
                             st.caption(f"일부 벤치마크 데이터가 지연되어 표시되지 않았습니다: {err_names}")
 
-                        if os.path.exists("score_trend.csv"):
+                        if csv_exists("score_trend.csv") or table_exists("score_trend"):
                             df_rank = load_score_trend_safe()
                             if not df_rank.empty and {"날짜", "종목명", "순위"}.issubset(df_rank.columns):
                                 df_rank = df_rank[df_rank["순위"].isin([1, 2, 3])].copy()
@@ -2390,23 +2576,8 @@ else:
             ai_warn_threshold = int(st.session_state.get("admin_ai_warn_threshold", saved_thr["ai_warn_threshold"]))
             ai_critical_threshold = int(st.session_state.get("admin_ai_critical_threshold", saved_thr["ai_critical_threshold"]))
 
-            portfolio_save_file = "my_portfolio.csv"
             base_cols = ["종목명", "수량", "매수가"]
-            if os.path.exists(portfolio_save_file):
-                try:
-                    df_port_saved = pd.read_csv(portfolio_save_file)
-                except Exception:
-                    df_port_saved = pd.DataFrame(columns=base_cols)
-            else:
-                df_port_saved = pd.DataFrame(columns=base_cols)
-
-            for c in base_cols:
-                if c not in df_port_saved.columns:
-                    df_port_saved[c] = None
-            df_port_saved["종목명"] = df_port_saved["종목명"].astype(str).str.strip()
-            df_port_saved["수량"] = pd.to_numeric(df_port_saved["수량"], errors="coerce").fillna(0)
-            df_port_saved["매수가"] = pd.to_numeric(df_port_saved["매수가"], errors="coerce").fillna(0.0)
-            df_port_saved = df_port_saved[df_port_saved["종목명"] != ""].copy()
+            df_port_saved = load_admin_portfolio_df(base_cols)
             stock_options = sorted(df_summary["종목명"].dropna().astype(str).unique().tolist())
 
             if df_port_saved.empty:
@@ -2602,12 +2773,7 @@ else:
                 st.caption("팁: 종목명 셀을 클릭하면 현재 스크리너 종목 리스트에서 빠르게 선택할 수 있습니다.")
 
                 if st.button("포트폴리오 저장", type="primary", use_container_width=True):
-                    save_df = edited_portfolio.copy()
-                    save_df["종목명"] = save_df["종목명"].astype(str).str.strip()
-                    save_df = save_df[save_df["종목명"] != ""]
-                    save_df["수량"] = pd.to_numeric(save_df["수량"], errors="coerce").fillna(0)
-                    save_df["매수가"] = pd.to_numeric(save_df["매수가"], errors="coerce").fillna(0.0)
-                    save_df.to_csv(portfolio_save_file, index=False, encoding="utf-8-sig")
+                    save_admin_portfolio_df(edited_portfolio)
                     st.success("포트폴리오를 저장했습니다. 상단 현황에 즉시 반영됩니다.")
                     st.rerun()
 

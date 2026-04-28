@@ -1,3 +1,7 @@
 .streamlit/
 __pycache__/
 *.pyc
+*.parquet
+my_portfolio.csv
+admin_ui_settings.json
+user_state_admin.json
