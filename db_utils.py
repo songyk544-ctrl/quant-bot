@@ -48,6 +48,17 @@ def table_exists(table_name: str, db_path: str = DB_PATH) -> bool:
         return False
 
 
+def table_columns(table_name: str, db_path: str = DB_PATH) -> list[str]:
+    if not os.path.exists(db_path):
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+        return [str(r[1]) for r in rows]
+    except Exception:
+        return []
+
+
 def read_table(
     table_name: str,
     csv_fallback: str | None = None,
@@ -64,6 +75,7 @@ def read_table(
     if resolved_csv and os.path.exists(resolved_csv):
         try:
             kwargs = read_csv_kwargs or {}
+            kwargs.setdefault("encoding", "utf-8-sig")
             return pd.read_csv(resolved_csv, **kwargs)
         except Exception:
             return pd.DataFrame()
@@ -71,6 +83,7 @@ def read_table(
         # 레거시 루트 fallback (이동 실패 시)
         try:
             kwargs = read_csv_kwargs or {}
+            kwargs.setdefault("encoding", "utf-8-sig")
             return pd.read_csv(csv_fallback, **kwargs)
         except Exception:
             return pd.DataFrame()
@@ -97,10 +110,18 @@ def migrate_csv_to_sqlite_once(table_csv_pairs: list[tuple[str, str]], db_path: 
     for table_name, csv_path in table_csv_pairs:
         resolved_csv = resolve_csv_path(csv_path)
         source_csv = resolved_csv if os.path.exists(resolved_csv) else csv_path
-        if table_exists(table_name, db_path=db_path) or not os.path.exists(source_csv):
+        if not os.path.exists(source_csv):
+            continue
+        should_skip = table_exists(table_name, db_path=db_path)
+        # 기존 테이블이 있지만 컬럼명이 깨져 있으면 자동 재마이그레이션
+        if should_skip:
+            cols = table_columns(table_name, db_path=db_path)
+            if any("�" in c for c in cols):
+                should_skip = False
+        if should_skip:
             continue
         try:
-            df = pd.read_csv(source_csv, on_bad_lines="skip")
+            df = pd.read_csv(source_csv, on_bad_lines="skip", encoding="utf-8-sig")
             write_table(table_name, df, csv_path=None, db_path=db_path)
         except Exception:
             continue
