@@ -26,7 +26,21 @@ from news_utils import (
     score_news_candidate as _score_news_candidate_base,
 )
 
-st.set_page_config(layout="wide", page_title="QEdge", page_icon="Q")
+BRAND_LOGO_PATH = "assets/brand/q_edge_cut.png"
+PAGE_ICON = BRAND_LOGO_PATH if os.path.exists(BRAND_LOGO_PATH) else "Q"
+
+st.set_page_config(layout="wide", page_title="QEdge", page_icon=PAGE_ICON)
+
+
+def _logo_data_uri(path):
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        return f"data:image/png;base64,{b64}"
+    except Exception:
+        return ""
 
 # --- 🔥 고급스러운 블러(Blur) 페이월 UI 함수 ---
 def show_premium_paywall(message="이 콘텐츠는 접근 코드 인증 후 이용할 수 있습니다."):
@@ -63,27 +77,35 @@ else:
 if is_admin:
     st.sidebar.success("관리자 모드가 활성화되었습니다.")
 
-ui_fx_mode = st.sidebar.selectbox(
-    "UI 연출 모드",
-    options=["프로", "시그니처"],
-    index=0,
-    help="프로: 절제된 애니메이션 / 시그니처: 강조 연출",
-)
+ui_fx_mode = "시그니처"
+logo_uri = _logo_data_uri(BRAND_LOGO_PATH)
 
 db_ready = table_exists("data")
 csv_ready = csv_exists("data.csv")
 source_badge = "S" if db_ready else ("C" if csv_ready else "N")
+logo_html = f'<img class="qe-brand-head-img" src="{logo_uri}" alt="QEdge logo"/>' if logo_uri else ""
 st.markdown(
     f"""
-    <div style="display:flex; align-items:flex-end; gap:10px; margin-bottom:4px;">
-        <h1 style="margin:0; color:#F8FAFC;">QEdge</h1>
-        <span style="background:#172033; color:#AFC2E8; border:1px solid #2E3A55; border-radius:999px; padding:2px 8px; font-size:0.74em; margin-bottom:6px;">
+    <div class="qe-brand-head-wrap">
+        {logo_html}
+        <h1 class="qe-brand-wordmark"><span class="qe-brand-word-q">Q</span><span class="qe-brand-word-edge">Edge</span></h1>
+        <span style="background:#172033; color:#AFC2E8; border:1px solid #2E3A55; border-radius:999px; padding:2px 8px; font-size:0.74em;">
             {source_badge}
         </span>
     </div>
     """,
     unsafe_allow_html=True,
 )
+if logo_uri:
+    st.sidebar.markdown(
+        f"""
+        <div class="qe-sidebar-brand-footer">
+            <img class="qe-brand-side-img" src="{logo_uri}" alt="QEdge logo"/>
+            <div class="qe-brand-side-wordmark"><span class="qe-brand-word-q">Q</span><span class="qe-brand-word-edge">Edge</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 st.caption("수급·뉴스·매크로를 한 화면에서 보는 퀀트 대시보드")
 st.markdown(
     "<div style='margin-bottom:4px;'></div>",
@@ -205,6 +227,52 @@ st.markdown(
     }
     .macro-strip { display:flex; gap:8px; overflow-x:auto; margin-bottom: 8px; padding-bottom:2px; -webkit-overflow-scrolling: touch; }
     .macro-strip::-webkit-scrollbar { display:none; }
+    .qe-brand-head-wrap { display:flex; align-items:center; gap:10px; margin-bottom:4px; }
+    .qe-brand-head-img {
+      width:46px;
+      height:46px;
+      object-fit:contain;
+      object-position:left center;
+      filter:none;
+      padding:0;
+      margin:0;
+    }
+    .qe-brand-wordmark {
+      margin:0;
+      line-height:1;
+      color:#F8FAFC;
+      font-family:"Inter","Pretendard","Segoe UI","Noto Sans KR",sans-serif;
+      letter-spacing:0.01em;
+      font-size:3.0rem;
+    }
+    .qe-brand-word-q { font-weight:900; }
+    .qe-brand-word-edge { font-weight:500; }
+    .qe-brand-side-wrap { display:flex; justify-content:center; margin:4px 0 10px 0; }
+    .qe-brand-side-img {
+      width:26px;
+      height:26px;
+      object-fit:contain;
+      filter:none;
+      padding:0;
+    }
+    .qe-sidebar-brand-footer {
+      position:fixed;
+      left:16px;
+      bottom:14px;
+      display:flex;
+      align-items:center;
+      gap:7px;
+      opacity:0.92;
+      pointer-events:none;
+      z-index:1000;
+    }
+    .qe-brand-side-wordmark {
+      color:#CFD7E6;
+      font-family:"Inter","Pretendard","Segoe UI","Noto Sans KR",sans-serif;
+      font-size:1.02rem;
+      letter-spacing:0.01em;
+      line-height:1;
+    }
     .macro-card {
       background:linear-gradient(140deg, var(--qe-bg-2), #111827);
       border:1px solid var(--qe-border-soft);
@@ -223,6 +291,11 @@ st.markdown(
       .macro-label { font-size:0.7em; }
       .macro-value { font-size:0.9em; }
       .macro-change { font-size:0.75em; }
+      .qe-brand-head-img { width:40px; height:40px; }
+      .qe-brand-wordmark { font-size:2.4rem; }
+      .qe-sidebar-brand-footer { left:12px; bottom:10px; }
+      .qe-brand-side-img { width:22px; height:22px; }
+      .qe-brand-side-wordmark { font-size:0.92rem; }
     }
     </style>
     """,
