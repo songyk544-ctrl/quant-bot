@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 *.parquet
+quantbot.db
+backup/
 my_portfolio.csv
 admin_ui_settings.json
 user_state_admin.json

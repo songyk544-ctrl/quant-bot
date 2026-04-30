@@ -1,12 +1,10 @@
 import os
-import sqlite3
 import shutil
 from pathlib import Path
 
 import pandas as pd
 
 
-DB_PATH = "quantbot.db"
 DATA_DIR = "data"
 
 
@@ -34,43 +32,27 @@ def csv_exists(csv_path: str) -> bool:
     return resolved.exists() or legacy.exists()
 
 
-def table_exists(table_name: str, db_path: str = DB_PATH) -> bool:
-    if not os.path.exists(db_path):
-        return False
-    try:
-        with sqlite3.connect(db_path) as conn:
-            row = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-                (table_name,),
-            ).fetchone()
-        return row is not None
-    except Exception:
-        return False
+def table_exists(table_name: str, db_path: str = "quantbot.db") -> bool:
+    """
+    CSV 단일 운영 모드에서는 DB 테이블 존재를 사용하지 않습니다.
+    기존 호출부 호환을 위해 항상 False를 반환합니다.
+    """
+    _ = (table_name, db_path)
+    return False
 
 
-def table_columns(table_name: str, db_path: str = DB_PATH) -> list[str]:
-    if not os.path.exists(db_path):
-        return []
-    try:
-        with sqlite3.connect(db_path) as conn:
-            rows = conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
-        return [str(r[1]) for r in rows]
-    except Exception:
-        return []
+def table_columns(table_name: str, db_path: str = "quantbot.db") -> list[str]:
+    _ = (table_name, db_path)
+    return []
 
 
 def read_table(
     table_name: str,
     csv_fallback: str | None = None,
     read_csv_kwargs: dict | None = None,
-    db_path: str = DB_PATH,
+    db_path: str = "quantbot.db",
 ) -> pd.DataFrame:
-    if table_exists(table_name, db_path=db_path):
-        try:
-            with sqlite3.connect(db_path) as conn:
-                return pd.read_sql_query(f'SELECT * FROM "{table_name}"', conn)
-        except Exception:
-            pass
+    _ = (table_name, db_path)
     resolved_csv = resolve_csv_path(csv_fallback) if csv_fallback else None
     if resolved_csv and os.path.exists(resolved_csv):
         try:
@@ -95,33 +77,30 @@ def write_table(
     df: pd.DataFrame,
     csv_path: str | None = None,
     csv_kwargs: dict | None = None,
-    db_path: str = DB_PATH,
+    db_path: str = "quantbot.db",
 ):
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as conn:
-        df.to_sql(table_name, conn, if_exists="replace", index=False)
+    _ = (table_name, db_path)
     if csv_path:
         kwargs = csv_kwargs or {}
         resolved_csv = resolve_csv_path(csv_path)
         df.to_csv(resolved_csv, **kwargs)
 
 
-def migrate_csv_to_sqlite_once(table_csv_pairs: list[tuple[str, str]], db_path: str = DB_PATH):
+def migrate_csv_to_sqlite_once(table_csv_pairs: list[tuple[str, str]], db_path: str = "quantbot.db"):
+    """
+    CSV 단일 운영 모드:
+    - legacy 루트 CSV를 data/로 정리
+    - 기존 호출부 호환을 위해 함수명/시그니처 유지
+    """
+    _ = db_path
     for table_name, csv_path in table_csv_pairs:
+        _ = table_name
         resolved_csv = resolve_csv_path(csv_path)
-        source_csv = resolved_csv if os.path.exists(resolved_csv) else csv_path
-        if not os.path.exists(source_csv):
+        if os.path.exists(resolved_csv):
             continue
-        should_skip = table_exists(table_name, db_path=db_path)
-        # 기존 테이블이 있지만 컬럼명이 깨져 있으면 자동 재마이그레이션
-        if should_skip:
-            cols = table_columns(table_name, db_path=db_path)
-            if any("�" in c for c in cols):
-                should_skip = False
-        if should_skip:
-            continue
-        try:
-            df = pd.read_csv(source_csv, on_bad_lines="skip", encoding="utf-8-sig")
-            write_table(table_name, df, csv_path=None, db_path=db_path)
-        except Exception:
-            continue
+        if os.path.exists(csv_path):
+            try:
+                Path(resolved_csv).parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(csv_path, resolved_csv)
+            except Exception:
+                continue

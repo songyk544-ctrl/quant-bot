@@ -1837,16 +1837,36 @@ else:
                     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px;">
                         <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
                             <div style="color:#A5B4FC; font-size:0.78em; font-weight:700;">신호등급</div>
-                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">High/Medium/Low. VIX 레짐별 기준으로 등급이 조정됩니다.</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">
+                                <b>한눈에 보는 실행 우선순위</b>입니다. <br/>
+                                • <b>High</b>: 지금 조건에서 상대적으로 유리한 구간 <br/>
+                                • <b>Medium</b>: 관찰/분할 접근 구간 <br/>
+                                • <b>Low</b>: 보수적 대응(진입 지연/비중 축소) 권장 <br/>
+                                ※ 장세(VIX)가 불안할수록 등급 기준이 더 보수적으로 바뀝니다.
+                            </div>
                         </div>
                         <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
                             <div style="color:#93C5FD; font-size:0.78em; font-weight:700;">신호신뢰도</div>
-                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">Quant/AI/정성/부정뉴스를 합친 0~100 신뢰 점수입니다.</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">
+                                <b>0~100점 종합 점수</b>로, 정량(수급/기술) + 정성(뉴스/공시 톤)을 함께 반영합니다. <br/>
+                                • 높을수록 “신호가 깨질 확률”이 상대적으로 낮다는 의미 <br/>
+                                • 낮을수록 뉴스 노이즈/수급 불일치 가능성을 의심해야 합니다. <br/>
+                                <span style="color:#94A3B8;">실전 팁: 같은 등급이면 신호신뢰도가 더 높은 종목을 우선 확인하세요.</span>
+                            </div>
                         </div>
                         <div style="background:#161F31; border:1px solid #2A344A; border-radius:10px; padding:8px 10px;">
                             <div style="color:#86EFAC; font-size:0.78em; font-weight:700;">안정화Δ</div>
-                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">전일 대비 스무딩 적용 후 점수 변화량입니다.</div>
+                            <div style="color:#D1D5DB; font-size:0.82em; margin-top:4px;">
+                                <b>전일 대비 점수 변화량</b>입니다(과도한 출렁임을 줄인 값). <br/>
+                                • <b>+값</b>: 점수가 개선되는 흐름 <br/>
+                                • <b>-값</b>: 점수가 약해지는 흐름 <br/>
+                                • 절대값이 클수록 변화 속도가 빠릅니다.
+                            </div>
                         </div>
+                    </div>
+                    <div style="margin-top:8px; background:#111827; border:1px dashed #334155; border-radius:10px; padding:8px 10px; color:#CBD5E1; font-size:0.80em; line-height:1.5;">
+                        <b>읽는 순서 추천</b>: 신호등급 → 신호신뢰도 → 안정화Δ <br/>
+                        예) <b>High + 신뢰도 높음 + Δ 플러스</b>면 우선 검토, <b>Low + 신뢰도 낮음 + Δ 마이너스</b>면 보수적으로 대응하세요.
                     </div>
                 </div>
                 """,
@@ -1931,6 +1951,43 @@ else:
                 unsafe_allow_html=True,
             )
             st.caption("라인 색상: 최근 흐름이 시작점 대비 상승이면 초록, 하락이면 빨강입니다.")
+
+            # 선택 종목의 최근 순위 추이(낮을수록 상위이므로 축을 반전해 표시)
+            if csv_exists("score_trend.csv") or table_exists("score_trend"):
+                df_rank_trend = load_score_trend_safe()
+                if not df_rank_trend.empty and {"날짜", "종목명", "순위"}.issubset(df_rank_trend.columns):
+                    target_rank = df_rank_trend[df_rank_trend["종목명"] == target_stock].copy()
+                    if not target_rank.empty:
+                        target_rank["순위"] = pd.to_numeric(target_rank["순위"], errors="coerce")
+                        target_rank = target_rank.dropna(subset=["순위"])
+                        target_rank["날짜_dt"] = pd.to_datetime(target_rank["날짜"], errors="coerce")
+                        target_rank = target_rank.dropna(subset=["날짜_dt"]).sort_values("날짜_dt")
+                        target_rank = target_rank.drop_duplicates(subset=["날짜_dt"], keep="last").tail(20)
+                        if not target_rank.empty:
+                            target_rank["날짜_표시"] = target_rank["날짜_dt"].dt.strftime("%m/%d")
+                            rank_min = float(target_rank["순위"].min())
+                            rank_max = float(target_rank["순위"].max())
+                            pad = max(1.0, (rank_max - rank_min) * 0.12)
+                            rank_chart = (
+                                alt.Chart(target_rank)
+                                .mark_line(color="#7DD3FC", point=True)
+                                .encode(
+                                    x=alt.X("날짜_표시:O", sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
+                                    y=alt.Y(
+                                        "순위:Q",
+                                        title="순위 (낮을수록 상위)",
+                                        scale=alt.Scale(domain=[rank_max + pad, max(1.0, rank_min - pad)])
+                                    ),
+                                    tooltip=[
+                                        alt.Tooltip("날짜:O"),
+                                        alt.Tooltip("순위:Q", format=".0f"),
+                                    ],
+                                )
+                                .properties(height=190)
+                            )
+                            st.markdown("##### 최근 순위 추이")
+                            st.altair_chart(apply_altair_theme(rank_chart), width="stretch")
+                            st.caption("최근 20거래일 기준입니다. 선이 위로 갈수록 순위가 개선된 것입니다.")
 
             with st.expander("상세 분석 펼치기", expanded=False):
                 st.markdown(

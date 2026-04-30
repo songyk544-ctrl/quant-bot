@@ -1681,7 +1681,7 @@ def run_scraper(manual_full_parse=False):
     df_trend_new['날짜'] = today_date
 
     trend_file = "score_trend.csv"
-    if os.path.exists(trend_file):
+    if csv_exists(trend_file):
         df_trend_old = load_score_trend_safe()
         df_trend_old = df_trend_old[df_trend_old['날짜'] != today_date]
         trend_concat = pd.concat([df_trend_old, df_trend_new], ignore_index=True)
@@ -1725,8 +1725,8 @@ def run_scraper(manual_full_parse=False):
             # 🔥 [방어 로직] KIS API를 스킵하는 테스트 모드일 때는 포트폴리오 수익률을 절대 갱신하지 않음
             if not is_test_mode:
                 cum_ret = daily_ret
-                if os.path.exists(perf_file):
-                    df_perf = safe_read_csv_with_conflict_guard(perf_file)
+                if csv_exists(perf_file):
+                    df_perf = read_table_prefer_db(perf_file)
                     if not df_perf.empty:
                         df_perf = df_perf[df_perf['날짜'] != today_date] 
                         cum_ret = df_perf['누적수익률'].iloc[-1] + daily_ret if len(df_perf) > 0 else daily_ret
@@ -1737,7 +1737,14 @@ def run_scraper(manual_full_parse=False):
                     [df_perf, pd.DataFrame([{'날짜': today_date, '일간수익률': daily_ret, '누적수익률': cum_ret}])],
                     ignore_index=True
                 )
-                perf_concat['누적수익률'] = pd.to_numeric(perf_concat['누적수익률'], errors='coerce').fillna(0.0)
+                # 누적수익률은 기존 값 신뢰 대신 일간수익률로 항상 재계산해
+                # 중간 데이터 꼬임(누적 리셋) 시에도 자동 복구되도록 한다.
+                perf_concat['일간수익률'] = pd.to_numeric(perf_concat['일간수익률'], errors='coerce').fillna(0.0)
+                perf_concat['날짜_dt'] = pd.to_datetime(perf_concat['날짜'], errors='coerce')
+                perf_concat = perf_concat.dropna(subset=['날짜_dt']).sort_values('날짜_dt')
+                perf_concat = perf_concat.drop_duplicates(subset=['날짜'], keep='last')
+                perf_concat['누적수익률'] = perf_concat['일간수익률'].cumsum().round(6)
+                perf_concat = perf_concat.drop(columns=['날짜_dt'], errors='ignore')
                 equity = 1.0 + (perf_concat['누적수익률'] / 100.0)
                 rolling_peak = equity.cummax().replace(0, 1e-9)
                 drawdown = ((equity / rolling_peak) - 1.0) * 100.0
