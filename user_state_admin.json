@@ -1,6 +1,6 @@
 {
   "thresholds": {
-    "ai_warn_threshold": 40,
+    "ai_warn_threshold": 2,
     "ai_critical_threshold": 40
   },
   "portfolio": [
