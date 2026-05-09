@@ -38,6 +38,7 @@ jobs:
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           
           # 데이터 산출물만 커밋 (개인 상태 파일 제외)
+          # swing_trades.csv / swing_performance.csv는 data/*.csv 패턴으로 포함된다.
           git add -A -- '*.csv' 'data/*.csv' 'report.md' ':!my_portfolio.csv'
           
           git commit -m "🤖 수급 데이터 갱신, AI 리포트 및 포트폴리오 성적 업데이트 완료" || exit 0

@@ -134,6 +134,151 @@ def write_table_dual(df, csv_path, **kwargs):
     )
 
 
+SWING_HORIZONS = (5, 10)
+PRIMARY_SWING_HORIZON = 10
+
+
+def _risk_state_from_mdd(mdd):
+    return "High" if mdd <= -8 else ("Medium" if mdd <= -4 else "Low")
+
+
+def _load_history_prices():
+    if not csv_exists("history.csv"):
+        return pd.DataFrame(columns=["종목명", "일자_dt", "종가"])
+    hist = read_table_prefer_db("history.csv")
+    if hist.empty or not {"종목명", "일자", "종가"}.issubset(hist.columns):
+        return pd.DataFrame(columns=["종목명", "일자_dt", "종가"])
+    out = hist[["종목명", "일자", "종가"]].copy()
+    raw_dates = out["일자"].astype(str).str.replace("-", "", regex=False).str.strip()
+    out["일자_dt"] = pd.to_datetime(raw_dates, format="%Y%m%d", errors="coerce")
+    if out["일자_dt"].notna().sum() == 0:
+        out["일자_dt"] = pd.to_datetime(out["일자"], errors="coerce")
+    out["종가"] = pd.to_numeric(out["종가"], errors="coerce")
+    out["종목명"] = out["종목명"].astype(str).str.strip()
+    out = out.dropna(subset=["일자_dt", "종가"])
+    out = out[out["종목명"] != ""]
+    return out.sort_values(["종목명", "일자_dt"]).drop_duplicates(["종목명", "일자_dt"], keep="last")
+
+
+def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon=PRIMARY_SWING_HORIZON):
+    """
+    종가 진입 후 D+5/D+10 종가 청산 기준의 신호 성과 파일을 생성합니다.
+    GitHub Actions의 일일 실행에서도 기존 history/score_trend만으로 재현되도록 설계합니다.
+    """
+    if not (csv_exists("score_trend.csv") and csv_exists("history.csv")):
+        return pd.DataFrame(), pd.DataFrame()
+
+    score = load_score_trend_safe()
+    prices = _load_history_prices()
+    if score.empty or prices.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    score = score.copy()
+    score["순위"] = pd.to_numeric(score["순위"], errors="coerce")
+    score["AI수급점수"] = pd.to_numeric(score["AI수급점수"], errors="coerce")
+    score["날짜_dt"] = pd.to_datetime(score["날짜"], errors="coerce")
+    score = score.dropna(subset=["날짜_dt", "종목명", "순위"])
+    day_slices = []
+    for _, day_df in score.groupby("날짜_dt", sort=True):
+        day = day_df.copy()
+        if "매수후보" in day.columns and (day["매수후보"].astype(str) == "신규후보").any():
+            picked = day[day["매수후보"].astype(str) == "신규후보"].copy()
+            if "스윙우선순위" in picked.columns:
+                picked = picked.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
+            else:
+                picked = picked.sort_values(["순위", "AI수급점수"], ascending=[True, False])
+        else:
+            picked = day.sort_values(["순위", "AI수급점수"], ascending=[True, False]).head(int(top_n)).copy()
+        day_slices.append(picked.head(int(top_n)))
+    score = pd.concat(day_slices, ignore_index=True) if day_slices else pd.DataFrame()
+    if score.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    price_by_stock = {
+        name: grp.sort_values("일자_dt").reset_index(drop=True)
+        for name, grp in prices.groupby("종목명")
+    }
+    rows = []
+    for _, sig in score.sort_values(["날짜_dt", "순위"]).iterrows():
+        name = str(sig["종목명"]).strip()
+        price_df = price_by_stock.get(name)
+        if price_df is None or price_df.empty:
+            continue
+        entry_date = pd.to_datetime(sig["날짜_dt"]).normalize()
+        exact_entry = price_df[price_df["일자_dt"].dt.normalize() == entry_date]
+        if exact_entry.empty:
+            continue
+        entry_idx = int(exact_entry.index[-1])
+        entry_price = float(exact_entry.iloc[-1]["종가"])
+        if entry_price <= 0:
+            continue
+
+        for horizon in horizons:
+            entry_type_val = sig.get("진입유형", "랭킹Top3")
+            entry_type_val = "랭킹Top3" if pd.isna(entry_type_val) or not str(entry_type_val).strip() else str(entry_type_val)
+            swing_priority_val = pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce")
+            swing_priority_val = 0.0 if pd.isna(swing_priority_val) else float(swing_priority_val)
+            comment_val = sig.get("진입코멘트", "")
+            comment_val = "" if pd.isna(comment_val) else str(comment_val)
+            exit_idx = entry_idx + int(horizon)
+            status = "closed" if exit_idx < len(price_df) else "open"
+            exit_row = price_df.iloc[exit_idx] if status == "closed" else price_df.iloc[-1]
+            exit_price = float(exit_row["종가"])
+            ret = ((exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
+            rows.append({
+                "거래ID": f"{entry_date.strftime('%Y%m%d')}_{name}_D{int(horizon)}",
+                "진입일": entry_date.strftime("%Y-%m-%d"),
+                "종목명": name,
+                "종목코드": str(sig.get("종목코드", "") or "").zfill(6),
+                "진입순위": int(sig["순위"]),
+                "AI수급점수": round(float(sig.get("AI수급점수", 0.0) or 0.0), 2),
+                "진입유형": entry_type_val,
+                "스윙우선순위": round(swing_priority_val, 2),
+                "진입코멘트": comment_val,
+                "보유일수": int(horizon),
+                "진입가": round(entry_price, 2),
+                "청산일": pd.to_datetime(exit_row["일자_dt"]).strftime("%Y-%m-%d"),
+                "청산가": round(exit_price, 2),
+                "수익률": round(ret, 4),
+                "상태": status,
+            })
+
+    trades = pd.DataFrame(rows)
+    if trades.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    trades = trades.sort_values(["진입일", "보유일수", "진입순위", "종목명"])
+    write_table_dual(trades, "swing_trades.csv", index=False, encoding="utf-8-sig")
+
+    closed_primary = trades[(trades["상태"] == "closed") & (trades["보유일수"] == int(primary_horizon))].copy()
+    if closed_primary.empty:
+        perf = pd.DataFrame(columns=["날짜", "일간수익률", "누적수익률", "최대낙폭(%)", "리스크상태", "종료거래수", "승률(%)"])
+        write_table_dual(perf, "swing_performance.csv", index=False, encoding="utf-8-sig")
+        return trades, perf
+
+    perf = (
+        closed_primary.groupby("청산일")
+        .agg(
+            일간수익률=("수익률", "mean"),
+            종료거래수=("수익률", "size"),
+            승률=("수익률", lambda s: (s > 0).mean() * 100.0),
+        )
+        .reset_index()
+        .rename(columns={"청산일": "날짜", "승률": "승률(%)"})
+        .sort_values("날짜")
+    )
+    perf["일간수익률"] = pd.to_numeric(perf["일간수익률"], errors="coerce").fillna(0.0)
+    equity = (1.0 + (perf["일간수익률"] / 100.0)).cumprod()
+    perf["누적수익률"] = ((equity - 1.0) * 100.0).round(6)
+    drawdown = ((equity / equity.cummax()) - 1.0) * 100.0
+    perf["최대낙폭(%)"] = drawdown.round(2)
+    perf["리스크상태"] = perf["최대낙폭(%)"].apply(_risk_state_from_mdd)
+    perf["일간수익률"] = perf["일간수익률"].round(6)
+    perf["승률(%)"] = perf["승률(%)"].round(2)
+    write_table_dual(perf, "swing_performance.csv", index=False, encoding="utf-8-sig")
+    return trades, perf
+
+
 def _bytes_to_mb(n_bytes):
     return float(n_bytes) / (1024.0 * 1024.0)
 
@@ -912,6 +1057,199 @@ def apply_pullback_trade_rules(df_final, current_vix=20.0):
     out["눌림목신호"] = signal_series
     return out.sort_values("AI수급점수", ascending=False)
 
+
+def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=2):
+    """
+    사용자의 1~2주 스윙 성향에 맞춰 연기금 중심 수급, 눌림목/돌파 진입유형,
+    후보 수 제한, 보유 점검 신호를 한 번 더 입힙니다.
+    """
+    if df_final.empty:
+        return df_final
+    out = df_final.copy()
+
+    def _num(col, default=0.0):
+        if col in out.columns:
+            return pd.to_numeric(out[col], errors="coerce").fillna(default)
+        return pd.Series([default] * len(out), index=out.index, dtype=float)
+
+    pension = _num("연기금강도(%)")
+    trust = _num("투신강도(%)")
+    pef = _num("사모강도(%)")
+    foreign = _num("외인강도(%)")
+    pension_streak = _num("연기금연속")
+    ai = _num("AI수급점수")
+    gap = _num("이격도(%)", 100.0)
+    rsi = _num("RSI", 50.0)
+    turn = _num("손바뀜(%)")
+    vol = _num("거래급증(%)")
+    neg_news = _num("뉴스부정키워드수")
+    trend_up = out["추세상승"].astype(bool) if "추세상승" in out.columns else pd.Series([True] * len(out), index=out.index)
+
+    out["연기금5일강도(%)"] = 0.0
+    out["연기금10일강도(%)"] = 0.0
+    out["기관10일동행강도(%)"] = 0.0
+    try:
+        hist = _load_history_prices()
+        if not hist.empty and csv_exists("history.csv"):
+            raw_hist = read_table_prefer_db("history.csv")
+            if not raw_hist.empty and {"종목명", "일자", "연기금", "투신", "사모", "외인"}.issubset(raw_hist.columns):
+                raw_hist = raw_hist.copy()
+                raw_hist["일자_dt"] = pd.to_datetime(raw_hist["일자"].astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce")
+                raw_hist = raw_hist.dropna(subset=["일자_dt"]).sort_values(["종목명", "일자_dt"])
+                marcap_map = dict(zip(out["종목명"].astype(str), _num("시가총액").replace(0, pd.NA)))
+                p5_map, p10_map, inst10_map = {}, {}, {}
+                for name, grp in raw_hist.groupby("종목명"):
+                    denom = marcap_map.get(str(name), None)
+                    if denom is None or pd.isna(denom) or float(denom) <= 0:
+                        continue
+                    g = grp.tail(10)
+                    p5 = pd.to_numeric(g.tail(5)["연기금"], errors="coerce").fillna(0.0).sum()
+                    p10 = pd.to_numeric(g["연기금"], errors="coerce").fillna(0.0).sum()
+                    inst10 = (
+                        pd.to_numeric(g["연기금"], errors="coerce").fillna(0.0).sum()
+                        + pd.to_numeric(g["투신"], errors="coerce").fillna(0.0).sum()
+                        + pd.to_numeric(g["사모"], errors="coerce").fillna(0.0).sum()
+                    )
+                    p5_map[str(name)] = round(float(p5) / float(denom), 4)
+                    p10_map[str(name)] = round(float(p10) / float(denom), 4)
+                    inst10_map[str(name)] = round(float(inst10) / float(denom), 4)
+                names = out["종목명"].astype(str)
+                out["연기금5일강도(%)"] = names.map(p5_map).fillna(0.0)
+                out["연기금10일강도(%)"] = names.map(p10_map).fillna(0.0)
+                out["기관10일동행강도(%)"] = names.map(inst10_map).fillna(0.0)
+    except Exception as e:
+        print(f"[WARN] 최근 기관 수급 지표 계산 실패: {e}")
+
+    p5 = pd.to_numeric(out["연기금5일강도(%)"], errors="coerce").fillna(0.0)
+    p10 = pd.to_numeric(out["연기금10일강도(%)"], errors="coerce").fillna(0.0)
+    inst10 = pd.to_numeric(out["기관10일동행강도(%)"], errors="coerce").fillna(0.0)
+    out["기관동행점수"] = (
+        (pension.clip(lower=0) * 4.0)
+        + (p5.clip(lower=0) * 6.0)
+        + (p10.clip(lower=0) * 4.0)
+        + (trust.clip(lower=0) * 1.7)
+        + (pef.clip(lower=0) * 1.7)
+        + (foreign.clip(lower=0) * 0.5)
+        + (pension_streak.clip(lower=0) * 1.5)
+        + (inst10.clip(lower=0) * 2.0)
+    ).clip(0, 35).round(2)
+
+    risk_label = "RiskOff" if current_vix >= 28 else ("Neutral" if current_vix >= 22 else "RiskOn")
+    out["시장위험레버"] = risk_label
+
+    pullback = (
+        gap.between(97, 106)
+        & rsi.between(45, 68)
+        & trend_up
+        & ((pension > 0) | (p5 > 0) | (p10 > 0))
+        & turn.between(2.5, 18)
+    )
+    breakout = (
+        gap.between(103, 112)
+        & rsi.between(55, 82)
+        & (vol >= 115)
+        & (turn >= 4)
+        & ((pension > 0) | ((trust > 0) & (pef > 0)))
+    )
+    overheated = (gap > 112) | (rsi > 84) | (turn > 24)
+    breakdown = (gap < 95) | (rsi < 40) | ((pension < 0) & (trust < 0) & (pef < 0))
+
+    entry_type = pd.Series("관찰", index=out.index, dtype="object")
+    entry_type.loc[pullback] = "눌림목"
+    entry_type.loc[breakout & ~pullback] = "돌파"
+    entry_type.loc[overheated] = "과열주의"
+    entry_type.loc[breakdown] = "회피"
+    if risk_label == "RiskOff":
+        entry_type.loc[entry_type == "돌파"] = "관찰"
+    elif risk_label == "Neutral":
+        entry_type.loc[breakout & (out["기관동행점수"] < 8)] = "관찰"
+    out["진입유형"] = entry_type
+
+    entry_bonus = pd.Series(0.0, index=out.index)
+    entry_bonus.loc[out["진입유형"] == "눌림목"] = 7.0
+    entry_bonus.loc[out["진입유형"] == "돌파"] = 5.0
+    entry_bonus.loc[out["진입유형"] == "과열주의"] = -7.0
+    entry_bonus.loc[out["진입유형"] == "회피"] = -18.0
+    risk_penalty = 0.0 if risk_label == "RiskOn" else (2.5 if risk_label == "Neutral" else 7.0)
+    out["스윙우선순위"] = (
+        ai * 0.58
+        + out["기관동행점수"] * 0.85
+        + entry_bonus
+        - neg_news.clip(lower=0) * 1.2
+        - risk_penalty
+    ).clip(0, 100).round(2)
+
+    comments = []
+    sell_checks = []
+    for _, row in out.iterrows():
+        et = str(row.get("진입유형", "관찰"))
+        parts = []
+        if float(row.get("연기금10일강도(%)", 0.0)) > 0:
+            parts.append("연기금 10일 순매수")
+        if float(row.get("기관동행점수", 0.0)) >= 8:
+            parts.append("기관 동행")
+        if et == "눌림목":
+            parts.append("20일선 부근 눌림")
+        elif et == "돌파":
+            parts.append("거래량 동반 돌파")
+        elif et == "과열주의":
+            parts.append("이격/RSI 과열")
+        elif et == "회피":
+            parts.append("추세 또는 수급 훼손")
+        comments.append(" · ".join(parts) if parts else "추가 확인 필요")
+
+        if et == "회피":
+            sell_checks.append("매도/제외")
+        elif float(row.get("연기금5일강도(%)", 0.0)) < 0 and float(row.get("연기금10일강도(%)", 0.0)) < 0:
+            sell_checks.append("수급훼손")
+        elif float(row.get("이격도(%)", 100.0)) < 97:
+            sell_checks.append("추세점검")
+        elif et == "과열주의":
+            sell_checks.append("익절/추격주의")
+        else:
+            sell_checks.append("보유/관찰")
+    out["진입코멘트"] = comments
+    out["매도점검"] = sell_checks
+
+    out["매수후보"] = "관찰"
+    eligible = out[out["진입유형"].isin(["눌림목", "돌파"]) & (out["스윙우선순위"] >= 42)].copy()
+    eligible = eligible.sort_values("스윙우선순위", ascending=False)
+    picked = []
+    used_themes = set()
+    for idx, row in eligible.iterrows():
+        theme = str(row.get("테마", row.get("섹터", "")) or "").split(";")[0].strip()
+        if theme and theme in used_themes:
+            continue
+        picked.append(idx)
+        if theme:
+            used_themes.add(theme)
+        if len(picked) >= int(max_buy_candidates):
+            break
+    if picked:
+        out.loc[picked, "매수후보"] = "신규후보"
+    out.loc[out["진입유형"] == "회피", "매수후보"] = "제외"
+    order_map = {"신규후보": 0, "관찰": 1, "제외": 2}
+    out["_swing_candidate_order"] = out["매수후보"].map(order_map).fillna(1)
+    out = out.sort_values(["_swing_candidate_order", "스윙우선순위", "AI수급점수"], ascending=[True, False, False])
+    return out.drop(columns=["_swing_candidate_order"], errors="ignore")
+
+
+def write_daily_swing_candidates(df_final, today_date):
+    cols = [
+        "날짜", "종목명", "종목코드", "테마", "매수후보", "진입유형", "스윙우선순위",
+        "기관동행점수", "연기금5일강도(%)", "연기금10일강도(%)", "진입코멘트", "매도점검",
+        "현재가", "AI수급점수", "신호등급",
+    ]
+    if df_final.empty:
+        return
+    out = df_final[df_final.get("매수후보", "관찰").isin(["신규후보", "관찰"])].head(12).copy()
+    out["날짜"] = str(today_date)
+    for c in cols:
+        if c not in out.columns:
+            out[c] = None
+    write_table_dual(out[cols], "daily_candidates.csv", index=False, encoding="utf-8-sig")
+
+
 def get_target_stock_list():
     target_list = []
     noise_keywords = ['KODEX', 'TIGER', 'RISE', 'ACE', 'KBSTAR', 'HANARO', 'KOSEF', 'SOL', 'PLUS', 'ARIRANG', 'ETN', '스팩', '인버스', '레버리지', 'CD금리', 'KOFR']
@@ -967,6 +1305,7 @@ def _request_html(url, headers, timeout=4, retries=2):
 def load_score_trend_safe():
     """머지 충돌/깨진 score_trend.csv를 방어적으로 로드."""
     base_cols = ['종목명', '종목코드', 'AI수급점수', '순위', '날짜']
+    optional_cols = ['매수후보', '진입유형', '스윙우선순위', '기관동행점수', '진입코멘트', '매도점검', '테마']
     if not csv_exists("score_trend.csv"):
         return pd.DataFrame(columns=base_cols)
     df = read_table_prefer_db("score_trend.csv", on_bad_lines="skip")
@@ -989,10 +1328,10 @@ def load_score_trend_safe():
     if '종목명' in df.columns:
         df = df[~df['종목명'].astype(str).str.contains(marker_pat, regex=True, na=False)]
 
-    for c in base_cols:
+    for c in base_cols + optional_cols:
         if c not in df.columns:
             df[c] = None
-    return df[base_cols]
+    return df[base_cols + optional_cols]
 
 def _score_news_candidate(candidate):
     return _score_news_candidate_base(candidate, include_relevance=False)
@@ -1673,10 +2012,20 @@ def run_scraper(manual_full_parse=False):
     df_final = apply_score_stability(df_final, today_date=today_date, max_daily_delta=8.0, smooth_alpha=0.7)
     # 신호 신뢰도 계층화(VIX 레짐별 임계치)
     df_final = add_signal_confidence(df_final, current_vix=current_vix)
+    # 사용자 스윙 전략 오버레이: 연기금 중심 수급, 진입유형, 후보 수 제한, 매도 점검
+    df_final = apply_swing_strategy_overlay(df_final, current_vix=current_vix, max_buy_candidates=2)
     generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
+    write_daily_swing_candidates(df_final, today_date)
     write_table_dual(df_final, "data.csv", index=False, encoding='utf-8-sig')
 
-    df_trend_new = df_final[['종목명', '종목코드', 'AI수급점수']].copy()
+    trend_cols = [
+        '종목명', '종목코드', 'AI수급점수', '매수후보', '진입유형', '스윙우선순위',
+        '기관동행점수', '진입코멘트', '매도점검', '테마'
+    ]
+    for c in trend_cols:
+        if c not in df_final.columns:
+            df_final[c] = None
+    df_trend_new = df_final[trend_cols].copy()
     df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
     df_trend_new['날짜'] = today_date
 
@@ -1689,11 +2038,16 @@ def run_scraper(manual_full_parse=False):
     else:
         write_table_dual(df_trend_new, trend_file, index=False, encoding='utf-8-sig')
 
+    try:
+        build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon=PRIMARY_SWING_HORIZON)
+    except Exception as e:
+        print(f"[WARN] 스윙 백테스트 파일 생성 실패: {e}")
+
     # ==========================================
-    # 백테스트 정산 로직
+    # 레거시 Top3 정산 로직
     # ==========================================
-    portfolio_file = "portfolio.csv"
-    perf_file = "performance_trend.csv"
+    portfolio_file = resolve_csv_path("portfolio.csv")
+    perf_file = "legacy_performance_trend.csv"
     top3_names = df_final.head(3)['종목명'].tolist() 
     tq = theme_quality_metric if isinstance(theme_quality_metric, dict) else {}
     theme_quality_text = (
@@ -1760,7 +2114,7 @@ def run_scraper(manual_full_parse=False):
                 if not is_test_mode:
                     top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
                     top3_df['날짜'] = today_date
-                    top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+                    write_table_dual(top3_df, "portfolio.csv", index=False, encoding='utf-8-sig')
             else:
                 eval_msg += "📝 *[현재 포트폴리오 장중 수익률]*\n" + "\n".join(eval_details) + f"\n➡️ *실시간 수익률: {daily_ret:+.2f}%*\n\n"
         except Exception as e:
@@ -1769,7 +2123,7 @@ def run_scraper(manual_full_parse=False):
         if is_eod_updated and not is_test_mode:
             top3_df = df_final.head(3)[['종목명', '현재가']].rename(columns={'현재가': '매수가'})
             top3_df['날짜'] = today_date
-            top3_df.to_csv(portfolio_file, index=False, encoding='utf-8-sig')
+            write_table_dual(top3_df, "portfolio.csv", index=False, encoding='utf-8-sig')
 
     # ==========================================
     # 텔레그램 발송 및 AI 리포트
