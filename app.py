@@ -245,19 +245,19 @@ def build_market_regime_summary():
         score += -1 if us10y > 0 else 1
 
     if score >= 2:
-        regime = "RiskOn"
+        regime = "공격 가능"
         mode = "눌림목 우선, 돌파 일부 허용"
         tone = "우호"
         color = "#36C06A"
-        guide = "신규후보는 1~2개까지 선별 매수 가능"
+        guide = "신규후보는 1~3개까지 선별 매수 가능"
     elif score <= -2:
-        regime = "RiskOff"
+        regime = "방어 우선"
         mode = "신규매수 축소, 보유종목 점검"
         tone = "방어"
         color = "#F97316"
         guide = "돌파매매는 줄이고 연기금 수급 지속 종목만 관찰"
     else:
-        regime = "Neutral"
+        regime = "중립"
         mode = "눌림목 중심, 돌파는 확인 후 진입"
         tone = "중립"
         color = "#60A5FA"
@@ -304,11 +304,11 @@ def render_market_regime_panel(df_summary_local, macro_news_refs):
 <div class="market-regime-panel">
   <div class="market-regime-top">
     <div>
-      <div class="regime-label">시장 레짐</div>
+      <div class="regime-label">시장 상태</div>
       <div class="regime-title" style="color:{summary['color']};">{summary['regime']} <span>{summary['tone']}</span></div>
       <div class="regime-meta">{reason_text}</div>
     </div>
-    <div class="regime-score">점수 {summary['score']:+d}</div>
+    <div class="regime-score">환경점수 {summary['score']:+d}</div>
   </div>
   <div class="regime-grid">
     <div class="regime-mini">
@@ -2021,11 +2021,10 @@ else:
         if ma_col not in df_summary.columns:
             df_summary[ma_col] = 0.0
     candidate_order = {"신규후보": 0, "관찰": 1, "제외": 2}
-    df_summary["_display_order"] = df_summary["매수후보"].map(candidate_order).fillna(1)
     df_summary = df_summary.sort_values(
-        ["_display_order", "스윙우선순위", "AI수급점수"],
-        ascending=[True, False, False],
-    ).drop(columns=["_display_order"], errors="ignore").reset_index(drop=True)
+        ["스윙우선순위", "AI수급점수"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
     df_summary['현재_순위'] = range(1, len(df_summary) + 1)
     if "테마" in df_summary.columns:
         df_summary["테마표시"] = df_summary["테마"].fillna("").astype(str).str.strip()
@@ -2044,10 +2043,9 @@ else:
                     yday_slice["매수후보"] = "관찰"
                 yday_slice["스윙우선순위"] = pd.to_numeric(yday_slice["스윙우선순위"], errors="coerce").fillna(0.0)
                 yday_slice["AI수급점수"] = pd.to_numeric(yday_slice["AI수급점수"], errors="coerce").fillna(0.0)
-                yday_slice["_display_order"] = yday_slice["매수후보"].map(candidate_order).fillna(1)
                 yday_slice = yday_slice.sort_values(
-                    ["_display_order", "스윙우선순위", "AI수급점수"],
-                    ascending=[True, False, False],
+                    ["스윙우선순위", "AI수급점수"],
+                    ascending=[False, False],
                 ).reset_index(drop=True)
                 yday_slice["전일_순위"] = range(1, len(yday_slice) + 1)
                 yday_data = yday_slice[["종목명", "전일_순위"]]
@@ -2075,11 +2073,11 @@ else:
 
     # --- 탭 1: 매크로 인사이트 ---
     with tab1:
-        render_section_header("오늘의 매크로 리포트", "시장 레짐과 매매 강도를 먼저 확인하고 세부 리포트로 내려갑니다.", badge_text="Macro Mode")
+        render_section_header("오늘의 매크로 리포트", "시장 상태와 매매 강도를 먼저 확인하고 세부 리포트로 내려갑니다.", badge_text="Macro Mode")
         macro_refs = get_macro_headline_news()
         render_market_regime_panel(df_summary, macro_refs)
         st.markdown("##### 오늘의 액션 브리프")
-        st.caption("신규매수는 시장 레짐과 수급 후보가 동시에 맞을 때만 압축해서 봅니다.")
+        st.caption("신규매수는 시장 상태와 수급 후보가 동시에 맞을 때만 압축해서 봅니다.")
         render_action_brief(df_summary, macro_refs)
         st.markdown("---")
         if os.path.exists("report.md"):
@@ -2182,6 +2180,7 @@ else:
                 chg_color = "#FF4B4B" if chg > 0 else "#3B82F6" if chg < 0 else "#AAAAAA"
                 chg_str = f"▲ {chg:.2f}%" if chg > 0 else f"▼ {abs(chg):.2f}%" if chg < 0 else "0.00%"
                 ai_score = float(safe_get(row, 'AI수급점수', 0))
+                ai_rank = int(safe_get(row, 'AI순위', 0))
                 rank_chg = safe_get(row, '랭킹추세', '-')
                 f_str = f"{float(safe_get(row, '외인강도(%)', 0)):.1f}%"
                 p_str = f"{float(safe_get(row, '연기금강도(%)', 0)):.1f}%"
@@ -2222,7 +2221,7 @@ else:
 </div>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:0.83em; color:#DDD; background:#0f1726; padding:9px 10px; border-radius:8px; align-items:center; flex-wrap:wrap; gap:8px; border:1px solid #243047;">
-<div>스윙 <b style="color:#FCD34D;">{swing_score:.1f}</b> <span style="color:#7E899E;">/ AI {ai_score:.1f}</span></div>
+<div>스윙 <b style="color:#FCD34D;">{swing_score:.1f}</b> <span style="color:#7E899E;">/ AI {ai_score:.1f} · {ai_rank}위</span></div>
 <div>기금 <b style="color:#FCA5A5;">{p_str}</b> <span style="color:#3A4558;">|</span> 기관동행 <b style="color:#86EFAC;">{inst_score:.1f}</b></div>
 <div style="width:100%; color:#A7B0C0; font-size:0.82em;">점검: {html.escape(str(sell_check))}</div>
 </div>
@@ -2303,7 +2302,7 @@ else:
                 print(f"[WARN] 스크리너 Styler 적용 실패, 기본 테이블로 대체: {e}")
                 styled_df = style_target
 
-            base_columns = ["_index", "매수후보", "진입유형", "스윙우선순위", "테마표시", "AI수급점수", "매도점검", "현재가", "등락률", "소속"]
+            base_columns = ["_index", "매수후보", "진입유형", "스윙우선순위", "테마표시", "AI수급점수", "AI순위", "매도점검", "현재가", "등락률", "소속"]
             advanced_columns = ["기관동행점수", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
             current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
@@ -2326,6 +2325,7 @@ else:
                     "테마표시": st.column_config.Column("테마", width="medium"), 
                     "랭킹추세": st.column_config.Column("순위변동", width="small"), 
                     "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small", format="%.2f"),
+                    "AI순위": st.column_config.NumberColumn("AI순위", width="small", format="%d위"),
                     "신호등급": st.column_config.Column("신호등급", width="small"),
                     "신호신뢰도": st.column_config.NumberColumn("신뢰도", width="small"),
                     "점수변화(안정화)": st.column_config.NumberColumn("안정화Δ", width="small"),
@@ -2683,7 +2683,10 @@ else:
                     """,
                     unsafe_allow_html=True
                 )
-                st.caption(f"정성 점수 {qual_score:.1f} | {score_mode}")
+                st.caption(
+                    f"정성 점수 {qual_score:.1f} | {score_mode} · "
+                    "AI점수는 수급/기술/뉴스를 섞은 원점수, 스윙점수는 AI점수에 기관동행·진입유형·추세품질·시장위험을 다시 반영한 매매 우선순위입니다."
+                )
 
                 st.markdown("##### 최근 1개월 수급 강도")
                 st.markdown(
@@ -2988,8 +2991,8 @@ else:
 
                 if not df_filtered.empty:
                     df_filtered["일간수익률"] = pd.to_numeric(df_filtered["일간수익률"], errors="coerce").fillna(0.0)
-                    equity = (1.0 + (df_filtered["일간수익률"] / 100.0)).cumprod()
-                    df_filtered["전략 누적수익률"] = ((equity - 1.0) * 100.0).round(6)
+                    df_filtered["전략 누적수익률"] = df_filtered["일간수익률"].cumsum().round(6)
+                    equity = 1.0 + (df_filtered["전략 누적수익률"] / 100.0)
                     df_filtered["기간 MDD"] = (((equity / equity.cummax()) - 1.0) * 100.0).round(2)
 
                     benchmark_fetch_errors = []
@@ -3091,10 +3094,10 @@ else:
                         f"""
                         <div class="kpi-grid">
                             <div class="kpi-card">
-                                <div class="kpi-title">시그널 스윙 누적 수익률</div>
+                                <div class="kpi-title">시그널 평균 누적 수익률</div>
                                 <div class="kpi-value">{current_port_ret:+.2f}%</div>
                                 <span class="kpi-delta" style="background: rgba(54,192,106,0.18); color:{port_delta_color};">최근 {port_daily_diff:+.2f}%</span>
-                                <div class="kpi-meta">종가 진입 · 시그널/목표일 청산</div>
+                                <div class="kpi-meta">청산일 평균수익률 단순 누적</div>
                             </div>
                             <div class="kpi-card">
                                 <div class="kpi-title">KOSPI 누적 수익률</div>
@@ -3149,6 +3152,7 @@ else:
                         )
                     ).properties(height=300)
                     st.altair_chart(apply_altair_theme(base_chart), width='stretch')
+                    st.caption("전략선은 청산된 시그널의 평균 수익률을 날짜별로 단순 누적한 값입니다. 실제 계좌 비중/동시보유 한도를 반영한 확정 수익률은 아닙니다.")
 
                     if benchmark_fetch_errors:
                         err_names = ", ".join("KOSPI" if x == "^KS11" else x for x in sorted(set(benchmark_fetch_errors)))
@@ -3193,9 +3197,16 @@ else:
                         open_summary = open_summary.sort_values(["최근평가수익률", "최근점수"], ascending=[False, False])
 
                         st.markdown("#### 진행 중 종목 요약")
-                        open_chart = alt.Chart(open_summary).mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
-                            y=alt.Y("종목명:N", sort="-x", title=None),
+                        base_open_chart = alt.Chart(open_summary).encode(
+                            y=alt.Y(
+                                "종목명:N",
+                                sort="-x",
+                                title=None,
+                                axis=alt.Axis(labelLimit=180, labelPadding=6),
+                            ),
                             x=alt.X("최근평가수익률:Q", title="현재평가수익률 (%)"),
+                        )
+                        open_bar = base_open_chart.mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
                             color=alt.Color(
                                 "방향:N",
                                 scale=alt.Scale(domain=["plus", "minus"], range=["#36C06A", "#E04B4B"]),
@@ -3208,7 +3219,15 @@ else:
                                 alt.Tooltip("신호횟수:Q", title="신호 횟수"),
                                 alt.Tooltip("최근진입일:N", title="최근 진입일"),
                             ],
-                        ).properties(height=max(180, min(360, 28 * len(open_summary))))
+                        )
+                        open_text = base_open_chart.mark_text(
+                            align="left",
+                            baseline="middle",
+                            dx=5,
+                            color="#CBD5E1",
+                            fontSize=11,
+                        ).encode(text=alt.Text("최근평가수익률:Q", format="+.1f"))
+                        open_chart = (open_bar + open_text).properties(height=max(220, min(520, 32 * len(open_summary))))
                         st.altair_chart(apply_altair_theme(open_chart), width="stretch")
 
                         summary_cols = ["종목명", "최근진입일", "신호횟수", "최고순위", "최근점수", "최근평가수익률", "평균평가수익률"]
@@ -3370,7 +3389,10 @@ else:
             if df_port_saved.empty:
                 render_empty_state("포트폴리오 비어 있음", "상단 에디터에서 보유 종목을 추가해 주세요.")
             else:
-                join_cols = ["종목명", "현재가", "등락률", "AI수급점수", "신호등급", "신호신뢰도", "외인강도(%)", "연기금강도(%)"]
+                join_cols = [
+                    "종목명", "현재가", "등락률", "스윙우선순위", "현재_순위", "AI수급점수", "AI순위",
+                    "매수후보", "진입유형", "매도점검", "신호등급", "신호신뢰도", "외인강도(%)", "연기금강도(%)"
+                ]
                 df_joined = pd.merge(
                     df_port_saved,
                     df_summary[join_cols].copy(),
@@ -3381,11 +3403,12 @@ else:
                 f_strength = pd.to_numeric(df_joined["외인강도(%)"], errors="coerce").fillna(0.0)
                 p_strength = pd.to_numeric(df_joined["연기금강도(%)"], errors="coerce").fillna(0.0)
                 ai_score = pd.to_numeric(df_joined["AI수급점수"], errors="coerce").fillna(0.0)
+                swing_score = pd.to_numeric(df_joined["스윙우선순위"], errors="coerce").fillna(0.0)
                 qty_num = pd.to_numeric(df_joined["수량"], errors="coerce").fillna(0.0)
                 buy_num = pd.to_numeric(df_joined["매수가"], errors="coerce").fillna(0.0)
                 cur_num = pd.to_numeric(df_joined["현재가"], errors="coerce").fillna(0.0)
                 risk_a = (f_strength < 0) & (p_strength < 0)
-                risk_b = ai_score < float(ai_warn_threshold)
+                risk_b = swing_score < float(ai_warn_threshold)
                 # 오탐 완화: 단순 단일 신호보다 복합신호(A && AI<임계값) 우선, 매우 낮은 AI는 단독 경보
                 df_joined["수급이탈위험"] = (risk_a & risk_b) | (ai_score < float(ai_critical_threshold))
 
@@ -3442,7 +3465,8 @@ else:
                 ) * 100.0
                 df_view["상태"] = df_view["수급이탈위험"].apply(lambda x: "⚠ 경보" if bool(x) else "정상")
                 display_cols = [
-                    "종목명", "상태", "비중(%)", "매수금액", "수익금액", "수익률(%)", "AI수급점수", "신호등급", "신호신뢰도",
+                    "종목명", "상태", "비중(%)", "매수금액", "수익금액", "수익률(%)",
+                    "스윙우선순위", "현재_순위", "AI수급점수", "AI순위", "매수후보", "진입유형", "매도점검", "신호등급", "신호신뢰도",
                     "외인강도(%)", "연기금강도(%)", "현재가", "수량", "매수가"
                 ]
                 df_display_port = df_view[display_cols].copy()
@@ -3456,7 +3480,10 @@ else:
                         "매수금액": "{:,.0f}원",
                         "수익금액": "{:+,.0f}원",
                         "수익률(%)": "{:+.2f}%",
+                        "스윙우선순위": "{:.2f}",
+                        "현재_순위": "{:.0f}위",
                         "AI수급점수": "{:.2f}",
+                        "AI순위": "{:.0f}위",
                         "신호신뢰도": "{:.1f}",
                         "외인강도(%)": "{:+.1f}%",
                         "연기금강도(%)": "{:+.1f}%",
@@ -3477,6 +3504,9 @@ else:
                             qty = float(pd.to_numeric(row.get("수량"), errors="coerce") or 0.0)
                             buy = float(pd.to_numeric(row.get("매수가"), errors="coerce") or 0.0)
                             ai = float(pd.to_numeric(row.get("AI수급점수"), errors="coerce") or 0.0)
+                            swing = float(pd.to_numeric(row.get("스윙우선순위"), errors="coerce") or 0.0)
+                            swing_rank = int(pd.to_numeric(row.get("현재_순위"), errors="coerce") or 0)
+                            ai_rank = int(pd.to_numeric(row.get("AI순위"), errors="coerce") or 0)
                             fs = float(pd.to_numeric(row.get("외인강도(%)"), errors="coerce") or 0.0)
                             ps = float(pd.to_numeric(row.get("연기금강도(%)"), errors="coerce") or 0.0)
                             sig = float(pd.to_numeric(row.get("신호신뢰도"), errors="coerce") or 0.0)
@@ -3512,7 +3542,8 @@ else:
                                         <span style="background:#182236; color:{amt_color}; border:1px solid #2D3A55; border-radius:999px; padding:3px 9px; font-size:0.79em;">수익금액 {profit_amt:+,.0f}원</span>
                                     </div>
                                     <div style="margin-top:8px;">{risk_badge}</div>
-                                    <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">🏆 AI {ai:.1f} | 신호 {row.get('신호등급','-')} ({sig:.1f}) | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
+                                    <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">스윙 {swing:.1f} · {swing_rank}위 | AI {ai:.1f} · {ai_rank}위 | 신호 {row.get('신호등급','-')} ({sig:.1f})</div>
+                                    <div style="color:#AAB2C5; margin-top:4px; font-size:0.84em;">{row.get('매수후보','-')} · {row.get('진입유형','-')} · 점검 {row.get('매도점검','-')} | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
@@ -3573,8 +3604,8 @@ else:
                     <div style="background:linear-gradient(135deg, #141A26, #101624); border:1px solid #2A344A; border-radius:12px; padding:12px 14px; margin-bottom:10px;">
                         <div style="color:#E5E7EB; font-weight:700; margin-bottom:6px;">경보 규칙 안내</div>
                         <div style="color:#AAB2C5; font-size:0.92em; line-height:1.55;">
-                            • <b>복합 경보</b>: 외인/연기금이 <b>동시에 매도 전환</b>이고, AI 점수가 기준 미만일 때<br/>
-                            • <b>단독 급락 경보</b>: AI 점수만 급락 기준 미만일 때
+                            • <b>복합 경보</b>: 외인/연기금이 <b>동시에 매도 전환</b>이고, 스윙 점수가 기준 미만일 때<br/>
+                            • <b>단독 급락 경보</b>: AI 점수가 급락 기준 미만일 때
                         </div>
                     </div>
                     """,

@@ -189,6 +189,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 picked = picked.sort_values(["순위", "AI수급점수"], ascending=[True, False])
         else:
             picked = day.sort_values(["순위", "AI수급점수"], ascending=[True, False]).head(int(top_n)).copy()
+        picked = picked.reset_index(drop=True)
+        picked["순위"] = range(1, len(picked) + 1)
         day_slices.append(picked.head(int(top_n)))
     score = pd.concat(day_slices, ignore_index=True) if day_slices else pd.DataFrame()
     if score.empty:
@@ -335,8 +337,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
         .sort_values("날짜")
     )
     perf["일간수익률"] = pd.to_numeric(perf["일간수익률"], errors="coerce").fillna(0.0)
-    equity = (1.0 + (perf["일간수익률"] / 100.0)).cumprod()
-    perf["누적수익률"] = ((equity - 1.0) * 100.0).round(6)
+    perf["누적수익률"] = perf["일간수익률"].cumsum().round(6)
+    equity = 1.0 + (perf["누적수익률"] / 100.0)
     drawdown = ((equity / equity.cummax()) - 1.0) * 100.0
     perf["최대낙폭(%)"] = drawdown.round(2)
     perf["리스크상태"] = perf["최대낙폭(%)"].apply(_risk_state_from_mdd)
@@ -488,6 +490,7 @@ def infer_theme_candidate(stock_name, sector_name):
     name = str(stock_name or "").lower()
     sector = str(sector_name or "").lower()
     name_rules = [
+        (["로보티즈", "레인보우로보틱스", "두산로보틱스", "뉴로메카"], "휴머노이드;로봇", "종목명 키워드(휴머노이드 로봇)", 0.96),
         (["로보", "robot"], "로봇;자동화", "종목명 키워드(로보/robot)", 0.92),
         (["태양", "solar", "에너지솔루션"], "태양광;신재생", "종목명 키워드(태양/solar)", 0.9),
         (["전선", "전기"], "전력망;전선", "종목명 키워드(전선/전기)", 0.88),
@@ -1407,7 +1410,11 @@ def resolve_max_buy_candidates(current_vix=20.0):
         vix = float(current_vix)
     except Exception:
         vix = 20.0
-    return 1 if vix >= 28 else 2
+    if vix >= 28:
+        return 1
+    if vix <= 18:
+        return 3
+    return 2
 
 
 def write_daily_swing_candidates(df_final, today_date):
@@ -1481,7 +1488,7 @@ def _request_html(url, headers, timeout=4, retries=2):
 def load_score_trend_safe():
     """머지 충돌/깨진 score_trend.csv를 방어적으로 로드."""
     base_cols = ['종목명', '종목코드', 'AI수급점수', '순위', '날짜']
-    optional_cols = ['매수후보', '진입유형', '스윙우선순위', '기관동행점수', '진입코멘트', '매도점검', '테마', '정배열', '추세품질점수', 'MA5', 'MA10', 'MA20']
+    optional_cols = ['매수후보', '진입유형', '스윙우선순위', '기관동행점수', '진입코멘트', '매도점검', '테마', '정배열', '추세품질점수', 'MA5', 'MA10', 'MA20', 'AI순위']
     if not csv_exists("score_trend.csv"):
         return pd.DataFrame(columns=base_cols)
     df = read_table_prefer_db("score_trend.csv", on_bad_lines="skip")
@@ -2208,7 +2215,9 @@ def run_scraper(manual_full_parse=False):
         if c not in df_final.columns:
             df_final[c] = None
     df_trend_new = df_final[trend_cols].copy()
-    df_trend_new['순위'] = df_trend_new['AI수급점수'].rank(method='min', ascending=False).astype(int)
+    df_trend_new["AI순위"] = pd.to_numeric(df_trend_new["AI수급점수"], errors="coerce").rank(method="min", ascending=False).astype(int)
+    df_trend_new = df_trend_new.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False]).reset_index(drop=True)
+    df_trend_new['순위'] = range(1, len(df_trend_new) + 1)
     df_trend_new['날짜'] = today_date
 
     trend_file = "score_trend.csv"
