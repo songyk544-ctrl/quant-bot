@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 import urllib.parse
@@ -34,6 +34,11 @@ BRAND_LOGO_PATH = "assets/brand/alpha_pulse_cut.png"
 PAGE_ICON = "assets/brand/alpha_pulse_favicon.png" if os.path.exists("assets/brand/alpha_pulse_favicon.png") else BRAND_LOGO_PATH
 
 st.set_page_config(layout="wide", page_title=APP_NAME, page_icon=PAGE_ICON)
+
+KST = timezone(timedelta(hours=9))
+
+def now_kst():
+    return datetime.now(KST)
 
 
 def _logo_data_uri(path):
@@ -309,17 +314,14 @@ def render_market_regime_panel(df_summary_local, macro_news_refs):
     <div class="regime-mini">
       <div class="regime-mini-label">전략 모드</div>
       <div class="regime-mini-value">{summary['mode']}</div>
-      <div class="regime-mini-meta">{summary['guide']}</div>
     </div>
     <div class="regime-mini">
       <div class="regime-mini-label">오늘 신규후보</div>
       <div class="regime-mini-value">{new_count}개</div>
-      <div class="regime-mini-meta">한 번에 많이 담지 않고 상위 후보만 압축</div>
     </div>
     <div class="regime-mini">
       <div class="regime-mini-label">뉴스 키워드</div>
       <div class="regime-mini-value">{tag_text}</div>
-      <div class="regime-mini-meta">뉴스 {len(macro_news_refs or [])}건 반영</div>
     </div>
   </div>
   <ul class="regime-news">{news_html}</ul>
@@ -330,7 +332,7 @@ def render_market_regime_panel(df_summary_local, macro_news_refs):
 
 def render_product_header(df_summary_local):
     summary = build_market_regime_summary()
-    updated_at = datetime.now().strftime("%H:%M")
+    updated_at = now_kst().strftime("%m/%d %H:%M")
     new_count = 0
     watch_count = 0
     avoid_count = 0
@@ -647,6 +649,41 @@ st.markdown(
     .decision-label { color:#8EA0BE; font-size:0.73em; font-weight:800; margin-bottom:4px; }
     .decision-value { font-size:1.04em; font-weight:900; line-height:1.2; }
     .decision-meta { color:#9CA3AF; font-size:0.76em; margin-top:5px; line-height:1.35; }
+    .alpha-card-new {
+      position:relative;
+      overflow:hidden;
+      border-color:#2F6B4A !important;
+      box-shadow:0 8px 22px rgba(48,218,169,0.14), inset 0 0 0 1px rgba(48,218,169,0.12) !important;
+      animation:alphaNewPulse 2.8s ease-in-out infinite;
+    }
+    .alpha-card-new::before {
+      content:"";
+      position:absolute;
+      top:0;
+      left:-45%;
+      width:36%;
+      height:100%;
+      background:linear-gradient(90deg, transparent, rgba(48,218,169,0.14), transparent);
+      transform:skewX(-16deg);
+      animation:alphaSweep 3.8s ease-in-out infinite;
+      pointer-events:none;
+    }
+    @keyframes alphaNewPulse {
+      0%, 100% { border-color:#2F6B4A; }
+      50% { border-color:#30DAA9; }
+    }
+    @keyframes alphaSweep {
+      0% { left:-45%; opacity:0; }
+      20% { opacity:1; }
+      70% { opacity:0.85; }
+      100% { left:115%; opacity:0; }
+    }
+    .alpha-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:9px; }
+    .alpha-card-left { min-width:0; flex:1 1 auto; }
+    .alpha-chip-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:7px; }
+    .alpha-name-row { display:flex; align-items:flex-start; gap:8px; flex-wrap:wrap; }
+    .alpha-stock-name { color:#FFF; font-size:1.08em; font-weight:850; line-height:1.22; word-break:keep-all; overflow-wrap:anywhere; }
+    .alpha-price-box { min-width:88px; text-align:right; flex:0 0 auto; }
     .macro-card {
       background:linear-gradient(140deg, var(--qe-bg-2), #111827);
       border:1px solid var(--qe-border-soft);
@@ -727,6 +764,10 @@ st.markdown(
       .qe-status-chip { font-size:0.72em; padding:4px 8px; }
       .theme-flow-grid { grid-template-columns:1fr 1fr; gap:7px; }
       .decision-grid { grid-template-columns:1fr; gap:7px; }
+      .alpha-card-head { align-items:flex-start; }
+      .alpha-name-row { display:block; }
+      .alpha-stock-name { display:block; font-size:1.12em; margin-bottom:7px; }
+      .alpha-price-box { min-width:78px; }
       .qe-sidebar-brand-footer { left:12px; bottom:10px; }
       .qe-brand-side-img { width:22px; height:22px; }
       .qe-brand-side-wordmark { font-size:0.92rem; }
@@ -1025,7 +1066,7 @@ def load_performance_trend_safe():
 def load_swing_trades_safe():
     base_cols = [
         "거래ID", "진입일", "종목명", "종목코드", "진입순위", "AI수급점수",
-        "진입유형", "스윙우선순위", "진입코멘트", "보유일수", "진입가", "청산일", "청산가", "수익률", "상태",
+        "진입유형", "스윙우선순위", "진입코멘트", "보유일수", "청산방식", "청산사유", "진입가", "청산일", "청산가", "수익률", "상태",
     ]
     if not csv_exists("swing_trades.csv") and not table_exists("swing_trades"):
         return pd.DataFrame(columns=base_cols)
@@ -1540,7 +1581,7 @@ def render_action_brief(df_summary_local, macro_news_refs):
         risk_text = "주의"
         risk_detail = "시황 뉴스 지연"
 
-    updated_at = datetime.now().strftime("%H:%M")
+    updated_at = now_kst().strftime("%H:%M")
     buy_conf = str(buy_row.get("신호등급", "-"))
     watch_conf = str(watch_row.get("신호등급", "-"))
     def _brief_card(title, value, badge_html, meta_text):
@@ -1556,22 +1597,16 @@ def render_action_brief(df_summary_local, macro_news_refs):
     card_buy = _brief_card(
         "오늘의 매수 후보",
         buy_row.get("종목명", "-"),
-        f'<span class="kpi-delta" style="background:rgba(54,192,106,0.18); color:#36C06A;">AI {float(buy_row.get("AI수급점수", 0)):.1f}</span>',
-        f"{build_quality_badge(buy_row)} · 신호 {buy_conf} · 갱신 {updated_at}"
+        f'<span class="kpi-delta" style="background:rgba(54,192,106,0.18); color:#36C06A;">스윙 {float(buy_row.get("스윙우선순위", buy_row.get("AI수급점수", 0))):.1f}</span>',
+        f"{build_quality_badge(buy_row)} · {buy_conf} · {updated_at}"
     )
     card_watch = _brief_card(
         "관망 후보",
         watch_row.get("종목명", "-"),
-        f'<span class="kpi-delta" style="background:rgba(59,130,246,0.16); color:#60A5FA;">AI {float(watch_row.get("AI수급점수", 0)):.1f}</span>',
-        f"신호 {watch_conf} · 추세 확인 필요 · 갱신 {updated_at}"
+        f'<span class="kpi-delta" style="background:rgba(59,130,246,0.16); color:#60A5FA;">스윙 {float(watch_row.get("스윙우선순위", watch_row.get("AI수급점수", 0))):.1f}</span>',
+        f"{watch_conf} · {updated_at}"
     )
-    card_risk = _brief_card(
-        "리스크 경보",
-        risk_text,
-        f'<span class="kpi-delta" style="background:rgba(224,75,75,0.16); color:#E04B4B;">{risk_detail}</span>',
-        f"뉴스 {len(macro_news_refs or [])}건 반영 · 갱신 {updated_at}"
-    )
-    st.markdown(f'<div class="kpi-grid">{card_buy}{card_watch}{card_risk}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-grid">{card_buy}{card_watch}</div>', unsafe_allow_html=True)
 
 def _request_html(url, headers, timeout=4, retries=2):
     """가벼운 재시도로 일시적 네트워크 실패를 완화합니다."""
@@ -1996,11 +2031,25 @@ else:
         df_trend = load_score_trend_safe()
         dates = sorted(df_trend['날짜'].unique(), reverse=True)
         if len(dates) >= 2:
-            yday_data = df_trend[df_trend['날짜'] == dates[1]][['종목명', '순위']]
-            yday_data.columns = ['종목명', '전일_순위']
+            yday_slice = df_trend[df_trend['날짜'] == dates[1]].copy()
+            if "스윙우선순위" in yday_slice.columns:
+                if "매수후보" not in yday_slice.columns:
+                    yday_slice["매수후보"] = "관찰"
+                yday_slice["스윙우선순위"] = pd.to_numeric(yday_slice["스윙우선순위"], errors="coerce").fillna(0.0)
+                yday_slice["AI수급점수"] = pd.to_numeric(yday_slice["AI수급점수"], errors="coerce").fillna(0.0)
+                yday_slice["_display_order"] = yday_slice["매수후보"].map(candidate_order).fillna(1)
+                yday_slice = yday_slice.sort_values(
+                    ["_display_order", "스윙우선순위", "AI수급점수"],
+                    ascending=[True, False, False],
+                ).reset_index(drop=True)
+                yday_slice["전일_순위"] = range(1, len(yday_slice) + 1)
+                yday_data = yday_slice[["종목명", "전일_순위"]]
+            else:
+                yday_data = yday_slice[['종목명', '순위']]
+                yday_data.columns = ['종목명', '전일_순위']
             df_summary = pd.merge(df_summary, yday_data, on='종목명', how='left')
-            df_summary['전일_순위'] = df_summary['전일_순위'].fillna(df_summary['AI순위'])
-            df_summary['랭킹추세'] = (df_summary['전일_순위'] - df_summary['AI순위']).apply(lambda x: f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-"))
+            df_summary['전일_순위'] = df_summary['전일_순위'].fillna(df_summary['현재_순위'])
+            df_summary['랭킹추세'] = (df_summary['전일_순위'] - df_summary['현재_순위']).apply(lambda x: f"▲ {int(x)}" if x > 0 else (f"▼ {abs(int(x))}" if x < 0 else "-"))
         else: df_summary['랭킹추세'] = "-"
     else: df_summary['랭킹추세'] = "-"
 
@@ -2106,11 +2155,15 @@ else:
         
         st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
         
-        df_display = df_summary if is_vip else df_summary.head(5)
+        df_display_all = df_summary if is_vip else df_summary.head(5)
+        if "alpha_card_limit" not in st.session_state:
+            st.session_state.alpha_card_limit = 10
+        if st.session_state.view_mode == "table":
+            df_display = df_display_all
+        else:
+            df_display = df_display_all.head(int(st.session_state.alpha_card_limit))
 
         if st.session_state.view_mode == "card":
-            st.caption("오늘 신규후보와 관찰후보를 나눠서 봅니다. 상세 내용은 '종목 분석' 탭에서 확인하세요.")
-            
             html_lines = []
             current_group = None
             for idx, row in df_display.iterrows():
@@ -2139,22 +2192,24 @@ else:
                 
                 rc_color = "#FF4B4B" if "▲" in str(rank_chg) else ("#3B82F6" if "▼" in str(rank_chg) else "#888888")
                 
-                card_cls = ""
+                card_cls = "alpha-card-new" if buy_tag == "신규후보" else ""
                 rank_badge_cls = ""
                 name_cls = ""
                 card_html = f"""
 <div class="{card_cls}" style="background:#111b2d; padding:12px 13px; border-radius:10px; margin-bottom:9px; border:1px solid #26324A; box-shadow:0 6px 16px rgba(0,0,0,0.14);">
-<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 9px; gap: 10px;">
-<div style="display: flex; flex-direction: column; gap: 7px; min-width:0;">
-<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+<div class="alpha-card-head">
+<div class="alpha-card-left">
+<div class="alpha-chip-row">
 <span class="{rank_badge_cls}" style="background:#172033; border:1px solid #334155; color:#DDE6F5; font-size:0.7em; font-weight:800; padding:4px 8px; border-radius:999px; white-space:nowrap;">스윙 {rank}위</span>
 <span style="font-size: 0.72em; font-weight: 800; color: {tag_color}; background:{tag_bg}; border:1px solid #374151; padding:4px 7px; border-radius:999px; white-space:nowrap;">{buy_tag} · {entry_type}</span>
 <span style="font-size: 0.8em; font-weight: bold; color: {rc_color}; white-space: nowrap;">{rank_chg}</span>
-<span class="{name_cls}" style="font-size: 1.08em; font-weight: 850; color: #FFF; line-height: 1.2;">{html.escape(str(name))}</span>
 </div>
-<div><span style="font-size: 0.74em; color:#AAB2C5; padding:3px 7px; background:#172033; border:1px solid #2D3A55; border-radius:999px;">{html.escape(str(sector))}</span></div>
+<div class="alpha-name-row">
+<span class="{name_cls} alpha-stock-name">{html.escape(str(name))}</span>
+<span style="font-size:0.74em; color:#AAB2C5; padding:3px 7px; background:#172033; border:1px solid #2D3A55; border-radius:999px; display:inline-block;">{html.escape(str(sector))}</span>
 </div>
-<div style="text-align: right; min-width: 80px;">
+</div>
+<div class="alpha-price-box">
 <div style="font-size: 1.1em; font-weight: 700; color: #FFF;">{price}원</div>
 <div style="font-size: 0.9em; font-weight: 800; color: {chg_color};">{chg_str}</div>
 </div>
@@ -2170,6 +2225,13 @@ else:
             
             cards_container_html = f"<div style='padding: 5px;'>{''.join(html_lines)}</div>"
             st.markdown(cards_container_html, unsafe_allow_html=True)
+
+            total_cards = len(df_display_all)
+            shown_cards = len(df_display)
+            if is_vip and shown_cards < total_cards:
+                if st.button(f"10종목 더보기 ({shown_cards}/{total_cards})", use_container_width=True):
+                    st.session_state.alpha_card_limit = min(total_cards, int(st.session_state.alpha_card_limit) + 10)
+                    st.rerun()
             
             if not is_vip:
                 show_premium_paywall("6위부터 20위까지의 숨겨진 AI 쏠림 주도주를 확인하세요.")
@@ -2422,7 +2484,7 @@ else:
             pef_str_val = float(safe_get(selected_row, '사모강도(%)', 0))
             f_streak = int(safe_get(selected_row, '외인연속', 0))
             p_streak = int(safe_get(selected_row, '연기금연속', 0))
-            display_final = round(float(ai_score), 1)
+            display_final = round(float(swing_priority), 1)
 
             trend_map = {"외인": make_trend_svg([]), "연기금": make_trend_svg([]), "투신": make_trend_svg([]), "사모": make_trend_svg([])}
             signed_streak = {"외인": f_streak, "연기금": p_streak, "투신": 0, "사모": 0}
@@ -2453,7 +2515,7 @@ else:
                 f"""
                 <div class="hero-grid">
                     <div class="hero-card">
-                        <div class="hero-label">핵심 점수</div>
+                        <div class="hero-label">스윙 점수</div>
                         <div class="hero-value">{display_final:.1f}점</div>
                         <div class="hero-sub">전체 {int(cur_rank)}위 · {rank_trend}</div>
                     </div>
@@ -2489,12 +2551,20 @@ else:
                 """,
                 unsafe_allow_html=True,
             )
-            st.caption("라인 색상: 최근 흐름이 시작점 대비 상승이면 초록, 하락이면 빨강입니다.")
-
             # 선택 종목의 최근 순위 추이(낮을수록 상위이므로 축을 반전해 표시)
             if csv_exists("score_trend.csv") or table_exists("score_trend"):
                 df_rank_trend = load_score_trend_safe()
                 if not df_rank_trend.empty and {"날짜", "종목명", "순위"}.issubset(df_rank_trend.columns):
+                    if "스윙우선순위" in df_rank_trend.columns:
+                        rt = df_rank_trend.copy()
+                        if "매수후보" not in rt.columns:
+                            rt["매수후보"] = "관찰"
+                        rt["스윙우선순위"] = pd.to_numeric(rt["스윙우선순위"], errors="coerce").fillna(0.0)
+                        rt["AI수급점수"] = pd.to_numeric(rt["AI수급점수"], errors="coerce").fillna(0.0)
+                        rt["_display_order"] = rt["매수후보"].map(candidate_order).fillna(1)
+                        rt = rt.sort_values(["날짜", "_display_order", "스윙우선순위", "AI수급점수"], ascending=[True, True, False, False])
+                        rt["순위"] = rt.groupby("날짜").cumcount() + 1
+                        df_rank_trend = rt.drop(columns=["_display_order"], errors="ignore")
                     target_rank = df_rank_trend[df_rank_trend["종목명"] == target_stock].copy()
                     if not target_rank.empty:
                         target_rank["순위"] = pd.to_numeric(target_rank["순위"], errors="coerce")
@@ -2524,18 +2594,17 @@ else:
                                 )
                                 .properties(height=190)
                             )
-                            st.markdown("##### 최근 순위 추이")
+                            st.markdown("##### 최근 스윙 순위 추이")
                             st.altair_chart(apply_altair_theme(rank_chart), width="stretch")
-                            st.caption("최근 20거래일 기준입니다. 선이 위로 갈수록 순위가 개선된 것입니다.")
 
             with st.expander("상세 분석 펼치기", expanded=False):
                 st.markdown(
                     f"""
                     <div class="stock-grid">
                         <div class="stock-card">
-                            <div class="stock-label">🏆 AI 점수</div>
-                            <div class="stock-value">{float(ai_score):.1f}점</div>
-                            <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend} / 신호 {signal_grade}({signal_conf:.1f})</div>
+                            <div class="stock-label">스윙 점수</div>
+                            <div class="stock-value">{float(swing_priority):.1f}점</div>
+                            <div class="stock-sub">전체 {int(cur_rank)}위 / {rank_trend} / AI {float(ai_score):.1f}</div>
                         </div>
                         <div class="stock-card">
                             <div class="stock-label">💰 시가총액</div>
@@ -2555,7 +2624,7 @@ else:
                     unsafe_allow_html=True
                 )
 
-                st.markdown("##### 점수 산출 구조")
+                st.markdown("##### 스윙 점수 구조")
                 gauge = go.Figure(go.Indicator(
                     mode="gauge",
                     value=display_final,
@@ -2587,12 +2656,12 @@ else:
                     f"""
                     <div class="score-kpi-grid">
                         <div class="score-kpi">
-                            <div class="score-kpi-label">최종 점수</div>
+                            <div class="score-kpi-label">스윙 점수</div>
                             <div class="score-kpi-value">{display_final:.1f}</div>
                         </div>
                         <div class="score-kpi">
-                            <div class="score-kpi-label">정량 점수</div>
-                            <div class="score-kpi-value">{quant_score:.1f}</div>
+                            <div class="score-kpi-label">AI 점수</div>
+                            <div class="score-kpi-value">{float(ai_score):.1f}</div>
                         </div>
                         <div class="score-kpi">
                             <div class="score-kpi-label">정성 보정</div>
@@ -2845,7 +2914,7 @@ else:
                             for n in news_list: st.caption(f"- {n}")
                             if not news_list: st.caption("최근 종목 뉴스가 없습니다.")
                         
-                        today_str = datetime.now().strftime("%Y년 %m월 %d일")
+                        today_str = now_kst().strftime("%Y년 %m월 %d일")
                         
                         prompt = f"""
                         너는 국내 주식시장을 분석하는 수석 퀀트 애널리스트야. 오늘은 {today_str}이야.
@@ -2976,7 +3045,11 @@ else:
                     closed_trades = df_swing_trades[df_swing_trades["상태"].astype(str).str.lower() == "closed"].copy()
                     closed_trades = closed_trades[closed_trades["청산일_dt"].dt.date >= selected_start_date]
                     open_trades = df_swing_trades[df_swing_trades["상태"].astype(str).str.lower() == "open"].copy()
-                    primary_open_trades = open_trades[open_trades["보유일수"] == 10].copy()
+                    if "청산방식" not in open_trades.columns:
+                        open_trades["청산방식"] = ""
+                    primary_open_trades = open_trades[open_trades["청산방식"].astype(str).eq("시그널")].copy()
+                    if primary_open_trades.empty:
+                        primary_open_trades = open_trades[open_trades["보유일수"] == 10].copy()
                     latest_entry_date = primary_open_trades["진입일_dt"].max() if not primary_open_trades.empty else None
                     new_candidates = (
                         primary_open_trades[primary_open_trades["진입일_dt"] == latest_entry_date].copy()
@@ -2986,6 +3059,7 @@ else:
                     win_rate = (closed_trades["수익률"].gt(0).mean() * 100.0) if not closed_trades.empty else 0.0
                     avg_ret = float(closed_trades["수익률"].mean()) if not closed_trades.empty else 0.0
                     d5 = closed_trades[closed_trades["보유일수"] == 5]
+                    signal_closed = closed_trades[closed_trades.get("청산방식", "").astype(str).eq("시그널")] if "청산방식" in closed_trades.columns else pd.DataFrame()
                     d10 = closed_trades[closed_trades["보유일수"] == 10]
                     d5_ret = float(d5["수익률"].mean()) if not d5.empty else 0.0
                     d10_ret = float(d10["수익률"].mean()) if not d10.empty else 0.0
@@ -3005,10 +3079,10 @@ else:
                         f"""
                         <div class="kpi-grid">
                             <div class="kpi-card">
-                                <div class="kpi-title">D+10 스윙 누적 수익률</div>
+                                <div class="kpi-title">시그널 스윙 누적 수익률</div>
                                 <div class="kpi-value">{current_port_ret:+.2f}%</div>
                                 <span class="kpi-delta" style="background: rgba(54,192,106,0.18); color:{port_delta_color};">최근 {port_daily_diff:+.2f}%</span>
-                                <div class="kpi-meta">종가 진입 · D+10 종가 청산 기준</div>
+                                <div class="kpi-meta">종가 진입 · 시그널/목표일 청산</div>
                             </div>
                             <div class="kpi-card">
                                 <div class="kpi-title">KOSPI 누적 수익률</div>
@@ -3019,8 +3093,7 @@ else:
                             <div class="kpi-card">
                                 <div class="kpi-title">진행 중 스윙</div>
                                 <div class="kpi-value">{len(primary_open_trades):,}</div>
-                                <span class="kpi-delta" style="background: rgba(252,211,77,0.16); color:#FCD34D;">D+10 기본 추적</span>
-                                <div class="kpi-meta">D+5는 중간점검 기준</div>
+                                <span class="kpi-delta" style="background: rgba(252,211,77,0.16); color:#FCD34D;">시그널 추적</span>
                             </div>
                         </div>
                         """,
@@ -3036,7 +3109,7 @@ else:
                         </div>
                         <div class="score-kpi-grid">
                             <div class="score-kpi"><div class="score-kpi-label">D+5 평균</div><div class="score-kpi-value">{d5_ret:+.2f}%</div></div>
-                            <div class="score-kpi"><div class="score-kpi-label">D+10 평균</div><div class="score-kpi-value">{d10_ret:+.2f}%</div></div>
+                            <div class="score-kpi"><div class="score-kpi-label">시그널 종료</div><div class="score-kpi-value">{len(signal_closed):,}</div></div>
                             <div class="score-kpi"><div class="score-kpi-label">신규 후보</div><div class="score-kpi-value">{len(new_candidates):,}</div></div>
                         </div>
                         """,
@@ -3137,7 +3210,7 @@ else:
                             width='stretch'
                         )
 
-                        open_cols = ["진입일", "종목명", "진입순위", "목표보유거래일", "진입가", "청산일", "청산가", "현재평가수익률", "상태"]
+                        open_cols = ["진입일", "종목명", "진입순위", "목표보유거래일", "청산방식", "청산사유", "진입가", "청산일", "청산가", "현재평가수익률", "상태"]
                         with st.expander(f"진행 중인 {APP_NAME} 스윙 후보", expanded=False):
                             st.dataframe(
                                 open_view.sort_values(["진입일_dt", "진입순위"], ascending=[False, True])[open_cols].style.format({
@@ -3150,7 +3223,7 @@ else:
                             )
 
                     if not closed_trades.empty:
-                        view_cols = ["진입일", "청산일", "종목명", "진입순위", "보유일수", "진입가", "청산가", "수익률", "진입유형"]
+                        view_cols = ["진입일", "청산일", "종목명", "진입순위", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
                         trade_view = closed_trades.sort_values("청산일_dt", ascending=False)[view_cols].head(80)
                         with st.expander("종가 진입/청산 거래 로그", expanded=False):
                             st.dataframe(

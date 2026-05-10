@@ -213,13 +213,52 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
         if entry_price <= 0:
             continue
 
+        entry_type_val = sig.get("진입유형", "랭킹Top3")
+        entry_type_val = "랭킹Top3" if pd.isna(entry_type_val) or not str(entry_type_val).strip() else str(entry_type_val)
+        swing_priority_val = pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce")
+        swing_priority_val = 0.0 if pd.isna(swing_priority_val) else float(swing_priority_val)
+        comment_val = sig.get("진입코멘트", "")
+        comment_val = "" if pd.isna(comment_val) else str(comment_val)
+
+        future_sig = score[
+            (score["종목명"].astype(str) == name)
+            & (score["날짜_dt"] > entry_date)
+            & (score["날짜_dt"] <= entry_date + pd.Timedelta(days=25))
+        ].sort_values("날짜_dt")
+
+        def _resolve_exit(max_horizon):
+            fallback_idx = min(entry_idx + int(max_horizon), len(price_df) - 1)
+            fallback_status = "closed" if entry_idx + int(max_horizon) < len(price_df) else "open"
+            fallback_reason = f"D+{int(max_horizon)}"
+            for step in range(1, int(max_horizon) + 1):
+                cur_idx = entry_idx + step
+                if cur_idx >= len(price_df):
+                    break
+                cur_row = price_df.iloc[cur_idx]
+                cur_date = pd.to_datetime(cur_row["일자_dt"]).normalize()
+                cur_price = float(cur_row["종가"])
+                cur_ret = ((cur_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
+                sig_rows = future_sig[future_sig["날짜_dt"].dt.normalize() <= cur_date]
+                latest_sig = sig_rows.iloc[-1] if not sig_rows.empty else None
+                sell_text = str(latest_sig.get("매도점검", "")) if latest_sig is not None else ""
+                candidate_state = str(latest_sig.get("매수후보", "")) if latest_sig is not None else ""
+                latest_swing = pd.to_numeric(latest_sig.get("스윙우선순위", swing_priority_val), errors="coerce") if latest_sig is not None else swing_priority_val
+                latest_swing = swing_priority_val if pd.isna(latest_swing) else float(latest_swing)
+                if step >= 3 and cur_ret <= -4.0:
+                    return cur_idx, "closed", "손절"
+                if step >= 5 and cur_ret >= 8.0:
+                    return cur_idx, "closed", "목표수익"
+                if step >= 5 and ("축소" in sell_text or "주의" in sell_text or "청산" in sell_text or "이탈" in sell_text):
+                    return cur_idx, "closed", "매도점검"
+                if step >= 5 and candidate_state == "제외":
+                    return cur_idx, "closed", "후보제외"
+                if step >= 5 and latest_swing <= max(35.0, swing_priority_val - 10.0):
+                    return cur_idx, "closed", "스윙약화"
+            return fallback_idx, fallback_status, fallback_reason
+
+        signal_exit_idx, signal_status, signal_reason = _resolve_exit(primary_horizon)
+
         for horizon in horizons:
-            entry_type_val = sig.get("진입유형", "랭킹Top3")
-            entry_type_val = "랭킹Top3" if pd.isna(entry_type_val) or not str(entry_type_val).strip() else str(entry_type_val)
-            swing_priority_val = pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce")
-            swing_priority_val = 0.0 if pd.isna(swing_priority_val) else float(swing_priority_val)
-            comment_val = sig.get("진입코멘트", "")
-            comment_val = "" if pd.isna(comment_val) else str(comment_val)
             exit_idx = entry_idx + int(horizon)
             status = "closed" if exit_idx < len(price_df) else "open"
             exit_row = price_df.iloc[exit_idx] if status == "closed" else price_df.iloc[-1]
@@ -236,6 +275,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 "스윙우선순위": round(swing_priority_val, 2),
                 "진입코멘트": comment_val,
                 "보유일수": int(horizon),
+                "청산방식": f"D+{int(horizon)}",
+                "청산사유": f"D+{int(horizon)}",
                 "진입가": round(entry_price, 2),
                 "청산일": pd.to_datetime(exit_row["일자_dt"]).strftime("%Y-%m-%d"),
                 "청산가": round(exit_price, 2),
@@ -243,14 +284,40 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 "상태": status,
             })
 
+        signal_exit_row = price_df.iloc[signal_exit_idx]
+        signal_exit_price = float(signal_exit_row["종가"])
+        signal_ret = ((signal_exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
+        signal_hold_days = max(1, int(signal_exit_idx - entry_idx))
+        rows.append({
+            "거래ID": f"{entry_date.strftime('%Y%m%d')}_{name}_SIGNAL",
+            "진입일": entry_date.strftime("%Y-%m-%d"),
+            "종목명": name,
+            "종목코드": str(sig.get("종목코드", "") or "").zfill(6),
+            "진입순위": int(sig["순위"]),
+            "AI수급점수": round(float(sig.get("AI수급점수", 0.0) or 0.0), 2),
+            "진입유형": entry_type_val,
+            "스윙우선순위": round(swing_priority_val, 2),
+            "진입코멘트": comment_val,
+            "보유일수": signal_hold_days,
+            "청산방식": "시그널",
+            "청산사유": signal_reason,
+            "진입가": round(entry_price, 2),
+            "청산일": pd.to_datetime(signal_exit_row["일자_dt"]).strftime("%Y-%m-%d"),
+            "청산가": round(signal_exit_price, 2),
+            "수익률": round(signal_ret, 4),
+            "상태": signal_status,
+        })
+
     trades = pd.DataFrame(rows)
     if trades.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    trades = trades.sort_values(["진입일", "보유일수", "진입순위", "종목명"])
+    trades = trades.sort_values(["진입일", "청산방식", "보유일수", "진입순위", "종목명"])
     write_table_dual(trades, "swing_trades.csv", index=False, encoding="utf-8-sig")
 
-    closed_primary = trades[(trades["상태"] == "closed") & (trades["보유일수"] == int(primary_horizon))].copy()
+    closed_primary = trades[(trades["상태"] == "closed") & (trades.get("청산방식", "") == "시그널")].copy()
+    if closed_primary.empty:
+        closed_primary = trades[(trades["상태"] == "closed") & (trades["보유일수"] == int(primary_horizon))].copy()
     if closed_primary.empty:
         perf = pd.DataFrame(columns=["날짜", "일간수익률", "누적수익률", "최대낙폭(%)", "리스크상태", "종료거래수", "승률(%)"])
         write_table_dual(perf, "swing_performance.csv", index=False, encoding="utf-8-sig")
@@ -1234,6 +1301,14 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
     return out.drop(columns=["_swing_candidate_order"], errors="ignore")
 
 
+def resolve_max_buy_candidates(current_vix=20.0):
+    try:
+        vix = float(current_vix)
+    except Exception:
+        vix = 20.0
+    return 1 if vix >= 28 else 2
+
+
 def write_daily_swing_candidates(df_final, today_date):
     cols = [
         "날짜", "종목명", "종목코드", "테마", "매수후보", "진입유형", "스윙우선순위",
@@ -2012,8 +2087,9 @@ def run_scraper(manual_full_parse=False):
     df_final = apply_score_stability(df_final, today_date=today_date, max_daily_delta=8.0, smooth_alpha=0.7)
     # 신호 신뢰도 계층화(VIX 레짐별 임계치)
     df_final = add_signal_confidence(df_final, current_vix=current_vix)
+    max_buy_candidates = resolve_max_buy_candidates(current_vix)
     # 사용자 스윙 전략 오버레이: 연기금 중심 수급, 진입유형, 후보 수 제한, 매도 점검
-    df_final = apply_swing_strategy_overlay(df_final, current_vix=current_vix, max_buy_candidates=2)
+    df_final = apply_swing_strategy_overlay(df_final, current_vix=current_vix, max_buy_candidates=max_buy_candidates)
     generate_theme_suggestions(df_final, today_date=today_date, top_n=40)
     write_daily_swing_candidates(df_final, today_date)
     write_table_dual(df_final, "data.csv", index=False, encoding='utf-8-sig')
@@ -2157,7 +2233,7 @@ def run_scraper(manual_full_parse=False):
             session_label = "장 마감" if is_eod_updated else "장중"
             
             prompt = f"""
-            너는 QEdge 수석 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
+            너는 AlphaPulse 수석 퀀트 애널리스트야. 오늘은 {now_kst.strftime("%Y년 %m월 %d일")}이야.
             현재 세션은 {session_label}이고, VIX 지수는 {current_vix:.2f}로 {regime} 모드야.
             
             [1. 매크로 지표]
@@ -2193,17 +2269,17 @@ def run_scraper(manual_full_parse=False):
             )
             
             with open("report.md", "w", encoding="utf-8") as f:
-                f.write(f"## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})\n\n{response.text}")
+                f.write(f"## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})\n\n{response.text}")
 
             if not is_eod_updated:
-                tg_message = f"🔔 *[장중 요약]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *QEdge Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+                tg_message = f"🔔 *[장중 요약]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *AlphaPulse Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
             else:
-                tg_message = f"🔔 *[장 마감 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *QEdge Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
+                tg_message = f"🔔 *[장 마감 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *AlphaPulse Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
                 send_telegram_message(tg_message)
         except Exception as e:
             print(f"⚠️ AI 리포트 생성 실패: {e}")
-            fallback_report = f"""## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
+            fallback_report = f"""## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
 
 AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
 
@@ -2232,7 +2308,7 @@ AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
                 f.write(fallback_report)
     else:
         # API 키가 없더라도 report.md는 매 실행 최신화
-        fallback_report = f"""## 🌐 QEdge 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
+        fallback_report = f"""## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
 
 Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 
@@ -2264,7 +2340,7 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
     emit_weekly_storage_report()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="QEdge scraper runner")
+    parser = argparse.ArgumentParser(description="AlphaPulse scraper runner")
     parser.add_argument("--full-parse", action="store_true", help="슈퍼 캐시를 무시하고 KIS 풀 파싱을 강제 실행")
     args = parser.parse_args()
     run_scraper(manual_full_parse=args.full_parse)
