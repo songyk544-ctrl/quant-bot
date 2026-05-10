@@ -626,6 +626,83 @@ def calculate_rsi(prices, period=14):
     if avg_loss == 0: return 100.0
     return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
 
+def calculate_trend_quality(closes):
+    vals = []
+    for x in closes:
+        try:
+            val = float(x)
+        except Exception:
+            continue
+        if val > 0:
+            vals.append(val)
+    if not vals:
+        return {"ma5": 0.0, "ma10": 0.0, "ma20": 0.0, "aligned": False, "score": 0.0}
+    current = vals[0]
+    ma5 = sum(vals[:5]) / min(5, len(vals))
+    ma10 = sum(vals[:10]) / min(10, len(vals))
+    ma20 = sum(vals[:20]) / min(20, len(vals))
+    prev5 = sum(vals[5:10]) / len(vals[5:10]) if len(vals) >= 10 else ma5
+    prev10 = sum(vals[10:20]) / len(vals[10:20]) if len(vals) >= 20 else ma10
+
+    above20 = current >= ma20
+    short_above_mid = ma5 >= ma10
+    mid_above_long = ma10 >= ma20
+    short_slope = ma5 >= prev5
+    mid_slope = ma10 >= prev10
+    aligned = bool(above20 and short_above_mid and mid_above_long)
+    score = (
+        (20 if above20 else 0)
+        + (20 if short_above_mid else 0)
+        + (20 if mid_above_long else 0)
+        + (20 if short_slope else 0)
+        + (20 if mid_slope else 0)
+    )
+    return {
+        "ma5": round(ma5, 2),
+        "ma10": round(ma10, 2),
+        "ma20": round(ma20, 2),
+        "aligned": aligned,
+        "score": round(float(score), 2),
+    }
+
+
+def enrich_trend_quality_from_history(df_final):
+    """history.csv의 최근 종가로 정배열/추세품질을 재계산해 캐시 모드에서도 같은 필터를 적용."""
+    if df_final.empty or "종목명" not in df_final.columns:
+        return df_final
+    hist = _load_history_prices()
+    if hist.empty:
+        return df_final
+
+    trend_map = {}
+    for name, grp in hist.groupby("종목명"):
+        closes = grp.sort_values("일자_dt", ascending=False)["종가"].tolist()[:20]
+        if not closes:
+            continue
+        trend_map[str(name)] = calculate_trend_quality(closes)
+
+    if not trend_map:
+        return df_final
+
+    out = df_final.copy()
+    names = out["종목명"].astype(str).str.strip()
+    aligned = names.map(lambda x: trend_map.get(x, {}).get("aligned", pd.NA))
+    quality = names.map(lambda x: trend_map.get(x, {}).get("score", pd.NA))
+    ma5 = names.map(lambda x: trend_map.get(x, {}).get("ma5", pd.NA))
+    ma10 = names.map(lambda x: trend_map.get(x, {}).get("ma10", pd.NA))
+    ma20 = names.map(lambda x: trend_map.get(x, {}).get("ma20", pd.NA))
+
+    out["정배열"] = aligned.fillna(out["정배열"] if "정배열" in out.columns else False).astype(bool)
+    out["추세품질점수"] = pd.to_numeric(
+        quality.fillna(out["추세품질점수"] if "추세품질점수" in out.columns else 50.0),
+        errors="coerce",
+    ).fillna(50.0).round(2)
+    out["MA5"] = pd.to_numeric(ma5.fillna(out["MA5"] if "MA5" in out.columns else 0.0), errors="coerce").fillna(0.0)
+    out["MA10"] = pd.to_numeric(ma10.fillna(out["MA10"] if "MA10" in out.columns else 0.0), errors="coerce").fillna(0.0)
+    out["MA20"] = pd.to_numeric(ma20.fillna(out["MA20"] if "MA20" in out.columns else 0.0), errors="coerce").fillna(0.0)
+    out["추세상승"] = (out["추세품질점수"] >= 55) & (out["MA5"] >= out["MA20"])
+    return out
+
 # 🔥 [수급 로직 업데이트] 외인 비중 대폭 축소, 기관(투신/사모/연기금) 비중 극대화 (눌림목 최적화)
 def calculate_dynamic_score(
     f_str, p_str, t_str, pef_str,
@@ -1151,6 +1228,10 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
     vol = _num("거래급증(%)")
     neg_news = _num("뉴스부정키워드수")
     trend_up = out["추세상승"].astype(bool) if "추세상승" in out.columns else pd.Series([True] * len(out), index=out.index)
+    trend_quality = _num("추세품질점수", 50.0)
+    aligned_trend = out["정배열"].astype(bool) if "정배열" in out.columns else pd.Series([True] * len(out), index=out.index)
+    ma10 = _num("MA10", 0.0)
+    ma20 = _num("MA20", 0.0)
 
     out["연기금5일강도(%)"] = 0.0
     out["연기금10일강도(%)"] = 0.0
@@ -1204,22 +1285,31 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
     risk_label = "RiskOff" if current_vix >= 28 else ("Neutral" if current_vix >= 22 else "RiskOn")
     out["시장위험레버"] = risk_label
 
+    trend_ok = trend_up & aligned_trend & (trend_quality >= 55)
+    severe_downtrend = (
+        (trend_quality < 45)
+        | (gap < 97)
+        | ((ma10 < ma20) & (trend_quality < 60))
+        | ((~trend_up) & (trend_quality < 60))
+    )
+
     pullback = (
         gap.between(97, 106)
         & rsi.between(45, 68)
-        & trend_up
+        & trend_ok
         & ((pension > 0) | (p5 > 0) | (p10 > 0))
         & turn.between(2.5, 18)
     )
     breakout = (
         gap.between(103, 112)
         & rsi.between(55, 82)
+        & trend_ok
         & (vol >= 115)
         & (turn >= 4)
         & ((pension > 0) | ((trust > 0) & (pef > 0)))
     )
     overheated = (gap > 112) | (rsi > 84) | (turn > 24)
-    breakdown = (gap < 95) | (rsi < 40) | ((pension < 0) & (trust < 0) & (pef < 0))
+    breakdown = severe_downtrend | (gap < 95) | (rsi < 40) | ((pension < 0) & (trust < 0) & (pef < 0))
 
     entry_type = pd.Series("관찰", index=out.index, dtype="object")
     entry_type.loc[pullback] = "눌림목"
@@ -1237,11 +1327,18 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
     entry_bonus.loc[out["진입유형"] == "돌파"] = 5.0
     entry_bonus.loc[out["진입유형"] == "과열주의"] = -7.0
     entry_bonus.loc[out["진입유형"] == "회피"] = -18.0
+    trend_penalty = pd.Series(0.0, index=out.index)
+    trend_penalty.loc[~aligned_trend] -= 18.0
+    trend_penalty.loc[trend_quality < 55] -= 6.0
+    trend_penalty.loc[trend_quality < 45] -= 8.0
+    trend_bonus = ((trend_quality - 55.0) / 9.0).clip(lower=0.0, upper=5.0)
     risk_penalty = 0.0 if risk_label == "RiskOn" else (2.5 if risk_label == "Neutral" else 7.0)
     out["스윙우선순위"] = (
         ai * 0.58
         + out["기관동행점수"] * 0.85
         + entry_bonus
+        + trend_bonus
+        + trend_penalty
         - neg_news.clip(lower=0) * 1.2
         - risk_penalty
     ).clip(0, 100).round(2)
@@ -1262,13 +1359,17 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
         elif et == "과열주의":
             parts.append("이격/RSI 과열")
         elif et == "회피":
-            parts.append("추세 또는 수급 훼손")
+            parts.append("역배열/추세 훼손")
+        elif not bool(row.get("정배열", True)) or float(row.get("추세품질점수", 50.0)) < 55:
+            parts.append("정배열 확인 전")
         comments.append(" · ".join(parts) if parts else "추가 확인 필요")
 
         if et == "회피":
             sell_checks.append("매도/제외")
         elif float(row.get("연기금5일강도(%)", 0.0)) < 0 and float(row.get("연기금10일강도(%)", 0.0)) < 0:
             sell_checks.append("수급훼손")
+        elif not bool(row.get("정배열", True)) or float(row.get("추세품질점수", 50.0)) < 45:
+            sell_checks.append("추세훼손")
         elif float(row.get("이격도(%)", 100.0)) < 97:
             sell_checks.append("추세점검")
         elif et == "과열주의":
@@ -1380,7 +1481,7 @@ def _request_html(url, headers, timeout=4, retries=2):
 def load_score_trend_safe():
     """머지 충돌/깨진 score_trend.csv를 방어적으로 로드."""
     base_cols = ['종목명', '종목코드', 'AI수급점수', '순위', '날짜']
-    optional_cols = ['매수후보', '진입유형', '스윙우선순위', '기관동행점수', '진입코멘트', '매도점검', '테마']
+    optional_cols = ['매수후보', '진입유형', '스윙우선순위', '기관동행점수', '진입코멘트', '매도점검', '테마', '정배열', '추세품질점수', 'MA5', 'MA10', 'MA20']
     if not csv_exists("score_trend.csv"):
         return pd.DataFrame(columns=base_cols)
     df = read_table_prefer_db("score_trend.csv", on_bad_lines="skip")
@@ -1994,6 +2095,7 @@ def run_scraper(manual_full_parse=False):
                 turnover_rate = (vol_tr_sum_5d / marcap_won) * 100 if marcap_won else 0 
                 
                 rsi_val = calculate_rsi(closes[::-1])
+                trend_quality = calculate_trend_quality(closes)
                 if len(volumes) > 1:
                     past_vols = volumes[1:6]
                     avg_vol = sum(past_vols) / len(past_vols) if past_vols else 0
@@ -2001,11 +2103,7 @@ def run_scraper(manual_full_parse=False):
                 else:
                     vol_surge = 0
 
-                is_ma20_rising = False
-                if len(closes) >= 20:
-                    is_ma20_rising = closes[0] >= closes[-1]
-                else:
-                    is_ma20_rising = gap_20 >= 100 
+                is_ma20_rising = bool(trend_quality["score"] >= 55 and trend_quality["ma5"] >= trend_quality["ma20"])
 
                 # V41.1 눌림목 핵심 지표 계산(음봉 매집률)
                 dip_buying_ratio = 0.0
@@ -2050,6 +2148,11 @@ def run_scraper(manual_full_parse=False):
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
                     '추세상승': is_ma20_rising,
+                    '정배열': bool(trend_quality["aligned"]),
+                    '추세품질점수': trend_quality["score"],
+                    'MA5': trend_quality["ma5"],
+                    'MA10': trend_quality["ma10"],
+                    'MA20': trend_quality["ma20"],
                     '음봉매집률': round(dip_buying_ratio, 4),
                     '시가총액': marcap, 'PER': row.PER, 'ROE': row.ROE,
                     '뉴스테마가점': qual_details.get("theme_boost_applied", 0.0),
@@ -2081,6 +2184,8 @@ def run_scraper(manual_full_parse=False):
     df_final, theme_quality_metric = apply_theme_contribution_guard(
         df_final, today_date=today_date, current_vix=current_vix, top_n=40
     )
+    # 캐시 모드에서도 최근 종가 기준 정배열/추세품질을 다시 입혀 하락 추세 종목을 눌러줍니다.
+    df_final = enrich_trend_quality_from_history(df_final)
     # 눌림목 전용 미세 룰(과열 추격 억제 + 정상 눌림 우대)
     df_final = apply_pullback_trade_rules(df_final, current_vix=current_vix)
     # 일별 점수 변동성 완화(스윙 관점 안정화)
@@ -2096,7 +2201,8 @@ def run_scraper(manual_full_parse=False):
 
     trend_cols = [
         '종목명', '종목코드', 'AI수급점수', '매수후보', '진입유형', '스윙우선순위',
-        '기관동행점수', '진입코멘트', '매도점검', '테마'
+        '기관동행점수', '진입코멘트', '매도점검', '테마', '정배열', '추세품질점수',
+        'MA5', 'MA10', 'MA20'
     ]
     for c in trend_cols:
         if c not in df_final.columns:

@@ -2013,6 +2013,13 @@ else:
         df_summary["진입유형"] = "관찰"
     if "매도점검" not in df_summary.columns:
         df_summary["매도점검"] = "보유/관찰"
+    if "정배열" not in df_summary.columns:
+        df_summary["정배열"] = True
+    if "추세품질점수" not in df_summary.columns:
+        df_summary["추세품질점수"] = 50.0
+    for ma_col in ["MA5", "MA10", "MA20"]:
+        if ma_col not in df_summary.columns:
+            df_summary[ma_col] = 0.0
     candidate_order = {"신규후보": 0, "관찰": 1, "제외": 2}
     df_summary["_display_order"] = df_summary["매수후보"].map(candidate_order).fillna(1)
     df_summary = df_summary.sort_values(
@@ -2297,7 +2304,7 @@ else:
                 styled_df = style_target
 
             base_columns = ["_index", "매수후보", "진입유형", "스윙우선순위", "테마표시", "AI수급점수", "매도점검", "현재가", "등락률", "소속"]
-            advanced_columns = ["기관동행점수", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
+            advanced_columns = ["기관동행점수", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
             current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
             event = st.dataframe(
@@ -2309,6 +2316,11 @@ else:
                     "스윙우선순위": st.column_config.NumberColumn("스윙", width="small"),
                     "매도점검": st.column_config.Column("점검", width="small"),
                     "기관동행점수": st.column_config.NumberColumn("기관동행", width="small"),
+                    "정배열": st.column_config.CheckboxColumn("정배열", width="small"),
+                    "추세품질점수": st.column_config.NumberColumn("추세품질", width="small", format="%.0f"),
+                    "MA5": st.column_config.NumberColumn("MA5", width="small", format="%.0f"),
+                    "MA10": st.column_config.NumberColumn("MA10", width="small", format="%.0f"),
+                    "MA20": st.column_config.NumberColumn("MA20", width="small", format="%.0f"),
                     "연기금5일강도(%)": st.column_config.NumberColumn("기금5D", width="small"),
                     "연기금10일강도(%)": st.column_config.NumberColumn("기금10D", width="small"),
                     "테마표시": st.column_config.Column("테마", width="medium"), 
