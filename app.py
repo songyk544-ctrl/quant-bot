@@ -1103,11 +1103,11 @@ def load_swing_performance_safe():
     return df.dropna(subset=["날짜_dt"])[base_cols + ["날짜_dt"]]
 
 
-def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=10_000_000, max_positions=5):
+def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=10_000_000, max_positions=5, start_date=None):
     """1,000만원 기준, 동시보유 제한을 둔 실제 포트폴리오형 스윙 시뮬레이션."""
     perf_cols = ["날짜", "평가금액", "현금", "투자금액", "수익률(%)", "일간수익률", "보유종목수", "실현손익"]
     pos_cols = ["종목명", "진입일", "진입가", "수량", "매수금액", "현재가", "평가금액", "평가손익", "평가수익률", "보유일수", "상태"]
-    closed_cols = ["진입일", "청산일", "종목명", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
+    closed_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
     if df_trades.empty or df_history.empty:
         return pd.DataFrame(columns=perf_cols), pd.DataFrame(columns=pos_cols), pd.DataFrame(columns=closed_cols)
 
@@ -1125,6 +1125,11 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=10_000_0
 
     prices = {str(name): grp.set_index("일자_dt")["종가"].sort_index() for name, grp in hist.groupby("종목명")}
     dates = sorted(hist["일자_dt"].dt.normalize().unique())
+    if start_date is not None:
+        sim_start = pd.to_datetime(start_date).normalize()
+        dates = [d for d in dates if pd.to_datetime(d).normalize() >= sim_start]
+    if not dates:
+        return pd.DataFrame(columns=perf_cols), pd.DataFrame(columns=pos_cols), pd.DataFrame(columns=closed_cols)
     signal = df_trades[df_trades["청산방식"].astype(str).eq("시그널")].copy()
     if signal.empty:
         signal = df_trades[df_trades["보유일수"].eq(10)].copy()
@@ -1156,6 +1161,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=10_000_0
                     "진입일": pos["진입일"],
                     "청산일": cur_date.strftime("%Y-%m-%d"),
                     "종목명": pos["종목명"],
+                    "보유일수": max(1, len([d for d in dates if pd.to_datetime(pos["진입일_dt"]).normalize() <= pd.to_datetime(d).normalize() <= cur_date]) - 1),
                     "매수금액": round(pos["매수금액"], 0),
                     "청산금액": round(exit_value, 0),
                     "실현손익": round(pnl, 0),
@@ -3162,18 +3168,27 @@ else:
         else:
             df_swing_perf = load_swing_performance_safe()
             df_swing_trades = load_swing_trades_safe()
-            portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
-                df_swing_trades,
-                df_history,
-                initial_cash=10_000_000,
-                max_positions=5,
-            )
+            available_dates = pd.to_datetime(df_swing_trades.get("진입일_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
+            if available_dates.empty and not df_swing_perf.empty:
+                available_dates = pd.to_datetime(df_swing_perf.get("날짜_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
+            if not available_dates.empty:
+                min_date = available_dates.min().date()
+                hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
+                max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
+                selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
+                portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
+                    df_swing_trades,
+                    df_history,
+                    initial_cash=10_000_000,
+                    max_positions=5,
+                    start_date=selected_start_date,
+                )
+            else:
+                portfolio_perf, portfolio_positions, portfolio_closed = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
             if not portfolio_perf.empty:
                 portfolio_perf["날짜_dt"] = pd.to_datetime(portfolio_perf["날짜"], errors="coerce")
-                min_date = portfolio_perf['날짜_dt'].min().date()
-                max_date = portfolio_perf['날짜_dt'].max().date()
-                selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
-                df_filtered = portfolio_perf[portfolio_perf['날짜_dt'].dt.date > selected_start_date].copy()
+                df_filtered = portfolio_perf[portfolio_perf['날짜_dt'].dt.date >= selected_start_date].copy()
 
                 if not df_filtered.empty:
                     df_filtered["전략 누적수익률"] = pd.to_numeric(df_filtered["수익률(%)"], errors="coerce").fillna(0.0)
@@ -3212,10 +3227,12 @@ else:
                             return rets
 
                         df_filtered['KOSPI 누적수익률'] = compute_benchmark_returns('^KS11')
+                        df_filtered['NASDAQ 누적수익률'] = compute_benchmark_returns('^IXIC')
                     except Exception as e:
-                        print(f"[WARN] 벤치마크 수익률 계산 실패(^KS11): {e}")
+                        print(f"[WARN] 벤치마크 수익률 계산 실패: {e}")
                         df_filtered['KOSPI 누적수익률'] = [float("nan")] * len(df_filtered)
-                        benchmark_fetch_errors = ['^KS11']
+                        df_filtered['NASDAQ 누적수익률'] = [float("nan")] * len(df_filtered)
+                        benchmark_fetch_errors = ['^KS11', '^IXIC']
 
                     chart_df = df_filtered.copy()
                     baseline_row = {c: None for c in chart_df.columns}
@@ -3226,6 +3243,7 @@ else:
                         "전략 누적수익률": 0.0,
                         "기간 MDD": 0.0,
                         "KOSPI 누적수익률": 0.0,
+                        "NASDAQ 누적수익률": 0.0,
                         "평가금액": 10_000_000,
                         "현금": 10_000_000,
                         "투자금액": 0,
@@ -3246,15 +3264,21 @@ else:
                             return 0.0
                         return float(a - b)
 
-                    closed_trades = df_swing_trades[df_swing_trades["상태"].astype(str).str.lower() == "closed"].copy()
-                    closed_trades = closed_trades[closed_trades["청산일_dt"].dt.date >= selected_start_date]
+                    closed_trades = portfolio_closed.copy()
+                    if "수익률" not in closed_trades.columns:
+                        closed_trades["수익률"] = 0.0
+                    closed_trades["수익률"] = pd.to_numeric(closed_trades["수익률"], errors="coerce").fillna(0.0)
+                    if "청산일" in closed_trades.columns:
+                        closed_trades["청산일_dt"] = pd.to_datetime(closed_trades["청산일"], errors="coerce")
+                    if "보유일수" not in closed_trades.columns:
+                        closed_trades["보유일수"] = 0
                     primary_open_trades = portfolio_positions.copy()
                     latest_entry_date = pd.to_datetime(primary_open_trades["진입일"], errors="coerce").max() if not primary_open_trades.empty else None
                     new_candidates = primary_open_trades[pd.to_datetime(primary_open_trades["진입일"], errors="coerce").eq(latest_entry_date)].copy() if latest_entry_date is not None else pd.DataFrame()
                     win_rate = (closed_trades["수익률"].gt(0).mean() * 100.0) if not closed_trades.empty else 0.0
                     avg_ret = float(closed_trades["수익률"].mean()) if not closed_trades.empty else 0.0
                     d5 = closed_trades[closed_trades["보유일수"] == 5]
-                    signal_closed = closed_trades[closed_trades.get("청산방식", "").astype(str).eq("시그널")] if "청산방식" in closed_trades.columns else pd.DataFrame()
+                    signal_closed = closed_trades[closed_trades.get("청산방식", "").astype(str).eq("시그널")] if "청산방식" in closed_trades.columns else closed_trades
                     d10 = closed_trades[closed_trades["보유일수"] == 10]
                     d5_ret = float(d5["수익률"].mean()) if not d5.empty else 0.0
                     d10_ret = float(d10["수익률"].mean()) if not d10.empty else 0.0
@@ -3263,14 +3287,19 @@ else:
                     current_equity = _safe_last(df_filtered["평가금액"])
                     current_cash = _safe_last(df_filtered["현금"])
                     current_kospi_ret = _safe_last(df_filtered['KOSPI 누적수익률'])
+                    current_nasdaq_ret = _safe_last(df_filtered['NASDAQ 누적수익률'])
                     current_mdd = float(df_filtered["기간 MDD"].min()) if "기간 MDD" in df_filtered.columns else 0.0
                     current_risk_state = "High" if current_mdd <= -8 else ("Medium" if current_mdd <= -4 else "Low")
                     port_daily_diff = _safe_daily_diff(df_filtered['전략 누적수익률'])
                     kospi_daily_diff = _safe_daily_diff(df_filtered['KOSPI 누적수익률'])
+                    nasdaq_daily_diff = _safe_daily_diff(df_filtered['NASDAQ 누적수익률'])
                     alpha_kospi = current_port_ret - current_kospi_ret
+                    alpha_nasdaq = current_port_ret - current_nasdaq_ret
                     alpha_color = "#36C06A" if alpha_kospi >= 0 else "#E04B4B"
+                    alpha_nasdaq_color = "#36C06A" if alpha_nasdaq >= 0 else "#E04B4B"
                     port_delta_color = "#36C06A" if port_daily_diff >= 0 else "#E04B4B"
                     kospi_delta_color = "#36C06A" if kospi_daily_diff >= 0 else "#E04B4B"
+                    nasdaq_delta_color = "#36C06A" if nasdaq_daily_diff >= 0 else "#E04B4B"
 
                     st.markdown(
                         f"""
@@ -3286,6 +3315,12 @@ else:
                                 <div class="kpi-value">{current_kospi_ret:+.2f}%</div>
                                 <span class="kpi-delta" style="background: rgba(59,130,246,0.16); color:{kospi_delta_color};">최근 {kospi_daily_diff:+.2f}%</span>
                                 <div class="kpi-meta">초과 성과 <span style="color:{alpha_color}; font-weight:700;">{alpha_kospi:+.2f}%p</span></div>
+                            </div>
+                            <div class="kpi-card">
+                                <div class="kpi-title">NASDAQ 누적 수익률</div>
+                                <div class="kpi-value">{current_nasdaq_ret:+.2f}%</div>
+                                <span class="kpi-delta" style="background: rgba(167,139,250,0.16); color:{nasdaq_delta_color};">최근 {nasdaq_daily_diff:+.2f}%</span>
+                                <div class="kpi-meta">초과 성과 <span style="color:{alpha_nasdaq_color}; font-weight:700;">{alpha_nasdaq:+.2f}%p</span></div>
                             </div>
                             <div class="kpi-card">
                                 <div class="kpi-title">진행 중 스윙</div>
@@ -3317,7 +3352,7 @@ else:
                     chart_df['날짜_표시'] = chart_df['날짜_dt'].dt.strftime('%m/%d')
                     df_melt = chart_df.melt(
                         id_vars=['날짜_표시'],
-                        value_vars=['전략 누적수익률', 'KOSPI 누적수익률'],
+                        value_vars=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
                         var_name='포트폴리오',
                         value_name='차트수익률'
                     )
@@ -3327,8 +3362,8 @@ else:
                         color=alt.Color(
                             '포트폴리오:N',
                             scale=alt.Scale(
-                                domain=['전략 누적수익률', 'KOSPI 누적수익률'],
-                                range=['#E74C3C', '#AAAAAA']
+                                domain=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
+                                range=['#E74C3C', '#AAAAAA', '#A78BFA']
                             ),
                             legend=alt.Legend(title=None, orient='bottom')
                         )
@@ -3337,7 +3372,7 @@ else:
                     st.caption("전략선은 초기자금 1,000만원, 최대 5종목, 종목당 약 200만원 배정, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다.")
 
                     if benchmark_fetch_errors:
-                        err_names = ", ".join("KOSPI" if x == "^KS11" else x for x in sorted(set(benchmark_fetch_errors)))
+                        err_names = ", ".join("KOSPI" if x == "^KS11" else ("NASDAQ" if x == "^IXIC" else x) for x in sorted(set(benchmark_fetch_errors)))
                         st.caption(f"일부 벤치마크 데이터가 지연되어 표시되지 않았습니다: {err_names}")
 
                     with st.expander("리스크 보조 지표", expanded=False):
@@ -3450,11 +3485,23 @@ else:
                             )
 
                     if not closed_trades.empty:
-                        view_cols = ["진입일", "청산일", "종목명", "진입순위", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
+                        portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
+                        legacy_log_cols = ["진입일", "청산일", "종목명", "진입순위", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
+                        view_cols = [c for c in portfolio_log_cols if c in closed_trades.columns]
+                        if len(view_cols) < 5:
+                            view_cols = [c for c in legacy_log_cols if c in closed_trades.columns]
                         trade_view = closed_trades.sort_values("청산일_dt", ascending=False)[view_cols].head(80)
-                        with st.expander("종가 진입/청산 거래 로그", expanded=False):
+                        with st.expander("포트폴리오 진입/청산 거래 로그", expanded=False):
+                            format_cols = {
+                                "매수금액": "{:,.0f}원",
+                                "청산금액": "{:,.0f}원",
+                                "실현손익": "{:+,.0f}원",
+                                "진입가": "{:,.0f}",
+                                "청산가": "{:,.0f}",
+                                "수익률": "{:+.2f}%",
+                            }
                             st.dataframe(
-                                trade_view.style.format({"진입가": "{:,.0f}", "청산가": "{:,.0f}", "수익률": "{:+.2f}%"}),
+                                trade_view.style.format({k: v for k, v in format_cols.items() if k in trade_view.columns}),
                                 hide_index=True,
                                 width='stretch'
                             )
