@@ -3319,11 +3319,11 @@ else:
                         id_vars=['날짜_표시'],
                         value_vars=['전략 누적수익률', 'KOSPI 누적수익률'],
                         var_name='포트폴리오',
-                        value_name='수익률(%)'
+                        value_name='차트수익률'
                     )
                     base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
                         x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
-                        y=alt.Y('수익률(%):Q', title="누적 수익률 (%)"),
+                        y=alt.Y('차트수익률:Q', title="누적 수익률 (%)"),
                         color=alt.Color(
                             '포트폴리오:N',
                             scale=alt.Scale(
