@@ -1183,6 +1183,8 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             entry_price = float(pd.to_numeric(sig.get("진입가"), errors="coerce") or 0.0)
             if entry_price <= 0:
                 continue
+            new_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
+            new_entry_type = str(sig.get("진입유형", ""))
             budget = min(per_slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
@@ -1200,6 +1202,8 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 "청산일_dt": sig.get("청산일_dt"),
                 "청산사유": str(sig.get("청산사유", "")),
                 "상태": str(sig.get("상태", "")),
+                "스윙우선순위": new_score,
+                "진입유형": new_entry_type,
             })
 
         invested_value = 0.0

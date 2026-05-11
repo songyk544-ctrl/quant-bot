@@ -592,6 +592,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
             entry_price = float(sig.get("진입가", 0.0) or 0.0)
             if not name or name in held_names or entry_price <= 0:
                 continue
+            new_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
+            new_sleeve = str(sig.get("진입유형", ""))
             budget = min(slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
@@ -606,6 +608,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 "매수금액": buy_amount,
                 "청산일_dt": sig.get("청산일_dt"),
                 "상태": sig.get("상태", ""),
+                "스윙우선순위": new_score,
+                "진입유형": new_sleeve,
             })
 
         invested_value = 0.0
@@ -1915,11 +1919,105 @@ def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     clean_text = text.replace('**', '*') 
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000], "parse_mode": "Markdown"}
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000]}
     try:
-        requests.post(url, data=data)
+        requests.post(url, data=data, timeout=10)
     except Exception as e:
         print(f"[WARN] 텔레그램 전송 실패: {e}")
+
+def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated):
+    dashboard_url = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
+    session_label = "장마감" if is_eod_updated else "장중"
+    lines = [
+        f"🔔 AlphaPulse {session_label} 액션 브리프",
+        f"🗓 {now_kst.strftime('%Y-%m-%d %H:%M')} KST",
+        f"📊 VIX {current_vix:.2f} / {regime}",
+        "",
+    ]
+
+    def _fmt_money(v):
+        try:
+            return f"{float(v):,.0f}원"
+        except Exception:
+            return "-"
+
+    df = df_final.copy() if df_final is not None else pd.DataFrame()
+    if not df.empty:
+        for c in ["스윙우선순위", "AI수급점수", "주도주점수", "수급품질점수", "현재가"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+
+    open_view = pd.DataFrame()
+    try:
+        if csv_exists("swing_trades.csv"):
+            trades = read_table_prefer_db("swing_trades.csv", on_bad_lines="skip")
+            if not trades.empty and {"청산방식", "상태", "종목명", "진입일"}.issubset(trades.columns):
+                signal = trades[
+                    trades["청산방식"].astype(str).eq("시그널")
+                    & trades["상태"].astype(str).str.lower().eq("open")
+                ].copy()
+                if not signal.empty:
+                    signal["진입일_dt"] = pd.to_datetime(signal["진입일"], errors="coerce")
+                    signal = signal.sort_values(["종목명", "진입일_dt"]).drop_duplicates("종목명", keep="last")
+                    merge_cols = [
+                        c for c in ["종목명", "매수후보", "진입유형", "전략슬리브", "스윙우선순위", "매도점검", "현재가"]
+                        if c in df.columns
+                    ]
+                    open_view = pd.merge(signal, df[merge_cols], on="종목명", how="left") if merge_cols else signal
+    except Exception as e:
+        print(f"[WARN] 텔레그램 보유 포지션 구성 실패: {e}")
+
+    risk_keywords = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
+    if not open_view.empty:
+        open_view["매도점검"] = open_view.get("매도점검", "보유/관찰").fillna("보유/관찰").astype(str)
+        sell_alerts = open_view[open_view["매도점검"].apply(lambda x: any(k in x for k in risk_keywords))].copy()
+        hold_view = open_view.drop(sell_alerts.index, errors="ignore").copy()
+
+        lines.append("🚨 매도/축소 점검")
+        if sell_alerts.empty:
+            lines.append("- 없음")
+        else:
+            for _, row in sell_alerts.head(5).iterrows():
+                lines.append(
+                    f"- {row.get('종목명','-')} | {row.get('매도점검','-')} | "
+                    f"진입 {row.get('진입일','-')} | 현재 {_fmt_money(row.get('현재가', 0))}"
+                )
+        lines.append("")
+
+        lines.append("✅ 보유 유지")
+        if hold_view.empty:
+            lines.append("- 없음")
+        else:
+            hold_view["스윙우선순위"] = pd.to_numeric(hold_view.get("스윙우선순위", 0.0), errors="coerce").fillna(0.0)
+            hold_view = hold_view.sort_values("스윙우선순위", ascending=False)
+            for _, row in hold_view.head(5).iterrows():
+                lines.append(
+                    f"- {row.get('종목명','-')} | {row.get('진입유형','-')} | "
+                    f"스윙 {float(row.get('스윙우선순위', 0.0)):.1f} | 점검 {row.get('매도점검','보유/관찰')}"
+                )
+        lines.append("")
+    else:
+        lines.append("✅ 보유 포지션")
+        lines.append("- 진행 중인 시그널 포지션 없음")
+        lines.append("")
+
+    lines.append("🆕 신규 후보")
+    if df.empty or "매수후보" not in df.columns:
+        lines.append("- 없음")
+    else:
+        candidates = df[df["매수후보"].astype(str).eq("신규후보")].copy()
+        if candidates.empty:
+            lines.append("- 없음")
+        else:
+            candidates = candidates.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
+            for _, row in candidates.head(5).iterrows():
+                lines.append(
+                    f"- {row.get('종목명','-')} | {row.get('전략슬리브','-')} / {row.get('진입유형','-')} | "
+                    f"스윙 {float(row.get('스윙우선순위', 0.0)):.1f} | 현재 {_fmt_money(row.get('현재가', 0))}"
+                )
+
+    lines.extend(["", f"📊 대시보드: {dashboard_url}"])
+    return "\n".join(lines)
 
 def _request_html(url, headers, timeout=4, retries=2):
     for attempt in range(retries + 1):
@@ -2848,12 +2946,7 @@ def run_scraper(manual_full_parse=False):
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(f"## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})\n\n{response.text}")
 
-            if not is_eod_updated:
-                tg_message = f"🔔 *[장중 요약]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n📊 VIX 국면: {regime}\n\n{eval_msg}🏆 *AlphaPulse Top 3*\n: {top3_str}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
-                send_telegram_message(tg_message)
-            else:
-                tg_message = f"🔔 *[장 마감 요약 (테스트 모드)]*\n🗓 {now_kst.strftime('%Y-%m-%d %H:%M')}\n\n{eval_msg}🏆 *AlphaPulse Top 3*\n: {top3_str}\n\n---\n\n{response.text}\n\n📊 [대시보드 바로가기]({MY_STREAMLIT_URL})"
-                send_telegram_message(tg_message)
+            send_telegram_message(build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated))
         except Exception as e:
             print(f"⚠️ AI 리포트 생성 실패: {e}")
             fallback_report = f"""## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
@@ -2883,6 +2976,7 @@ AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
 """
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(fallback_report)
+            send_telegram_message(build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated))
     else:
         # API 키가 없더라도 report.md는 매 실행 최신화
         fallback_report = f"""## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
@@ -2912,6 +3006,7 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 """
         with open("report.md", "w", encoding="utf-8") as f:
             f.write(fallback_report)
+        send_telegram_message(build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated))
 
     # 주간 1회 용량 리포트 누적 + 매 실행 콘솔 요약
     emit_weekly_storage_report()
