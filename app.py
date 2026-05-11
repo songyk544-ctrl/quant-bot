@@ -1103,8 +1103,8 @@ def load_swing_performance_safe():
     return df.dropna(subset=["날짜_dt"])[base_cols + ["날짜_dt"]]
 
 
-def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=10_000_000, max_positions=5, start_date=None):
-    """1,000만원 기준, 동시보유 제한을 둔 실제 포트폴리오형 스윙 시뮬레이션."""
+def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_000, max_positions=3, start_date=None):
+    """초기자금과 동시보유 제한을 둔 실제 포트폴리오형 스윙 시뮬레이션."""
     perf_cols = ["날짜", "평가금액", "현금", "투자금액", "수익률(%)", "일간수익률", "보유종목수", "실현손익"]
     pos_cols = ["종목명", "진입일", "진입가", "수량", "매수금액", "현재가", "평가금액", "평가손익", "평가수익률", "보유일수", "상태"]
     closed_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
@@ -2162,6 +2162,20 @@ else:
         df_summary["정배열"] = True
     if "추세품질점수" not in df_summary.columns:
         df_summary["추세품질점수"] = 50.0
+    for supply_col, default_value in {
+        "수급품질점수": 0.0,
+        "주도주점수": 0.0,
+        "수급흡수율": 0.0,
+        "수급지속일수": 0,
+        "거래대금활력": 0.0,
+        "20일평균거래대금(억)": 0.0,
+        "종목체급": "소형",
+        "전략슬리브": "관찰",
+    }.items():
+        if supply_col not in df_summary.columns:
+            df_summary[supply_col] = default_value
+    for numeric_col in ["수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "거래대금활력", "20일평균거래대금(억)"]:
+        df_summary[numeric_col] = pd.to_numeric(df_summary[numeric_col], errors="coerce").fillna(0.0)
     for ma_col in ["MA5", "MA10", "MA20"]:
         if ma_col not in df_summary.columns:
             df_summary[ma_col] = 0.0
@@ -2420,6 +2434,8 @@ else:
                 "사모강도(%)": "{:.2f}%", "이격도(%)": "{:.1f}%", "손바뀜(%)": "{:.1f}%",
                 "신호신뢰도": "{:.1f}", "점수변화(안정화)": "{:+.2f}",
                 "스윙우선순위": "{:.2f}", "기관동행점수": "{:.2f}",
+                "수급품질점수": "{:.1f}", "주도주점수": "{:.1f}", "수급흡수율": "{:.2f}", "거래대금활력": "{:.2f}",
+                "20일평균거래대금(억)": "{:,.0f}",
                 "연기금5일강도(%)": "{:.2f}%", "연기금10일강도(%)": "{:.2f}%"
             }
             if 'PER' in df_display_table.columns: format_dict["PER"] = "{:.1f}"
@@ -2449,7 +2465,7 @@ else:
                 styled_df = style_target
 
             base_columns = ["_index", "매수후보", "진입유형", "스윙우선순위", "테마표시", "AI수급점수", "AI순위", "매도점검", "현재가", "등락률", "소속"]
-            advanced_columns = ["기관동행점수", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
+            advanced_columns = ["전략슬리브", "기관동행점수", "수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "종목체급", "거래대금활력", "20일평균거래대금(억)", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
             current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
             event = st.dataframe(
@@ -2460,7 +2476,15 @@ else:
                     "진입유형": st.column_config.Column("진입", width="small"),
                     "스윙우선순위": st.column_config.NumberColumn("스윙", width="small"),
                     "매도점검": st.column_config.Column("점검", width="small"),
+                    "전략슬리브": st.column_config.Column("슬리브", width="small"),
                     "기관동행점수": st.column_config.NumberColumn("기관동행", width="small"),
+                    "수급품질점수": st.column_config.NumberColumn("수급품질", width="small", format="%.1f"),
+                    "주도주점수": st.column_config.NumberColumn("주도주", width="small", format="%.1f"),
+                    "수급흡수율": st.column_config.NumberColumn("흡수율", width="small", format="%.2f"),
+                    "수급지속일수": st.column_config.NumberColumn("수급일수", width="small", format="%d일"),
+                    "종목체급": st.column_config.Column("체급", width="small"),
+                    "거래대금활력": st.column_config.NumberColumn("거래활력", width="small", format="%.2f"),
+                    "20일평균거래대금(억)": st.column_config.NumberColumn("평균대금", width="small", format="%.0f억"),
                     "정배열": st.column_config.CheckboxColumn("정배열", width="small"),
                     "추세품질점수": st.column_config.NumberColumn("추세품질", width="small", format="%.0f"),
                     "MA5": st.column_config.NumberColumn("MA5", width="small", format="%.0f"),
@@ -3176,15 +3200,35 @@ else:
                 hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
                 max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
                 selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
+                bt_col1, bt_col2 = st.columns(2)
+                with bt_col1:
+                    cash_text = st.text_input("초기 투자금", value="5,000,000")
+                    try:
+                        backtest_initial_cash = int(str(cash_text).replace(",", "").strip())
+                    except Exception:
+                        backtest_initial_cash = 5_000_000
+                    backtest_initial_cash = max(1_000_000, min(100_000_000, backtest_initial_cash))
+                    st.caption(f"적용 금액: {backtest_initial_cash:,}원")
+                with bt_col2:
+                    backtest_max_positions = st.number_input(
+                        "최대 보유 종목수",
+                        min_value=1,
+                        max_value=5,
+                        value=3,
+                        step=1,
+                        format="%d",
+                    )
                 portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
                     df_swing_trades,
                     df_history,
-                    initial_cash=10_000_000,
-                    max_positions=5,
+                    initial_cash=backtest_initial_cash,
+                    max_positions=backtest_max_positions,
                     start_date=selected_start_date,
                 )
             else:
                 portfolio_perf, portfolio_positions, portfolio_closed = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+                backtest_initial_cash = 5_000_000
+                backtest_max_positions = 3
 
             if not portfolio_perf.empty:
                 portfolio_perf["날짜_dt"] = pd.to_datetime(portfolio_perf["날짜"], errors="coerce")
@@ -3244,8 +3288,8 @@ else:
                         "기간 MDD": 0.0,
                         "KOSPI 누적수익률": 0.0,
                         "NASDAQ 누적수익률": 0.0,
-                        "평가금액": 10_000_000,
-                        "현금": 10_000_000,
+                        "평가금액": float(backtest_initial_cash),
+                        "현금": float(backtest_initial_cash),
                         "투자금액": 0,
                         "보유종목수": 0,
                     })
@@ -3369,7 +3413,8 @@ else:
                         )
                     ).properties(height=300)
                     st.altair_chart(apply_altair_theme(base_chart), width='stretch')
-                    st.caption("전략선은 초기자금 1,000만원, 최대 5종목, 종목당 약 200만원 배정, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다.")
+                    slot_cash = float(backtest_initial_cash) / max(1, int(backtest_max_positions))
+                    st.caption(f"전략선은 초기자금 {int(backtest_initial_cash):,}원, 최대 {int(backtest_max_positions)}종목, 종목당 약 {int(slot_cash):,}원 배정, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다.")
 
                     if benchmark_fetch_errors:
                         err_names = ", ".join("KOSPI" if x == "^KS11" else ("NASDAQ" if x == "^IXIC" else x) for x in sorted(set(benchmark_fetch_errors)))
