@@ -567,6 +567,7 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
 
     for cur_date in sim_dates:
         realized = []
+        switched_today = False
         remaining = []
         for pos in positions:
             exit_date = pd.to_datetime(pos["청산일_dt"]).normalize() if pd.notna(pos.get("청산일_dt")) else None
@@ -586,14 +587,48 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
         todays = signal[signal["진입일_dt"].dt.normalize() == cur_date].copy()
         held_names = {p["종목명"] for p in positions}
         for _, sig in todays.iterrows():
-            if len(positions) >= max_positions:
-                break
             name = str(sig.get("종목명", "")).strip()
             entry_price = float(sig.get("진입가", 0.0) or 0.0)
             if not name or name in held_names or entry_price <= 0:
                 continue
             new_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
             new_sleeve = str(sig.get("진입유형", ""))
+            if len(positions) >= max_positions:
+                if switched_today:
+                    break
+                weakest_idx = None
+                weakest_score = 0.0
+                weakest_ret = 0.0
+                for pos_idx, pos in enumerate(positions):
+                    px = price_by_stock.get(pos["종목명"])
+                    if px is not None and not px[px["일자_dt"].dt.normalize() <= cur_date].empty:
+                        mark_price = float(px[px["일자_dt"].dt.normalize() <= cur_date].iloc[-1]["종가"])
+                    else:
+                        mark_price = float(pos["진입가"])
+                    pos_ret = ((mark_price - float(pos["진입가"])) / float(pos["진입가"]) * 100.0) if float(pos["진입가"]) > 0 else 0.0
+                    pos_score = float(pos.get("스윙우선순위", 0.0) or 0.0)
+                    if weakest_idx is None or (pos_ret, pos_score) < (weakest_ret, weakest_score):
+                        weakest_idx = pos_idx
+                        weakest_score = pos_score
+                        weakest_ret = pos_ret
+                new_is_strong = new_score >= 65.0 or ("주도" in new_sleeve and new_score >= 58.0)
+                old_is_weak = weakest_ret <= -3.5 and new_score >= weakest_score + 12.0
+                protect_winner = weakest_ret >= 0.0
+                if weakest_idx is None or not (new_is_strong and old_is_weak) or protect_winner:
+                    continue
+                old_pos = positions.pop(weakest_idx)
+                px = price_by_stock.get(old_pos["종목명"])
+                if px is not None and not px[px["일자_dt"].dt.normalize() <= cur_date].empty:
+                    exit_price = float(px[px["일자_dt"].dt.normalize() <= cur_date].iloc[-1]["종가"])
+                else:
+                    exit_price = float(old_pos["진입가"])
+                exit_value = exit_price * old_pos["수량"]
+                pnl = exit_value - old_pos["매수금액"]
+                cash += exit_value
+                realized.append(pnl)
+                held_names.discard(old_pos["종목명"])
+                closed_pnls[cur_date.strftime("%Y-%m-%d")] = closed_pnls.get(cur_date.strftime("%Y-%m-%d"), []) + [pnl]
+                switched_today = True
             budget = min(slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
@@ -1988,7 +2023,9 @@ def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod
         if hold_view.empty:
             lines.append("- 없음")
         else:
-            hold_view["스윙우선순위"] = pd.to_numeric(hold_view.get("스윙우선순위", 0.0), errors="coerce").fillna(0.0)
+            if "스윙우선순위" not in hold_view.columns:
+                hold_view["스윙우선순위"] = 0.0
+            hold_view["스윙우선순위"] = pd.to_numeric(hold_view["스윙우선순위"], errors="coerce").fillna(0.0)
             hold_view = hold_view.sort_values("스윙우선순위", ascending=False)
             for _, row in hold_view.head(5).iterrows():
                 lines.append(

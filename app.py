@@ -1145,6 +1145,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
     for cur_date in dates:
         cur_date = pd.to_datetime(cur_date).normalize()
         realized_today = 0.0
+        switched_today = False
 
         remaining = []
         for pos in positions:
@@ -1175,8 +1176,6 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         todays = signal[signal["진입일_dt"].dt.normalize().eq(cur_date)].copy()
         held_names = {p["종목명"] for p in positions}
         for _, sig in todays.iterrows():
-            if len(positions) >= int(max_positions):
-                break
             name = str(sig.get("종목명", "")).strip()
             if not name or name in held_names:
                 continue
@@ -1185,6 +1184,52 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 continue
             new_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
             new_entry_type = str(sig.get("진입유형", ""))
+            if len(positions) >= int(max_positions):
+                if switched_today:
+                    break
+                weakest_idx = None
+                weakest_score = 0.0
+                weakest_ret = 0.0
+                for pos_idx, pos in enumerate(positions):
+                    px = prices.get(pos["종목명"])
+                    if px is not None and not px.loc[px.index <= cur_date].empty:
+                        mark_price = float(px.loc[px.index <= cur_date].iloc[-1])
+                    else:
+                        mark_price = float(pos["진입가"])
+                    pos_ret = ((mark_price - float(pos["진입가"])) / float(pos["진입가"]) * 100.0) if float(pos["진입가"]) > 0 else 0.0
+                    pos_score = float(pos.get("스윙우선순위", 0.0) or 0.0)
+                    if weakest_idx is None or (pos_ret, pos_score) < (weakest_ret, weakest_score):
+                        weakest_idx = pos_idx
+                        weakest_score = pos_score
+                        weakest_ret = pos_ret
+                new_is_strong = new_score >= 65.0 or ("주도" in new_entry_type and new_score >= 58.0)
+                old_is_weak = weakest_ret <= -3.5 and new_score >= weakest_score + 12.0
+                protect_winner = weakest_ret >= 0.0
+                if weakest_idx is None or not (new_is_strong and old_is_weak) or protect_winner:
+                    continue
+                old_pos = positions.pop(weakest_idx)
+                px = prices.get(old_pos["종목명"])
+                if px is not None and not px.loc[px.index <= cur_date].empty:
+                    exit_price = float(px.loc[px.index <= cur_date].iloc[-1])
+                else:
+                    exit_price = float(old_pos["진입가"])
+                exit_value = exit_price * old_pos["수량"]
+                pnl = exit_value - old_pos["매수금액"]
+                cash += exit_value
+                realized_today += pnl
+                held_names.discard(old_pos["종목명"])
+                closed_rows.append({
+                    "진입일": old_pos["진입일"],
+                    "청산일": cur_date.strftime("%Y-%m-%d"),
+                    "종목명": old_pos["종목명"],
+                    "보유일수": max(1, len([d for d in dates if pd.to_datetime(old_pos["진입일_dt"]).normalize() <= pd.to_datetime(d).normalize() <= cur_date]) - 1),
+                    "매수금액": round(old_pos["매수금액"], 0),
+                    "청산금액": round(exit_value, 0),
+                    "실현손익": round(pnl, 0),
+                    "수익률": round((pnl / old_pos["매수금액"]) * 100.0, 4) if old_pos["매수금액"] else 0.0,
+                    "청산사유": "더강한후보교체",
+                })
+                switched_today = True
             budget = min(per_slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
