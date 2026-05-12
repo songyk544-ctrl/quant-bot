@@ -2272,12 +2272,22 @@ else:
     render_product_header(df_summary)
     st.markdown(render_macro_cards(core_tickers), unsafe_allow_html=True)
 
-    tab_labels = ["매크로", "테마 히트맵", "알파 레이더", "종목 분석", "백테스트", "주도주 비교"]
+    tab_labels = ["전략 대시보드", "알파 레이더", "종목 분석"]
     if is_admin:
-        tab_labels.append("보유 점검")
+        tab_labels.append("포트폴리오 비서")
+    tab_labels.extend(["매크로", "주도 테마"])
     tabs = st.tabs(tab_labels)
-    tab1, tab2, tab3, tab4, tab5, tab6 = tabs[:6]
-    tab7 = tabs[6] if is_admin and len(tabs) > 6 else None
+    tab5 = tabs[0]
+    tab3 = tabs[1]
+    tab4 = tabs[2]
+    if is_admin:
+        tab7 = tabs[3]
+        tab1 = tabs[4]
+        tab2 = tabs[5]
+    else:
+        tab7 = None
+        tab1 = tabs[3]
+        tab2 = tabs[4]
 
     # --- 탭 1: 매크로 인사이트 ---
     with tab1:
@@ -2308,47 +2318,64 @@ else:
             else:
                 st.caption("- 시황 뉴스 데이터를 불러오지 못했습니다.")
 
-    # --- 탭 2: 테마 히트맵 ---
+    # --- 주도 테마: 모바일에서 쓰기 어려운 히트맵 대신 압축 요약 ---
     with tab2:
-        render_section_header("시가총액 및 수급 테마 히트맵", "사각형 크기는 시가총액, 색상은 당일 등락률입니다.", badge_text="Theme Flow")
+        render_section_header("주도 테마 요약", "히트맵 대신 실제 후보가 몰리는 테마와 대표 종목만 압축해서 봅니다.", badge_text="Theme Pulse")
 
         if not is_vip:
-            show_premium_paywall("전체 시장의 테마별 자금 흐름 히트맵은 코드 인증 후 확인할 수 있습니다.")
+            show_premium_paywall("주도 테마와 대표 후보 요약은 코드 인증 후 확인할 수 있습니다.")
         else:
             if not df_summary.empty:
                 render_theme_flow_summary(df_summary)
-                df_hm = df_summary.copy()
-                df_hm['테마표시'] = df_hm['테마표시'].fillna("기타")
-                df_hm['시가총액'] = pd.to_numeric(df_hm['시가총액'], errors='coerce').fillna(0)
-                df_hm['등락률'] = pd.to_numeric(df_hm['등락률'], errors='coerce').fillna(0)
-
-                fig = px.treemap(
-                    df_hm,
-                    path=[px.Constant("국내 증시 주요 테마"), '테마표시', '종목명'],
-                    values='시가총액',
-                    color='등락률',
-                    color_continuous_scale=['#E04B4B', '#242735', '#36C06A'],
-                    color_continuous_midpoint=0,
-                    custom_data=['등락률', 'AI수급점수']
+                theme_view = df_summary.copy()
+                theme_view["테마표시"] = theme_view["테마표시"].fillna("기타").astype(str)
+                for col in ["스윙우선순위", "등락률", "외인강도(%)", "연기금강도(%)", "기관동행점수"]:
+                    if col not in theme_view.columns:
+                        theme_view[col] = 0.0
+                    theme_view[col] = pd.to_numeric(theme_view[col], errors="coerce").fillna(0.0)
+                theme_rank = (
+                    theme_view.groupby("테마표시", as_index=False)
+                    .agg(
+                        후보수=("종목명", "count"),
+                        평균스윙=("스윙우선순위", "mean"),
+                        평균등락=("등락률", "mean"),
+                        외인강도=("외인강도(%)", "mean"),
+                        연기금강도=("연기금강도(%)", "mean"),
+                        기관동행=("기관동행점수", "mean"),
+                    )
+                    .sort_values(["평균스윙", "후보수"], ascending=[False, False])
+                    .head(5)
                 )
-
-                fig.update_traces(
-                    texttemplate="<b>%{label}</b><br>%{customdata[0]:.2f}%",
-                    hovertemplate="<b>%{label}</b><br>시가총액: %{value:,.0f}억<br>등락률: %{customdata[0]:.2f}%<br>AI점수: %{customdata[1]}점<extra></extra>",
-                    textfont_color="white"
-                )
-                fig.update_layout(
-                    margin=dict(t=30, l=10, r=10, b=10),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    height=550,
-                    coloraxis_showscale=False,
-                    font=dict(color="#CBD5E1")
-                )
-
-                st.plotly_chart(fig, width='stretch')
+                st.markdown("#### 오늘 볼 만한 테마 Top 5")
+                for _, theme_row in theme_rank.iterrows():
+                    theme_name = str(theme_row["테마표시"])
+                    reps = (
+                        theme_view[theme_view["테마표시"].eq(theme_name)]
+                        .sort_values("스윙우선순위", ascending=False)
+                        .head(3)["종목명"]
+                        .astype(str)
+                        .tolist()
+                    )
+                    status = "확산" if int(theme_row["후보수"]) >= 3 else "압축"
+                    if float(theme_row["평균등락"]) >= 3:
+                        status = "과열주의"
+                    elif float(theme_row["평균스윙"]) >= 60:
+                        status = "주도"
+                    st.markdown(
+                        f"""
+                        <div class="decision-card" style="margin-bottom:8px;">
+                            <div class="decision-label">{status}</div>
+                            <div class="decision-value">{html.escape(theme_name)}</div>
+                            <div class="decision-meta">
+                                대표: {html.escape(", ".join(reps) if reps else "-")}<br>
+                                평균스윙 {float(theme_row["평균스윙"]):.1f} · 평균등락 {float(theme_row["평균등락"]):+.2f}% · 기관동행 {float(theme_row["기관동행"]):.1f}
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
             else:
-                render_empty_state("데이터 대기", "테마 히트맵 데이터가 아직 준비되지 않았습니다.")
+                render_empty_state("데이터 대기", "주도 테마 데이터가 아직 준비되지 않았습니다.")
 
     # --- 탭 3: 수급 스크리너 ---
     with tab3:
@@ -3233,11 +3260,11 @@ else:
                         except Exception as e:
                             st.error(f"분석 중 오류 발생: {e}")
 
-    # --- 탭 5: 백테스트 ---
+    # --- 메인: 전략 대시보드 ---
     with tab5:
-        render_section_header(f"{APP_NAME} 스윙 백테스트", "종가 진입 후 D+5/D+10 종가 청산 기준으로 성과를 확인합니다.", badge_text="Backtest")
+        render_section_header(f"{APP_NAME} 전략 대시보드", "백테스트, 현재 포지션, 신규 후보를 한 화면에서 운용 관점으로 확인합니다.", badge_text="Strategy")
         if not is_vip:
-            show_premium_paywall("가상 포트폴리오 누적 수익률 및 성과 분석은 코드 인증 후 확인할 수 있습니다.")
+            show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
         else:
             df_swing_perf = load_swing_performance_safe()
             df_swing_trades = load_swing_trades_safe()
@@ -3398,7 +3425,7 @@ else:
                         f"""
                         <div class="kpi-grid">
                             <div class="kpi-card">
-                                <div class="kpi-title">1,000만원 포트폴리오 수익률</div>
+                                <div class="kpi-title">{int(backtest_initial_cash):,}원 포트폴리오 수익률</div>
                                 <div class="kpi-value">{current_port_ret:+.2f}%</div>
                                 <span class="kpi-delta" style="background: rgba(54,192,106,0.18); color:{port_delta_color};">최근 {port_daily_diff:+.2f}%</span>
                                 <div class="kpi-meta">평가금액 {current_equity:,.0f}원 · 현금 {current_cash:,.0f}원</div>
@@ -3449,16 +3476,21 @@ else:
                         var_name='포트폴리오',
                         value_name='차트수익률'
                     )
+                    df_melt['포트폴리오'] = df_melt['포트폴리오'].replace({
+                        '전략 누적수익률': '전략',
+                        'KOSPI 누적수익률': 'KOSPI',
+                        'NASDAQ 누적수익률': 'NASDAQ',
+                    })
                     base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
                         x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
                         y=alt.Y('차트수익률:Q', title="누적 수익률 (%)"),
                         color=alt.Color(
                             '포트폴리오:N',
                             scale=alt.Scale(
-                                domain=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
+                                domain=['전략', 'KOSPI', 'NASDAQ'],
                                 range=['#E74C3C', '#AAAAAA', '#A78BFA']
                             ),
-                            legend=alt.Legend(title=None, orient='bottom')
+                            legend=alt.Legend(title=None, orient='bottom', direction='horizontal', columns=3, labelLimit=80)
                         )
                     ).properties(height=300)
                     st.altair_chart(apply_altair_theme(base_chart), width='stretch')
@@ -3604,113 +3636,11 @@ else:
             else:
                 render_empty_state("데이터 대기", "swing_performance.csv가 아직 생성되지 않았습니다. 다음 스크래퍼 실행 후 표시됩니다.")
 
-    # --- 탭 6: 리더스 페어 분석 ---
-    with tab6:
-        render_section_header("리더스 페어 분석", "두 종목의 뉴스/수급/정량 지표를 교차 비교해 상대 우위를 평가합니다.")
-        st.caption("두 종목의 뉴스, 시황, 퀀트 데이터를 교차 검토해 단기 상대 우위를 비교합니다.")
-
-        if not is_vip:
-            show_premium_paywall("AI 기반 다중 종목 비교 분석 기능은 코드 인증 후 이용할 수 있습니다.")
-        else:
-            if not client:
-                st.error("⚠️ Streamlit Secrets에 GEMINI_API_KEY가 설정되지 않아 비교 분석을 사용할 수 없습니다.")
-            else:
-                stock_list_full = df_summary['종목명'].tolist()
-                if "leaders_pair_warn" not in st.session_state:
-                    st.session_state["leaders_pair_warn"] = False
-
-                def _enforce_pair_limit():
-                    selected = st.session_state.get("leaders_pair_multiselect", [])
-                    if len(selected) > 2:
-                        st.session_state["leaders_pair_multiselect"] = selected[:2]
-                        st.session_state["leaders_pair_warn"] = True
-
-                matchup_stocks = st.multiselect(
-                    "비교할 종목 2개를 선택하세요",
-                    options=stock_list_full,
-                    key="leaders_pair_multiselect",
-                    on_change=_enforce_pair_limit
-                )
-                matchup_stocks = st.session_state.get("leaders_pair_multiselect", matchup_stocks)
-                if st.session_state.get("leaders_pair_warn", False):
-                    st.warning("비교는 2개 종목만 가능합니다. 최근 선택 종목은 제외했습니다.")
-                    st.session_state["leaders_pair_warn"] = False
-                ready_to_run = len(matchup_stocks) == 2
-                st.caption(f"선택 상태: {len(matchup_stocks)}/2")
-                if st.button("비교 분석 시작", use_container_width=True, type="primary", disabled=not ready_to_run):
-                    if ready_to_run:
-                        with st.spinner("선택 종목의 뉴스/시황/참고자료를 수집하고 있습니다..."):
-                            macro_news = get_macro_headline_news()
-                            matchup_data = []
-                            evidence_lines = []
-                            for ms in matchup_stocks:
-                                s_row = df_summary[df_summary['종목명'] == ms].iloc[0]
-                                n_news = get_naver_news(ms)
-                                stock_code = safe_get(s_row, '종목코드', '')
-                                event_context = get_stock_disclosure_report_context(ms, stock_code)
-                                
-                                matchup_data.append(f"""
-                                === [후보 종목: {ms}] ===
-                                - 테마: {safe_get(s_row, '테마표시', safe_get(s_row, '섹터', '분류안됨'))} / AI점수: {safe_get(s_row, 'AI수급점수', 0)}점
-                                - 이격도: {safe_get(s_row, '이격도(%)', 100)}% / 외국인연속: {safe_get(s_row, '외인연속', 0)}일 / 연기금연속: {safe_get(s_row, '연기금연속', 0)}일
-                                - 최근 뉴스 (요약 포함): {chr(10).join(n_news[:3]) if n_news else '없음'}
-                                - 최근 공시/리포트: {event_context}
-                                """)
-                                evidence_lines.append(f"[{ms}]")
-                                for n in n_news[:3]:
-                                    evidence_lines.append(f"- {n}")
-                                if event_context and event_context != "최근 공시/리포트 데이터 없음":
-                                    for line in str(event_context).splitlines():
-                                        evidence_lines.append(f"  {line}")
-                            
-                            combined_data_str = "\n".join(matchup_data)
-                            with st.expander("비교 분석에 사용한 뉴스/참고자료 보기"):
-                                st.write("**[오늘의 시황 뉴스]**")
-                                for mn in macro_news:
-                                    st.caption(f"- {mn}")
-                                if not macro_news:
-                                    st.caption("- 시황 뉴스 없음")
-                                st.write("**[종목별 참고 자료]**")
-                                for line in evidence_lines:
-                                    st.caption(line)
-                            
-                            prompt = f"""
-                            너는 {APP_NAME} 수석 퀀트 애널리스트야. 내가 아래에 제공한 2개 종목의 [후보 종목 데이터]를 비교 분석해.
-                            또한, [오늘의 주요 시황 뉴스]를 바탕으로 글로벌 매크로 환경을 고려했을 때 현재 단기 관점에서 어떤 종목이 가장 유리한지 결론과 근거를 설명해.
-                            
-                            [팩트 데이터: 오늘의 주요 시황 뉴스]
-                            {chr(10).join(macro_news) if macro_news else "시황 뉴스 없음"}
-                            
-                            [후보 종목 데이터]
-                            {combined_data_str}
-                            
-                            다음 양식으로 답변해줘:
-                            🏆 **최종 선택 종목**: (종목명)
-                            🔍 **선정 이유**: (수급, 이격도, 종목 뉴스/공시/리포트, 시황을 종합하여 3~4줄로 핵심만 요약)
-                            ⚖️ **탈락 종목 코멘트**: (왜 승자보다 아쉬운지 짧게 분석)
-                            📚 **참고 출처**: (분석에 반영한 뉴스/공시/리포트 제목을 핵심만 bullet로 명시)
-                            """
-                            
-                            try:
-                                response = client.models.generate_content_stream(
-                                    model='gemma-4-31b-it',
-                                    contents=prompt
-                                )
-                                st.success("비교 분석이 완료되었습니다.")
-                                def stream_generator():
-                                    for chunk in response:
-                                        if chunk.text: yield chunk.text
-                                st.write_stream(stream_generator)
-                            except Exception as e:
-                                st.error(f"분석 중 오류 발생: {e}")
-                if not ready_to_run:
-                    st.info("비교 분석을 위해 종목 2개를 선택해주세요.")
-
     # --- 탭 7: 관리자 전용 포트폴리오 ---
     if is_admin and tab7 is not None:
         with tab7:
-            render_section_header("보유 점검", "보유 종목의 손익과 수급 이탈 리스크를 먼저 확인하고 필요할 때만 편집합니다.", badge_text="Portfolio")
-            st.caption("매일 보는 화면은 보유 리스크 점검, 편집 기능은 아래 접힘 영역에 배치했습니다.")
+            render_section_header("포트폴리오 비서", "보유·매도점검·교체 후보를 백테스트 기준과 연결해 먼저 판단합니다.", badge_text="Assistant")
+            st.caption("표보다 결론을 먼저 봅니다. 편집 기능은 아래 접힘 영역에 따로 두었습니다.")
             saved_thr = load_admin_risk_thresholds()
             if "admin_ai_warn_threshold" not in st.session_state:
                 st.session_state["admin_ai_warn_threshold"] = int(saved_thr["ai_warn_threshold"])
@@ -3780,7 +3710,64 @@ else:
                     unsafe_allow_html=True,
                 )
 
-                risk_rows = df_joined[df_joined["수급이탈위험"]].copy()
+                sell_words = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
+                sell_check_text = df_joined["매도점검"].fillna("").astype(str)
+                sell_watch_mask = sell_check_text.apply(lambda x: any(w in x for w in sell_words))
+                risk_rows = df_joined[df_joined["수급이탈위험"] | sell_watch_mask].copy()
+                hold_rows = df_joined[~df_joined.index.isin(risk_rows.index)].copy()
+                held_names = set(df_joined["종목명"].fillna("").astype(str))
+                replacement_pool = df_summary[~df_summary["종목명"].astype(str).isin(held_names)].copy()
+                if "스윙우선순위" in replacement_pool.columns:
+                    replacement_pool["스윙우선순위"] = pd.to_numeric(replacement_pool["스윙우선순위"], errors="coerce").fillna(0.0)
+                    replacement_pool = replacement_pool.sort_values("스윙우선순위", ascending=False).head(3)
+                else:
+                    replacement_pool = replacement_pool.head(3)
+                risk_names = ", ".join(risk_rows["종목명"].dropna().astype(str).head(3).tolist()) if not risk_rows.empty else "없음"
+                hold_names = ", ".join(hold_rows["종목명"].dropna().astype(str).head(3).tolist()) if not hold_rows.empty else "없음"
+                replacement_names = ", ".join(replacement_pool["종목명"].dropna().astype(str).head(3).tolist()) if not replacement_pool.empty else "없음"
+                if risk_rows.empty:
+                    assistant_verdict = "보유 유지"
+                    assistant_meta = "현재 보유 종목에서 명확한 매도 점검 신호는 없습니다."
+                    verdict_color = "#86EFAC"
+                elif not replacement_pool.empty:
+                    assistant_verdict = "교체 점검"
+                    assistant_meta = "약해진 보유 종목과 더 강한 신규 후보를 비교하세요."
+                    verdict_color = "#FCD34D"
+                else:
+                    assistant_verdict = "비중 축소 점검"
+                    assistant_meta = "새 후보보다 기존 리스크 관리가 우선입니다."
+                    verdict_color = "#FCA5A5"
+
+                st.markdown("#### 오늘의 포트폴리오 결론")
+                st.markdown(
+                    f"""
+                    <div class="decision-grid">
+                        <div class="decision-card">
+                            <div class="decision-label">오늘 판단</div>
+                            <div class="decision-value" style="color:{verdict_color};">{assistant_verdict}</div>
+                            <div class="decision-meta">{assistant_meta}</div>
+                        </div>
+                        <div class="decision-card">
+                            <div class="decision-label">매도/축소 점검</div>
+                            <div class="decision-value">{len(risk_rows):,}개</div>
+                            <div class="decision-meta">{html.escape(risk_names)}</div>
+                        </div>
+                        <div class="decision-card">
+                            <div class="decision-label">교체 후보</div>
+                            <div class="decision-value">{len(replacement_pool):,}개</div>
+                            <div class="decision-meta">{html.escape(replacement_names)}</div>
+                        </div>
+                    </div>
+                    <div class="decision-card" style="margin-bottom:10px;">
+                        <div class="decision-label">비서 코멘트</div>
+                        <div class="decision-meta">
+                            유지 후보: {html.escape(hold_names)}<br>
+                            교체는 기존 종목이 약해지고 새 후보가 확실히 강할 때만 검토합니다. 단순히 새 후보가 좋아 보인다는 이유만으로 갈아타지 않습니다.
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown(
                     f"""
