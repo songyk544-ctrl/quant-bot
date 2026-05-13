@@ -146,6 +146,56 @@ HARD_TARGET_RETURN = 15.0
 STOP_LOSS_RETURN = -4.0
 
 
+def _normalize_history_frame(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    if "종목명" not in out.columns or "일자" not in out.columns:
+        return pd.DataFrame()
+    out["종목명"] = out["종목명"].astype(str).str.strip()
+    raw_dates = out["일자"].astype(str).str.replace("-", "", regex=False).str.replace(".0", "", regex=False).str.strip()
+    out["일자_dt"] = pd.to_datetime(raw_dates, format="%Y%m%d", errors="coerce")
+    if out["일자_dt"].notna().sum() == 0:
+        out["일자_dt"] = pd.to_datetime(out["일자"], errors="coerce")
+    out = out.dropna(subset=["일자_dt"])
+    out = out[out["종목명"] != ""]
+    out["일자"] = out["일자_dt"].dt.strftime("%Y%m%d")
+    for col in ["종가", "외인", "연기금", "투신", "사모", "거래량", "거래대금(억)"]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    return out
+
+
+def merge_history_snapshot(new_history):
+    """
+    KIS 일봉 응답은 최근 구간만 내려오므로 history.csv를 덮어쓰면 백테스트 시작점이 계속 흔들립니다.
+    기존 누적분과 새 수집분을 종목명+일자 기준으로 병합해 과거 구간을 보존합니다.
+    """
+    new_norm = _normalize_history_frame(new_history)
+    if new_norm.empty:
+        return pd.DataFrame()
+
+    frames = []
+    if csv_exists("history.csv"):
+        try:
+            old_norm = _normalize_history_frame(read_table_prefer_db("history.csv", on_bad_lines="skip"))
+            if not old_norm.empty:
+                frames.append(old_norm)
+        except Exception as e:
+            print(f"[WARN] 기존 history.csv 로드 실패, 새 수집분만 사용합니다: {e}")
+    frames.append(new_norm)
+
+    merged = pd.concat(frames, ignore_index=True, sort=False)
+    merged = merged.dropna(subset=["종목명", "일자_dt"])
+    merged = merged.sort_values(["종목명", "일자_dt"])
+    merged = merged.drop_duplicates(subset=["종목명", "일자"], keep="last")
+
+    preferred_cols = ["종목명", "일자", "종가", "외인", "연기금", "투신", "사모", "거래량", "거래대금(억)"]
+    other_cols = [c for c in merged.columns if c not in preferred_cols + ["일자_dt"]]
+    merged = merged[preferred_cols + other_cols]
+    return merged.sort_values(["일자", "종목명"], ascending=[False, True]).reset_index(drop=True)
+
+
 def _risk_state_from_mdd(mdd):
     return "High" if mdd <= -8 else ("Medium" if mdd <= -4 else "Low")
 
@@ -337,9 +387,26 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
     if not csv_exists("history.csv"):
         return pd.DataFrame(), pd.DataFrame()
 
-    score = build_replay_score_trend(top_n=top_n)
-    if score.empty and csv_exists("score_trend.csv"):
-        score = load_score_trend_safe()
+    replay_score = build_replay_score_trend(top_n=top_n)
+    score = pd.DataFrame()
+    actual_score = pd.DataFrame()
+    if csv_exists("score_trend.csv"):
+        actual_score = load_score_trend_safe()
+        if not actual_score.empty and "날짜" in actual_score.columns:
+            actual_score = actual_score.copy()
+            actual_score["추천소스"] = "실제스냅샷"
+    if not replay_score.empty:
+        replay_score = replay_score.copy()
+        replay_score["추천소스"] = "리플레이"
+    if not actual_score.empty and not replay_score.empty:
+        # 실제 일일 스냅샷을 우선하되, 과거 스냅샷에 신규후보가 없던 날짜는
+        # 누적 history 기반 replay로 보강합니다. 이렇게 해야 백테스트 기간이
+        # 5월 8일처럼 첫 실제 신규후보 발생일로 잘리지 않습니다.
+        score = pd.concat([actual_score, replay_score], ignore_index=True, sort=False)
+    elif not actual_score.empty:
+        score = actual_score
+    else:
+        score = replay_score
     prices = _load_history_prices()
     if score.empty or prices.empty:
         return pd.DataFrame(), pd.DataFrame()
@@ -352,6 +419,14 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
     day_slices = []
     for _, day_df in score.groupby("날짜_dt", sort=True):
         day = day_df.copy()
+        if "추천소스" in day.columns:
+            actual_day = day[day["추천소스"].astype(str) == "실제스냅샷"].copy()
+            if not actual_day.empty and "매수후보" in actual_day.columns and (actual_day["매수후보"].astype(str) == "신규후보").any():
+                day = actual_day
+            else:
+                replay_day = day[day["추천소스"].astype(str) == "리플레이"].copy()
+                if not replay_day.empty:
+                    day = replay_day
         if "매수후보" in day.columns and (day["매수후보"].astype(str) == "신규후보").any():
             picked = day[day["매수후보"].astype(str) == "신규후보"].copy()
             if "스윙우선순위" in picked.columns:
@@ -359,7 +434,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
             else:
                 picked = picked.sort_values(["순위", "AI수급점수"], ascending=[True, False])
         else:
-            picked = day.sort_values(["순위", "AI수급점수"], ascending=[True, False]).head(int(top_n)).copy()
+            # 실제/리플레이 양쪽 모두 신규후보가 없던 날은 신규 매수가 없던 날로 봅니다.
+            continue
         picked = picked.reset_index(drop=True)
         picked["순위"] = range(1, len(picked) + 1)
         day_slices.append(picked.head(int(top_n)))
@@ -494,6 +570,7 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 "AI수급점수": round(float(sig.get("AI수급점수", 0.0) or 0.0), 2),
                 "진입유형": entry_type_val,
                 "스윙우선순위": round(swing_priority_val, 2),
+                "추천소스": str(sig.get("추천소스", "") or ""),
                 "진입코멘트": comment_val,
                 "보유일수": int(horizon),
                 "청산방식": f"D+{int(horizon)}",
@@ -518,6 +595,7 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
             "AI수급점수": round(float(sig.get("AI수급점수", 0.0) or 0.0), 2),
             "진입유형": entry_type_val,
             "스윙우선순위": round(swing_priority_val, 2),
+            "추천소스": str(sig.get("추천소스", "") or ""),
             "진입코멘트": comment_val,
             "보유일수": signal_hold_days,
             "청산방식": "시그널",
@@ -1976,6 +2054,16 @@ def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod
         except Exception:
             return "-"
 
+    def _fmt_score(v):
+        try:
+            return f"{float(v):.1f}"
+        except Exception:
+            return "-"
+
+    def _compact_name(v, limit=12):
+        name = str(v or "-").strip()
+        return name if len(name) <= limit else name[:limit - 1] + "…"
+
     df = df_final.copy() if df_final is not None else pd.DataFrame()
     if not df.empty:
         for c in ["스윙우선순위", "AI수급점수", "주도주점수", "수급품질점수", "현재가"]:
@@ -1999,6 +2087,13 @@ def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod
                         if c in df.columns
                     ]
                     open_view = pd.merge(signal, df[merge_cols], on="종목명", how="left") if merge_cols else signal
+                    for base_col in ["매수후보", "진입유형", "전략슬리브", "스윙우선순위", "매도점검", "현재가"]:
+                        x_col = f"{base_col}_x"
+                        y_col = f"{base_col}_y"
+                        if y_col in open_view.columns:
+                            open_view[base_col] = open_view[y_col].combine_first(open_view[x_col]) if x_col in open_view.columns else open_view[y_col]
+                        elif x_col in open_view.columns:
+                            open_view[base_col] = open_view[x_col]
     except Exception as e:
         print(f"[WARN] 텔레그램 보유 포지션 구성 실패: {e}")
 
@@ -2012,11 +2107,12 @@ def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod
         if sell_alerts.empty:
             lines.append("- 없음")
         else:
-            for _, row in sell_alerts.head(5).iterrows():
-                lines.append(
-                    f"- {row.get('종목명','-')} | {row.get('매도점검','-')} | "
-                    f"진입 {row.get('진입일','-')} | 현재 {_fmt_money(row.get('현재가', 0))}"
-                )
+            for i, (_, row) in enumerate(sell_alerts.head(3).iterrows(), start=1):
+                lines.extend([
+                    f"{i}. {_compact_name(row.get('종목명'))}",
+                    f"   점검: {row.get('매도점검','-')}",
+                    f"   진입 {row.get('진입일','-')} · 현재 {_fmt_money(row.get('현재가', 0))}",
+                ])
         lines.append("")
 
         lines.append("✅ 보유 유지")
@@ -2027,31 +2123,50 @@ def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod
                 hold_view["스윙우선순위"] = 0.0
             hold_view["스윙우선순위"] = pd.to_numeric(hold_view["스윙우선순위"], errors="coerce").fillna(0.0)
             hold_view = hold_view.sort_values("스윙우선순위", ascending=False)
-            for _, row in hold_view.head(5).iterrows():
-                lines.append(
-                    f"- {row.get('종목명','-')} | {row.get('진입유형','-')} | "
-                    f"스윙 {float(row.get('스윙우선순위', 0.0)):.1f} | 점검 {row.get('매도점검','보유/관찰')}"
-                )
+            for i, (_, row) in enumerate(hold_view.head(3).iterrows(), start=1):
+                lines.extend([
+                    f"{i}. {_compact_name(row.get('종목명'))}",
+                    f"   {row.get('진입유형','-')} · 스윙 {_fmt_score(row.get('스윙우선순위', 0.0))}",
+                    f"   점검: {row.get('매도점검','보유/관찰')}",
+                ])
         lines.append("")
     else:
         lines.append("✅ 보유 포지션")
         lines.append("- 진행 중인 시그널 포지션 없음")
         lines.append("")
 
-    lines.append("🆕 신규 후보")
+    top_candidate = None
     if df.empty or "매수후보" not in df.columns:
-        lines.append("- 없음")
+        candidates = pd.DataFrame()
     else:
         candidates = df[df["매수후보"].astype(str).eq("신규후보")].copy()
         if candidates.empty:
-            lines.append("- 없음")
+            candidates = pd.DataFrame()
         else:
             candidates = candidates.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
-            for _, row in candidates.head(5).iterrows():
-                lines.append(
-                    f"- {row.get('종목명','-')} | {row.get('전략슬리브','-')} / {row.get('진입유형','-')} | "
-                    f"스윙 {float(row.get('스윙우선순위', 0.0)):.1f} | 현재 {_fmt_money(row.get('현재가', 0))}"
-                )
+            top_candidate = candidates.iloc[0]
+
+    lines.append("🎯 오늘 1순위")
+    if top_candidate is None:
+        lines.append("- 신규 매수 후보 없음")
+    else:
+        lines.extend([
+            f"1. {_compact_name(top_candidate.get('종목명'))}",
+            f"   {top_candidate.get('전략슬리브','-')} · {top_candidate.get('진입유형','-')}",
+            f"   스윙 {_fmt_score(top_candidate.get('스윙우선순위', 0.0))} · 현재 {_fmt_money(top_candidate.get('현재가', 0))}",
+        ])
+    lines.append("")
+
+    lines.append("🆕 신규 후보군")
+    if candidates.empty:
+            lines.append("- 없음")
+    else:
+        for i, (_, row) in enumerate(candidates.head(3).iterrows(), start=1):
+            lines.extend([
+                f"{i}. {_compact_name(row.get('종목명'))}",
+                f"   {row.get('전략슬리브','-')} · {row.get('진입유형','-')}",
+                f"   스윙 {_fmt_score(row.get('스윙우선순위', 0.0))} · 현재 {_fmt_money(row.get('현재가', 0))}",
+            ])
 
     lines.extend(["", f"📊 대시보드: {dashboard_url}"])
     return "\n".join(lines)
@@ -2772,7 +2887,9 @@ def run_scraper(manual_full_parse=False):
         
         df_history = pd.DataFrame(history_list)
         if not df_history.empty:
-            write_table_dual(df_history, "history.csv", index=False, encoding='utf-8-sig')
+            df_history_merged = merge_history_snapshot(df_history)
+            write_table_dual(df_history_merged, "history.csv", index=False, encoding='utf-8-sig')
+            print(f"📚 history.csv 누적 병합 완료: 신규 {len(df_history):,}행 → 누적 {len(df_history_merged):,}행")
         else:
             # 빈 수집 결과로 기존 history.csv를 덮어써서 파일이 깨지는 상황 방지
             print("⚠️ history_list가 비어 있어 history.csv 갱신을 건너뜁니다. (기존 파일 유지)")

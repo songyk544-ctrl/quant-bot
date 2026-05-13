@@ -334,20 +334,11 @@ def render_product_header(df_summary_local):
     summary = build_market_regime_summary()
     updated_at = now_kst().strftime("%m/%d %H:%M")
     new_count = 0
-    watch_count = 0
-    avoid_count = 0
-    top_name = "-"
-    top_entry = "관찰"
     risk_count = 0
     if df_summary_local is not None and not df_summary_local.empty:
         if "매수후보" in df_summary_local.columns:
             buy_state = df_summary_local["매수후보"].astype(str)
             new_count = int((buy_state == "신규후보").sum())
-            watch_count = int((buy_state == "관찰").sum())
-            avoid_count = int((buy_state == "제외").sum())
-        top_row = df_summary_local.iloc[0]
-        top_name = str(top_row.get("종목명", "-"))
-        top_entry = str(top_row.get("진입유형", "관찰"))
         if "매도점검" in df_summary_local.columns:
             risk_count = int(df_summary_local["매도점검"].astype(str).str.contains("주의|축소|이탈|청산", regex=True).sum())
 
@@ -365,8 +356,6 @@ def render_product_header(df_summary_local):
   <div class="qe-product-status">
     <span class="qe-status-chip qe-status-strong">신규후보 {new_count}개</span>
     <span class="qe-status-chip" style="color:{summary['color']}; border-color:{summary['color']};">{summary['regime']}</span>
-    <span class="qe-status-chip">관찰 {watch_count} · 제외 {avoid_count}</span>
-    <span class="qe-status-chip">Top {html.escape(top_name)} · {html.escape(top_entry)}</span>
     <span class="qe-status-chip">갱신 {updated_at}</span>
   </div>
   <div class="qe-product-guide">{summary['mode']} · 보유점검 {risk_count}개</div>
@@ -1436,7 +1425,7 @@ def _save_local_json(path, payload_obj):
 
 def _load_user_state():
     defaults = {
-        "thresholds": {"ai_warn_threshold": 65, "ai_critical_threshold": 55},
+        "thresholds": {"swing_warn_threshold": 55, "ai_critical_threshold": 35},
         "portfolio": [],
     }
     state = _github_get_json("user_state_admin.json", default_obj=defaults)
@@ -1454,7 +1443,10 @@ def _load_user_state():
     if os.path.exists("admin_ui_settings.json"):
         local_thr = _load_local_json("admin_ui_settings.json", {})
         if isinstance(local_thr, dict):
-            state["thresholds"]["ai_warn_threshold"] = int(local_thr.get("ai_warn_threshold", state["thresholds"]["ai_warn_threshold"]))
+            state["thresholds"]["swing_warn_threshold"] = int(local_thr.get(
+                "swing_warn_threshold",
+                local_thr.get("ai_warn_threshold", state["thresholds"].get("swing_warn_threshold", 55)),
+            ))
             state["thresholds"]["ai_critical_threshold"] = int(local_thr.get("ai_critical_threshold", state["thresholds"]["ai_critical_threshold"]))
     return state
 
@@ -1474,22 +1466,22 @@ def _save_user_state(state_obj, message):
 
 def load_admin_risk_thresholds():
     """관리자 리스크 임계값을 로드(원격 GitHub state 우선, 로컬 fallback)."""
-    defaults = {"ai_warn_threshold": 65, "ai_critical_threshold": 55}
+    defaults = {"swing_warn_threshold": 55, "ai_critical_threshold": 35}
     state = _load_user_state()
     obj = state.get("thresholds", defaults)
-    warn = int(obj.get("ai_warn_threshold", defaults["ai_warn_threshold"]))
+    swing_warn = int(obj.get("swing_warn_threshold", obj.get("ai_warn_threshold", defaults["swing_warn_threshold"])))
     critical = int(obj.get("ai_critical_threshold", defaults["ai_critical_threshold"]))
     return {
-        "ai_warn_threshold": max(0, min(100, warn)),
+        "swing_warn_threshold": max(0, min(100, swing_warn)),
         "ai_critical_threshold": max(0, min(100, critical)),
     }
 
 
-def save_admin_risk_thresholds(ai_warn_threshold, ai_critical_threshold):
+def save_admin_risk_thresholds(swing_warn_threshold, ai_critical_threshold):
     """관리자 리스크 임계값 저장(원격 GitHub state + 로컬 동시 반영)."""
     state = _load_user_state()
     state["thresholds"] = {
-        "ai_warn_threshold": int(max(0, min(100, ai_warn_threshold))),
+        "swing_warn_threshold": int(max(0, min(100, swing_warn_threshold))),
         "ai_critical_threshold": int(max(0, min(100, ai_critical_threshold))),
     }
     _save_user_state(state, "chore(state): update admin risk thresholds")
@@ -1529,6 +1521,115 @@ def save_admin_portfolio_df(df_portfolio):
 
 def safe_get(row, col_name, default=0.0):
     return row[col_name] if col_name in row.index and pd.notna(row[col_name]) else default
+
+def build_admin_assistant_context(df_summary_local, core_tickers_local):
+    parts = []
+    now_txt = now_kst().strftime("%Y-%m-%d %H:%M KST")
+    parts.append(f"[기준시각]\n{now_txt}")
+
+    try:
+        market_lines = []
+        for name, data in (core_tickers_local or {}).items():
+            if isinstance(data, dict):
+                market_lines.append(f"- {name}: {data.get('value', '-')} / {data.get('change', '-')}")
+        if market_lines:
+            parts.append("[매크로]\n" + "\n".join(market_lines[:10]))
+    except Exception:
+        pass
+
+    df = df_summary_local.copy() if df_summary_local is not None else pd.DataFrame()
+    if not df.empty:
+        for col in ["스윙우선순위", "AI수급점수", "현재_순위", "AI순위", "현재가", "등락률", "기관동행점수", "외인강도(%)", "연기금강도(%)"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        buy_df = df[df.get("매수후보", pd.Series("", index=df.index)).astype(str).eq("신규후보")].copy()
+        if not buy_df.empty:
+            buy_df = buy_df.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False]).head(5)
+            lines = []
+            for _, row in buy_df.iterrows():
+                lines.append(
+                    f"- {row.get('종목명','-')}: 스윙 {float(row.get('스윙우선순위',0)):.1f}, "
+                    f"AI {float(row.get('AI수급점수',0)):.1f}, {row.get('전략슬리브','-')}/{row.get('진입유형','-')}, "
+                    f"현재 {float(row.get('현재가',0)):,.0f}원"
+                )
+            parts.append("[오늘 신규 후보]\n" + "\n".join(lines))
+
+        radar = df.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False]).head(10)
+        lines = []
+        for _, row in radar.iterrows():
+            lines.append(
+                f"- {row.get('종목명','-')}: 스윙 {float(row.get('스윙우선순위',0)):.1f}, "
+                f"순위 {int(float(row.get('현재_순위',0) or 0))}위, 후보 {row.get('매수후보','-')}, "
+                f"점검 {row.get('매도점검','-')}"
+            )
+        parts.append("[알파레이더 상위]\n" + "\n".join(lines))
+
+        if "테마표시" in df.columns:
+            theme_df = df.copy()
+            theme_df["테마표시"] = theme_df["테마표시"].fillna("기타").astype(str)
+            theme_rank = (
+                theme_df.groupby("테마표시", as_index=False)
+                .agg(후보수=("종목명", "count"), 평균스윙=("스윙우선순위", "mean"), 평균등락=("등락률", "mean"))
+                .sort_values(["평균스윙", "후보수"], ascending=[False, False])
+                .head(5)
+            )
+            lines = [
+                f"- {r['테마표시']}: 후보 {int(r['후보수'])}개, 평균스윙 {float(r['평균스윙']):.1f}, 평균등락 {float(r['평균등락']):+.2f}%"
+                for _, r in theme_rank.iterrows()
+            ]
+            parts.append("[주도 테마]\n" + "\n".join(lines))
+
+    base_cols = ["종목명", "수량", "매수가"]
+    port = load_admin_portfolio_df(base_cols)
+    if not port.empty and not df.empty:
+        join_cols = [c for c in ["종목명", "현재가", "등락률", "스윙우선순위", "현재_순위", "AI수급점수", "매수후보", "진입유형", "매도점검", "외인강도(%)", "연기금강도(%)"] if c in df.columns]
+        joined = pd.merge(port, df[join_cols], on="종목명", how="left")
+        lines = []
+        total_buy = 0.0
+        total_eval = 0.0
+        for _, row in joined.iterrows():
+            qty = float(pd.to_numeric(row.get("수량", 0), errors="coerce") or 0.0)
+            buy = float(pd.to_numeric(row.get("매수가", 0), errors="coerce") or 0.0)
+            cur = float(pd.to_numeric(row.get("현재가", 0), errors="coerce") or 0.0)
+            buy_amt = qty * buy
+            eval_amt = qty * cur
+            total_buy += buy_amt
+            total_eval += eval_amt
+            ret = ((cur - buy) / buy * 100.0) if buy > 0 and cur > 0 else 0.0
+            lines.append(
+                f"- {row.get('종목명','-')}: 수익률 {ret:+.2f}%, 평가 {eval_amt:,.0f}원, "
+                f"스윙 {float(pd.to_numeric(row.get('스윙우선순위',0), errors='coerce') or 0):.1f}, "
+                f"점검 {row.get('매도점검','-')}"
+            )
+        total_ret = ((total_eval - total_buy) / total_buy * 100.0) if total_buy > 0 else 0.0
+        parts.append(f"[내 포트폴리오]\n총매수 {total_buy:,.0f}원 / 평가 {total_eval:,.0f}원 / 수익률 {total_ret:+.2f}%\n" + "\n".join(lines))
+    elif not port.empty:
+        lines = [f"- {r.get('종목명','-')}: 수량 {r.get('수량',0)}, 매수가 {float(r.get('매수가',0)):,.0f}원" for _, r in port.iterrows()]
+        parts.append("[내 포트폴리오]\n" + "\n".join(lines))
+
+    try:
+        perf = load_swing_performance_safe()
+        if not perf.empty:
+            last = perf.iloc[-1]
+            parts.append(
+                "[백테스트]\n"
+                f"- 기간: {perf['날짜'].min()} ~ {perf['날짜'].max()}\n"
+                f"- 누적수익률: {float(last.get('누적수익률',0)):+.2f}%\n"
+                f"- 평가금액: {float(last.get('평가금액',0)):,.0f}원\n"
+                f"- 최대낙폭: {float(pd.to_numeric(perf.get('최대낙폭(%)', pd.Series([0])), errors='coerce').min()):+.2f}%"
+            )
+    except Exception:
+        pass
+
+    if os.path.exists("report.md"):
+        try:
+            with open("report.md", "r", encoding="utf-8") as f:
+                report_excerpt = f.read()[:1800]
+            parts.append("[AI 데일리 리포트 발췌]\n" + report_excerpt)
+        except Exception:
+            pass
+
+    return "\n\n".join(parts)
 
 def format_pct(value):
     try:
@@ -2275,6 +2376,7 @@ else:
     tab_labels = ["전략 대시보드", "알파 레이더", "종목 분석"]
     if is_admin:
         tab_labels.append("포트폴리오 비서")
+        tab_labels.append("AI 비서")
     tab_labels.extend(["매크로", "주도 테마"])
     tabs = st.tabs(tab_labels)
     tab5 = tabs[0]
@@ -2282,10 +2384,12 @@ else:
     tab4 = tabs[2]
     if is_admin:
         tab7 = tabs[3]
-        tab1 = tabs[4]
-        tab2 = tabs[5]
+        tab8 = tabs[4]
+        tab1 = tabs[5]
+        tab2 = tabs[6]
     else:
         tab7 = None
+        tab8 = None
         tab1 = tabs[3]
         tab2 = tabs[4]
 
@@ -2396,7 +2500,48 @@ else:
         
         st.markdown("<div style='margin-bottom: 15px;'></div>", unsafe_allow_html=True)
         
-        df_display_all = df_summary if is_vip else df_summary.head(5)
+        df_alpha_sorted = df_summary.copy()
+        if "매수후보" not in df_alpha_sorted.columns:
+            df_alpha_sorted["매수후보"] = "관찰"
+        if "스윙우선순위" not in df_alpha_sorted.columns:
+            df_alpha_sorted["스윙우선순위"] = 0.0
+        if "현재_순위" not in df_alpha_sorted.columns:
+            df_alpha_sorted["현재_순위"] = range(1, len(df_alpha_sorted) + 1)
+        df_alpha_sorted["_alpha_group_order"] = df_alpha_sorted["매수후보"].astype(str).map({
+            "신규후보": 0,
+            "관찰": 1,
+        }).fillna(2)
+        df_alpha_sorted["스윙우선순위"] = pd.to_numeric(df_alpha_sorted["스윙우선순위"], errors="coerce").fillna(0.0)
+        df_alpha_sorted["현재_순위"] = pd.to_numeric(df_alpha_sorted["현재_순위"], errors="coerce").fillna(9999)
+        df_alpha_sorted = df_alpha_sorted.sort_values(
+            ["_alpha_group_order", "스윙우선순위", "현재_순위"],
+            ascending=[True, False, True],
+        )
+        alpha_buy_candidates = df_alpha_sorted[df_alpha_sorted["매수후보"].astype(str).eq("신규후보")].copy()
+        if not alpha_buy_candidates.empty:
+            top_pick = alpha_buy_candidates.iloc[0]
+            top_pick_name = str(top_pick.get("종목명", "-"))
+            top_pick_sleeve = str(top_pick.get("전략슬리브", "-"))
+            top_pick_entry = str(top_pick.get("진입유형", "-"))
+            top_pick_score = float(pd.to_numeric(top_pick.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
+            top_pick_rank = int(pd.to_numeric(top_pick.get("현재_순위", 0), errors="coerce") or 0)
+            top_pick_price = float(pd.to_numeric(top_pick.get("현재가", 0.0), errors="coerce") or 0.0)
+            st.markdown(
+                f"""
+                <div class="decision-card" style="border-color:#2F6B4A; box-shadow:0 8px 22px rgba(48,218,169,0.10); margin-bottom:10px;">
+                    <div class="decision-label">오늘의 1순위 매수 후보</div>
+                    <div class="decision-value">{html.escape(top_pick_name)}</div>
+                    <div class="decision-meta">
+                        {html.escape(top_pick_sleeve)} · {html.escape(top_pick_entry)} · 스윙 {top_pick_score:.1f} · 전체 {top_pick_rank}위<br>
+                        현재 {top_pick_price:,.0f}원 · 신규후보 {len(alpha_buy_candidates):,}개 중 최상위
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("오늘은 신규 매수 후보가 없습니다. 관찰 후보만 점검하세요.")
+        df_display_all = df_alpha_sorted if is_vip else df_alpha_sorted.head(5)
         if "alpha_card_limit" not in st.session_state:
             st.session_state.alpha_card_limit = 10
         if st.session_state.view_mode == "table":
@@ -3393,8 +3538,12 @@ else:
                     if "보유일수" not in closed_trades.columns:
                         closed_trades["보유일수"] = 0
                     primary_open_trades = portfolio_positions.copy()
-                    latest_entry_date = pd.to_datetime(primary_open_trades["진입일"], errors="coerce").max() if not primary_open_trades.empty else None
-                    new_candidates = primary_open_trades[pd.to_datetime(primary_open_trades["진입일"], errors="coerce").eq(latest_entry_date)].copy() if latest_entry_date is not None else pd.DataFrame()
+                    new_candidates = df_summary[df_summary.get("매수후보", pd.Series("", index=df_summary.index)).astype(str).eq("신규후보")].copy()
+                    if not new_candidates.empty:
+                        for c in ["스윙우선순위", "AI수급점수", "현재가"]:
+                            if c in new_candidates.columns:
+                                new_candidates[c] = pd.to_numeric(new_candidates[c], errors="coerce").fillna(0.0)
+                        new_candidates = new_candidates.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
                     win_rate = (closed_trades["수익률"].gt(0).mean() * 100.0) if not closed_trades.empty else 0.0
                     avg_ret = float(closed_trades["수익률"].mean()) if not closed_trades.empty else 0.0
                     d5 = closed_trades[closed_trades["보유일수"] == 5]
@@ -3507,13 +3656,17 @@ else:
                     if not new_candidates.empty:
                         today_view = new_candidates.copy()
                         today_view["추천구분"] = "신규 후보"
-                        today_cols = ["진입일", "종목명", "매수금액", "진입가", "수량", "추천구분"]
+                        today_cols = [
+                            "종목명", "전략슬리브", "진입유형", "스윙우선순위",
+                            "AI수급점수", "현재가", "매도점검", "추천구분"
+                        ]
+                        today_cols = [c for c in today_cols if c in today_view.columns]
                         st.markdown("#### 오늘 신규 스윙 후보")
                         st.dataframe(
                             today_view[today_cols].style.format({
-                                "매수금액": "{:,.0f}원",
-                                "진입가": "{:,.0f}",
-                                "수량": "{:,.0f}",
+                                "스윙우선순위": "{:.2f}",
+                                "AI수급점수": "{:.2f}",
+                                "현재가": "{:,.0f}원",
                             }),
                             hide_index=True,
                             width='stretch'
@@ -3642,11 +3795,11 @@ else:
             render_section_header("포트폴리오 비서", "보유·매도점검·교체 후보를 백테스트 기준과 연결해 먼저 판단합니다.", badge_text="Assistant")
             st.caption("표보다 결론을 먼저 봅니다. 편집 기능은 아래 접힘 영역에 따로 두었습니다.")
             saved_thr = load_admin_risk_thresholds()
-            if "admin_ai_warn_threshold" not in st.session_state:
-                st.session_state["admin_ai_warn_threshold"] = int(saved_thr["ai_warn_threshold"])
+            if "admin_swing_warn_threshold" not in st.session_state:
+                st.session_state["admin_swing_warn_threshold"] = int(saved_thr["swing_warn_threshold"])
             if "admin_ai_critical_threshold" not in st.session_state:
                 st.session_state["admin_ai_critical_threshold"] = int(saved_thr["ai_critical_threshold"])
-            ai_warn_threshold = int(st.session_state.get("admin_ai_warn_threshold", saved_thr["ai_warn_threshold"]))
+            swing_warn_threshold = int(st.session_state.get("admin_swing_warn_threshold", saved_thr["swing_warn_threshold"]))
             ai_critical_threshold = int(st.session_state.get("admin_ai_critical_threshold", saved_thr["ai_critical_threshold"]))
 
             base_cols = ["종목명", "수량", "매수가"]
@@ -3674,10 +3827,25 @@ else:
                 qty_num = pd.to_numeric(df_joined["수량"], errors="coerce").fillna(0.0)
                 buy_num = pd.to_numeric(df_joined["매수가"], errors="coerce").fillna(0.0)
                 cur_num = pd.to_numeric(df_joined["현재가"], errors="coerce").fillna(0.0)
-                risk_a = (f_strength < 0) & (p_strength < 0)
-                risk_b = swing_score < float(ai_warn_threshold)
-                # 오탐 완화: 단순 단일 신호보다 복합신호(A && AI<임계값) 우선, 매우 낮은 AI는 단독 경보
-                df_joined["수급이탈위험"] = (risk_a & risk_b) | (ai_score < float(ai_critical_threshold))
+                flow_break = (f_strength < 0) & (p_strength < 0)
+                swing_weak = swing_score < float(swing_warn_threshold)
+                ai_break = ai_score < float(ai_critical_threshold)
+                df_joined["수급동반약화"] = flow_break
+                df_joined["스윙약화"] = swing_weak
+                df_joined["AI급락"] = ai_break
+                df_joined["수급이탈위험"] = (flow_break & swing_weak) | ai_break
+
+                def _risk_reason(row):
+                    reasons = []
+                    if bool(row.get("AI급락", False)):
+                        reasons.append("AI수급 급락")
+                    if bool(row.get("수급동반약화", False)) and bool(row.get("스윙약화", False)):
+                        reasons.append("수급동반약화+스윙약화")
+                    if not reasons:
+                        return "-"
+                    return " / ".join(reasons)
+
+                df_joined["리스크사유"] = df_joined.apply(_risk_reason, axis=1)
 
                 total_buy_amount = float((qty_num * buy_num).sum())
                 total_eval_amount = float((qty_num * cur_num).sum())
@@ -3713,15 +3881,29 @@ else:
                 sell_words = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
                 sell_check_text = df_joined["매도점검"].fillna("").astype(str)
                 sell_watch_mask = sell_check_text.apply(lambda x: any(w in x for w in sell_words))
+                df_joined["매도점검위험"] = sell_watch_mask
+                df_joined.loc[sell_watch_mask & df_joined["리스크사유"].eq("-"), "리스크사유"] = "매도점검"
+                df_joined.loc[sell_watch_mask & ~df_joined["리스크사유"].eq("매도점검"), "리스크사유"] = (
+                    df_joined.loc[sell_watch_mask & ~df_joined["리스크사유"].eq("매도점검"), "리스크사유"] + " / 매도점검"
+                )
                 risk_rows = df_joined[df_joined["수급이탈위험"] | sell_watch_mask].copy()
                 hold_rows = df_joined[~df_joined.index.isin(risk_rows.index)].copy()
                 held_names = set(df_joined["종목명"].fillna("").astype(str))
                 replacement_pool = df_summary[~df_summary["종목명"].astype(str).isin(held_names)].copy()
+                if "매수후보" in replacement_pool.columns:
+                    replacement_pool = replacement_pool[replacement_pool["매수후보"].astype(str).eq("신규후보")].copy()
                 if "스윙우선순위" in replacement_pool.columns:
                     replacement_pool["스윙우선순위"] = pd.to_numeric(replacement_pool["스윙우선순위"], errors="coerce").fillna(0.0)
+                    weakest_risk_score = 0.0
+                    if not risk_rows.empty and "스윙우선순위" in risk_rows.columns:
+                        weakest_risk_score = float(pd.to_numeric(risk_rows["스윙우선순위"], errors="coerce").fillna(0.0).min())
+                    if not risk_rows.empty:
+                        replacement_pool = replacement_pool[replacement_pool["스윙우선순위"] >= weakest_risk_score + 5.0].copy()
+                    else:
+                        replacement_pool = replacement_pool.iloc[0:0].copy()
                     replacement_pool = replacement_pool.sort_values("스윙우선순위", ascending=False).head(3)
                 else:
-                    replacement_pool = replacement_pool.head(3)
+                    replacement_pool = replacement_pool.iloc[0:0].copy()
                 risk_names = ", ".join(risk_rows["종목명"].dropna().astype(str).head(3).tolist()) if not risk_rows.empty else "없음"
                 hold_names = ", ".join(hold_rows["종목명"].dropna().astype(str).head(3).tolist()) if not hold_rows.empty else "없음"
                 replacement_names = ", ".join(replacement_pool["종목명"].dropna().astype(str).head(3).tolist()) if not replacement_pool.empty else "없음"
@@ -3737,6 +3919,7 @@ else:
                     assistant_verdict = "비중 축소 점검"
                     assistant_meta = "새 후보보다 기존 리스크 관리가 우선입니다."
                     verdict_color = "#FCA5A5"
+                risk_strength = "없음" if risk_rows.empty else ("강함" if len(risk_rows) >= 2 else "점검")
 
                 st.markdown("#### 오늘의 포트폴리오 결론")
                 st.markdown(
@@ -3750,7 +3933,7 @@ else:
                         <div class="decision-card">
                             <div class="decision-label">매도/축소 점검</div>
                             <div class="decision-value">{len(risk_rows):,}개</div>
-                            <div class="decision-meta">{html.escape(risk_names)}</div>
+                            <div class="decision-meta">강도: {risk_strength}<br>{html.escape(risk_names)}</div>
                         </div>
                         <div class="decision-card">
                             <div class="decision-label">교체 후보</div>
@@ -3787,9 +3970,9 @@ else:
                     (pd.to_numeric(df_view["현재가"], errors="coerce").fillna(0.0) - pd.to_numeric(df_view["매수가"], errors="coerce").fillna(0.0))
                     / pd.to_numeric(df_view["매수가"], errors="coerce").replace(0, pd.NA)
                 ) * 100.0
-                df_view["상태"] = df_view["수급이탈위험"].apply(lambda x: "⚠ 경보" if bool(x) else "정상")
+                df_view["상태"] = (df_view["수급이탈위험"] | df_view["매도점검위험"]).apply(lambda x: "⚠ 경보" if bool(x) else "정상")
                 display_cols = [
-                    "종목명", "상태", "비중(%)", "매수금액", "수익금액", "수익률(%)",
+                    "종목명", "상태", "리스크사유", "비중(%)", "매수금액", "수익금액", "수익률(%)",
                     "스윙우선순위", "현재_순위", "AI수급점수", "AI순위", "매수후보", "진입유형", "매도점검", "신호등급", "신호신뢰도",
                     "외인강도(%)", "연기금강도(%)", "현재가", "수량", "매수가"
                 ]
@@ -3839,13 +4022,14 @@ else:
                             eval_amt = qty * cur
                             profit_amt = eval_amt - buy_amt
                             weight_pct = (eval_amt / total_eval_amount * 100.0) if total_eval_amount > 0 else 0.0
-                            risk_flag = bool(row.get("수급이탈위험", False))
+                            risk_flag = bool(row.get("수급이탈위험", False)) or bool(row.get("매도점검위험", False))
                             border = "#E04B4B" if risk_flag else "#2C3242"
                             bg = "rgba(224,75,75,0.14)" if risk_flag else "linear-gradient(135deg, #171A24, #121A2C)"
                             pnl_txt = f"{pnl:+.2f}%" if pnl is not None else "-"
                             pnl_color = "#36C06A" if pnl is not None and pnl >= 0 else "#E04B4B"
                             amt_color = "#36C06A" if profit_amt >= 0 else "#E04B4B"
                             chg_color = "#36C06A" if chg >= 0 else "#E04B4B"
+                            risk_reason = html.escape(str(row.get("리스크사유", "-")))
                             risk_badge = (
                                 '<span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:3px 10px; font-size:0.76em;">⚠ 비중 축소 권고</span>'
                                 if risk_flag
@@ -3866,6 +4050,7 @@ else:
                                         <span style="background:#182236; color:{amt_color}; border:1px solid #2D3A55; border-radius:999px; padding:3px 9px; font-size:0.79em;">수익금액 {profit_amt:+,.0f}원</span>
                                     </div>
                                     <div style="margin-top:8px;">{risk_badge}</div>
+                                    <div style="color:#AAB2C5; margin-top:6px; font-size:0.82em;">경보 사유: {risk_reason}</div>
                                     <div style="color:#AAB2C5; margin-top:8px; font-size:0.84em;">스윙 {swing:.1f} · {swing_rank}위 | AI {ai:.1f} · {ai_rank}위 | 신호 {row.get('신호등급','-')} ({sig:.1f})</div>
                                     <div style="color:#AAB2C5; margin-top:4px; font-size:0.84em;">{row.get('매수후보','-')} · {row.get('진입유형','-')} · 점검 {row.get('매도점검','-')} | 외인 {fs:+.1f}% · 기금 {ps:+.1f}%</div>
                                 </div>
@@ -3928,8 +4113,9 @@ else:
                     <div style="background:linear-gradient(135deg, #141A26, #101624); border:1px solid #2A344A; border-radius:12px; padding:12px 14px; margin-bottom:10px;">
                         <div style="color:#E5E7EB; font-weight:700; margin-bottom:6px;">경보 규칙 안내</div>
                         <div style="color:#AAB2C5; font-size:0.92em; line-height:1.55;">
-                            • <b>복합 경보</b>: 외인/연기금이 <b>동시에 매도 전환</b>이고, 스윙 점수가 기준 미만일 때<br/>
-                            • <b>단독 급락 경보</b>: AI 점수가 급락 기준 미만일 때
+                            • <b>매도점검 경보</b>: 매도점검 문구에 매도/제외/훼손/축소/주의/청산/이탈이 포함될 때<br/>
+                            • <b>복합 경보</b>: 외인과 연기금이 동시에 약해지고, 스윙 점수가 기준 미만일 때<br/>
+                            • <b>단독 급락 경보</b>: AI수급점수가 급락 기준 미만일 때
                         </div>
                     </div>
                     """,
@@ -3937,72 +4123,146 @@ else:
                 )
                 col_thr1, col_thr2 = st.columns(2)
                 with col_thr1:
-                    ai_warn_threshold_new = st.slider(
-                        "복합 경보 AI 기준 (외인·연기금 동반 매도일 때 적용)",
+                    swing_warn_threshold_new = st.slider(
+                        "스윙 약화 기준 (수급 동반 약화 때 적용)",
                         min_value=0,
                         max_value=100,
-                        value=int(st.session_state.get("admin_ai_warn_threshold", 65)),
+                        value=int(st.session_state.get("admin_swing_warn_threshold", 55)),
                         step=1,
-                        key="admin_ai_warn_threshold",
+                        key="admin_swing_warn_threshold",
                     )
                 with col_thr2:
                     ai_critical_threshold_new = st.slider(
-                        "단독 급락 경보 AI 기준 (AI만으로 경보)",
+                        "AI수급 단독 급락 기준",
                         min_value=0,
                         max_value=100,
-                        value=int(st.session_state.get("admin_ai_critical_threshold", 55)),
+                        value=int(st.session_state.get("admin_ai_critical_threshold", 35)),
                         step=1,
                         key="admin_ai_critical_threshold",
                     )
                 if (
-                    int(ai_warn_threshold_new) != int(saved_thr["ai_warn_threshold"])
+                    int(swing_warn_threshold_new) != int(saved_thr["swing_warn_threshold"])
                     or int(ai_critical_threshold_new) != int(saved_thr["ai_critical_threshold"])
                 ):
-                    save_admin_risk_thresholds(ai_warn_threshold_new, ai_critical_threshold_new)
+                    save_admin_risk_thresholds(swing_warn_threshold_new, ai_critical_threshold_new)
                 st.markdown(
                     f"""
                     <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
                         <span style="background:rgba(59,130,246,0.16); color:#93C5FD; border:1px solid rgba(59,130,246,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
-                            복합 경보 AI 기준: {int(ai_warn_threshold_new)}
+                            스윙 약화 기준: {int(swing_warn_threshold_new)}
                         </span>
                         <span style="background:rgba(224,75,75,0.16); color:#FCA5A5; border:1px solid rgba(224,75,75,0.35); border-radius:999px; padding:4px 10px; font-size:0.82em;">
-                            단독 급락 기준: {int(ai_critical_threshold_new)}
+                            AI수급 급락 기준: {int(ai_critical_threshold_new)}
                         </span>
                     </div>
                     """,
                     unsafe_allow_html=True,
                 )
 
-            with st.expander("테마 추천 승인 (Top40 자동 추천)", expanded=False):
-                df_sugg = load_theme_suggestions_safe()
-                if df_sugg.empty:
-                    st.info("아직 추천 테마가 없습니다. scraper 배치 실행 후 확인하세요.")
+    if is_admin and tab8 is not None:
+        with tab8:
+            render_section_header("AI 포트폴리오 비서", "현재 앱의 포트폴리오·알파레이더·백테스트·매크로 데이터를 참고해 대화합니다.", badge_text="Private AI")
+            st.caption("관리자 전용입니다. 답변은 현재 앱 데이터 기반의 보조 판단이며, 최종 매매 결정은 직접 확인하세요.")
+
+            if "assistant_chat_messages" not in st.session_state:
+                st.session_state.assistant_chat_messages = [
+                    {
+                        "role": "assistant",
+                        "content": "현재 앱 데이터를 바탕으로 포트폴리오, 신규 후보, 매도 점검, 백테스트에 대해 물어보세요.",
+                    }
+                ]
+
+            quick_cols = st.columns(3)
+            quick_questions = [
+                "내 포트폴리오에서 지금 가장 먼저 점검할 종목은?",
+                "오늘 신규후보 중 1개만 고른다면?",
+                "백테스트 기준으로 지금 전략의 약점은?",
+            ]
+            for q_col, q_text in zip(quick_cols, quick_questions):
+                with q_col:
+                    if st.button(q_text, use_container_width=True):
+                        st.session_state.assistant_pending_question = q_text
+                        st.rerun()
+
+            with st.expander("AI가 참고하는 현재 데이터 요약 보기", expanded=False):
+                st.text(build_admin_assistant_context(df_summary, core_tickers)[:6000])
+
+            for msg in st.session_state.assistant_chat_messages:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+
+            pending_question = st.session_state.pop("assistant_pending_question", None)
+            user_question = pending_question or st.chat_input("예: 지금 보유 종목 계속 들고 가도 돼?")
+
+            if user_question:
+                st.session_state.assistant_chat_messages.append({"role": "user", "content": user_question})
+                with st.chat_message("user"):
+                    st.markdown(user_question)
+
+                if not client:
+                    answer = "GEMINI_API_KEY가 설정되지 않아 AI 비서를 사용할 수 없습니다."
+                    st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
+                    with st.chat_message("assistant"):
+                        st.error(answer)
                 else:
-                    df_sugg = df_sugg[df_sugg["승인상태"].astype(str).str.lower() != "approved"].copy()
-                    if df_sugg.empty:
-                        st.success("승인 대기 중인 추천 테마가 없습니다.")
-                    else:
-                        df_sugg["선택"] = False
-                        df_sugg["신뢰도"] = pd.to_numeric(df_sugg["신뢰도"], errors="coerce").fillna(0.0)
-                        df_sugg = df_sugg.sort_values(["신뢰도", "종목명"], ascending=[False, True])
-                        edited_sugg = st.data_editor(
-                            df_sugg,
-                            use_container_width=True,
-                            num_rows="fixed",
-                            key="theme_suggestion_editor",
-                            column_config={
-                                "선택": st.column_config.CheckboxColumn("승인"),
-                                "추천테마": st.column_config.TextColumn("추천테마"),
-                                "신뢰도": st.column_config.NumberColumn("신뢰도", format="%.2f"),
-                                "근거": st.column_config.TextColumn("근거"),
-                            },
-                        )
-                        st.caption("승인할 행을 체크하고 [승인 테마 승격]을 누르면 theme_map.csv로 반영됩니다.")
-                        if st.button("승인 테마 승격", use_container_width=True, type="primary", key="promote_theme_btn"):
-                            picked = edited_sugg[edited_sugg["선택"] == True].copy()
-                            promoted = promote_themes_to_map(picked)
-                            if promoted > 0:
-                                st.success(f"{promoted}개 테마를 theme_map.csv로 승격했습니다.")
-                                st.rerun()
-                            else:
-                                st.warning("승격할 항목이 없습니다. 체크 또는 추천테마 값을 확인하세요.")
+                    context_text = build_admin_assistant_context(df_summary, core_tickers)
+                    recent_chat = "\n".join(
+                        f"{m['role']}: {m['content']}"
+                        for m in st.session_state.assistant_chat_messages[-8:]
+                    )
+                    prompt = f"""
+너는 {APP_NAME} 사용자를 위한 개인 포트폴리오 비서야.
+사용자는 국내 주식 스윙 트레이딩을 하고, 연기금/기관 수급, 주도주 눌림목/돌파, 1~2주 보유 관점을 중요하게 본다.
+
+반드시 아래 [앱 데이터] 안의 사실만 근거로 답해.
+없는 데이터는 추측하지 말고, "앱 데이터상 확인 불가"라고 말해.
+답변은 짧고 실행 중심으로 해라.
+매수/매도는 단정하지 말고 "유지", "점검", "교체검토", "신규관찰"처럼 단계로 말해라.
+현재 보유 포트폴리오를 갑자기 갈아엎는 공격적인 조언은 피하고, 약화 신호와 강한 대체 후보가 같이 있을 때만 교체검토를 말해라.
+
+[앱 데이터]
+{context_text}
+
+[최근 대화]
+{recent_chat}
+
+[사용자 질문]
+{user_question}
+
+[답변 형식]
+1. 결론
+2. 근거
+3. 지금 확인할 액션
+"""
+                    with st.chat_message("assistant"):
+                        try:
+                            response = client.models.generate_content_stream(
+                                model="gemma-4-31b-it",
+                                contents=prompt,
+                            )
+
+                            chunks = []
+                            def stream_generator():
+                                for chunk in response:
+                                    if chunk.text:
+                                        chunks.append(chunk.text)
+                                        yield chunk.text
+
+                            st.write_stream(stream_generator)
+                            answer = "".join(chunks).strip()
+                            if not answer:
+                                answer = "응답이 비어 있습니다. 질문을 조금 더 구체적으로 다시 입력해 주세요."
+                            st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
+                        except Exception as e:
+                            answer = f"AI 비서 응답 중 오류가 발생했습니다: {e}"
+                            st.error(answer)
+                            st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
+
+            if st.button("대화 초기화", use_container_width=True):
+                st.session_state.assistant_chat_messages = [
+                    {
+                        "role": "assistant",
+                        "content": "대화를 초기화했습니다. 현재 앱 데이터 기준으로 다시 질문해 주세요.",
+                    }
+                ]
+                st.rerun()
