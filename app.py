@@ -15,6 +15,7 @@ import re
 import json
 import base64
 import html
+import time
 from textwrap import dedent
 from email.utils import parsedate_to_datetime
 from db_utils import read_table, write_table, migrate_csv_to_sqlite_once, table_exists, csv_exists, resolve_csv_path, DATA_DIR
@@ -106,6 +107,8 @@ if logo_uri:
 
 # --- AI API 설정 ---
 gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY"))
+ASSISTANT_MODEL = st.secrets.get("GEMINI_ASSISTANT_MODEL", os.environ.get("GEMINI_ASSISTANT_MODEL", "gemma-4-31b-it"))
+ASSISTANT_FALLBACK_MODEL = st.secrets.get("GEMINI_ASSISTANT_FALLBACK_MODEL", os.environ.get("GEMINI_ASSISTANT_FALLBACK_MODEL", "gemini-2.0-flash"))
 
 if gemini_key:
     client = genai.Client(api_key=gemini_key)
@@ -1055,7 +1058,7 @@ def load_performance_trend_safe():
 def load_swing_trades_safe():
     base_cols = [
         "거래ID", "진입일", "종목명", "종목코드", "진입순위", "AI수급점수",
-        "진입유형", "스윙우선순위", "진입코멘트", "보유일수", "청산방식", "청산사유", "진입가", "청산일", "청산가", "수익률", "상태",
+        "진입유형", "스윙우선순위", "추천소스", "진입코멘트", "보유일수", "청산방식", "청산사유", "진입가", "청산일", "청산가", "수익률", "상태",
     ]
     if not csv_exists("swing_trades.csv") and not table_exists("swing_trades"):
         return pd.DataFrame(columns=base_cols)
@@ -1630,6 +1633,49 @@ def build_admin_assistant_context(df_summary_local, core_tickers_local):
             pass
 
     return "\n\n".join(parts)
+
+def clip_text(text, max_chars=5000):
+    text = "" if text is None else str(text)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...(길이 제한으로 일부 생략)"
+
+def generate_assistant_answer(prompt, primary_model=None, fallback_model=None, max_retries=2):
+    """
+    AI 비서 호출 안정화:
+    - 스트리밍 중간 500을 피하기 위해 비서 탭은 non-stream 호출을 사용합니다.
+    - 500/503/일시 장애는 짧게 재시도합니다.
+    - Gemma 계열이 불안정하면 Flash 계열 fallback으로 한 번 더 시도합니다.
+    """
+    if client is None:
+        return "GEMINI_API_KEY가 설정되지 않아 AI 비서를 사용할 수 없습니다."
+
+    primary_model = primary_model or ASSISTANT_MODEL
+    fallback_model = fallback_model or ASSISTANT_FALLBACK_MODEL
+    errors = []
+
+    for model_name in [primary_model, fallback_model]:
+        if not model_name:
+            continue
+        for attempt in range(int(max_retries)):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                answer = getattr(response, "text", "") or ""
+                answer = answer.strip()
+                if answer:
+                    return answer
+                errors.append(f"{model_name}: empty response")
+            except Exception as e:
+                errors.append(f"{model_name}: {e}")
+                if attempt < int(max_retries) - 1:
+                    time.sleep(0.8 * (attempt + 1))
+        if fallback_model == primary_model:
+            break
+
+    return "AI 비서 응답이 불안정합니다. 잠시 후 다시 시도해 주세요.\n\n" + "\n".join(errors[-3:])
 
 def format_pct(value):
     try:
@@ -3765,7 +3811,7 @@ else:
 
                     if not closed_trades.empty:
                         portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
-                        legacy_log_cols = ["진입일", "청산일", "종목명", "진입순위", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
+                        legacy_log_cols = ["진입일", "청산일", "종목명", "진입순위", "추천소스", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
                         view_cols = [c for c in portfolio_log_cols if c in closed_trades.columns]
                         if len(view_cols) < 5:
                             view_cols = [c for c in legacy_log_cols if c in closed_trades.columns]
@@ -4205,10 +4251,10 @@ else:
                     with st.chat_message("assistant"):
                         st.error(answer)
                 else:
-                    context_text = build_admin_assistant_context(df_summary, core_tickers)
+                    context_text = clip_text(build_admin_assistant_context(df_summary, core_tickers), 6000)
                     recent_chat = "\n".join(
-                        f"{m['role']}: {m['content']}"
-                        for m in st.session_state.assistant_chat_messages[-8:]
+                        f"{m['role']}: {clip_text(m['content'], 700)}"
+                        for m in st.session_state.assistant_chat_messages[-5:]
                     )
                     prompt = f"""
 너는 {APP_NAME} 사용자를 위한 개인 포트폴리오 비서야.
@@ -4236,22 +4282,10 @@ else:
 """
                     with st.chat_message("assistant"):
                         try:
-                            response = client.models.generate_content_stream(
-                                model="gemma-4-31b-it",
-                                contents=prompt,
-                            )
-
-                            chunks = []
-                            def stream_generator():
-                                for chunk in response:
-                                    if chunk.text:
-                                        chunks.append(chunk.text)
-                                        yield chunk.text
-
-                            st.write_stream(stream_generator)
-                            answer = "".join(chunks).strip()
+                            answer = generate_assistant_answer(prompt)
                             if not answer:
                                 answer = "응답이 비어 있습니다. 질문을 조금 더 구체적으로 다시 입력해 주세요."
+                            st.markdown(answer)
                             st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
                         except Exception as e:
                             answer = f"AI 비서 응답 중 오류가 발생했습니다: {e}"

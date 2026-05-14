@@ -244,16 +244,38 @@ def build_replay_score_trend(top_n=3, min_lookback=10):
     """
     과거 각 날짜에 현재 가격/수급/추세 로직을 다시 적용합니다.
     뉴스/정성점수는 미래 정보 혼입 위험이 있어 제외하고, history.csv에 누적된 숫자 데이터만 사용합니다.
+    이미 저장된 과거 replay 날짜는 고정하고, 새로 생긴 날짜만 추가합니다.
+    과거를 매일 다시 계산하면 오늘의 data.csv 메타/테마 변화가 과거 매수후보까지 바꿔 백테스트가 흔들립니다.
     """
     hist = _load_history_for_replay()
     if hist.empty or not csv_exists("data.csv"):
         return pd.DataFrame()
 
+    replay_cols = [
+        "종목명", "종목코드", "AI수급점수", "매수후보", "진입유형", "스윙우선순위",
+        "기관동행점수", "수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "종목체급", "전략슬리브",
+        "거래대금활력", "20일평균거래대금(억)", "진입코멘트", "매도점검", "테마",
+        "정배열", "추세품질점수", "MA5", "MA10", "MA20", "순위", "날짜"
+    ]
+    existing = pd.DataFrame(columns=replay_cols)
+    force_rebuild = os.environ.get("FORCE_REPLAY_REBUILD", "").strip().lower() in {"1", "true", "yes"}
+    if csv_exists("replay_score_trend.csv") and not force_rebuild:
+        try:
+            existing = read_table_prefer_db("replay_score_trend.csv", on_bad_lines="skip")
+            if existing.empty or "날짜" not in existing.columns:
+                existing = pd.DataFrame(columns=replay_cols)
+        except Exception as e:
+            print(f"[WARN] 기존 replay_score_trend.csv 로드 실패, 새로 생성합니다: {e}")
+            existing = pd.DataFrame(columns=replay_cols)
+
     meta = read_table_prefer_db("data.csv")
     if meta.empty or "종목명" not in meta.columns:
-        return pd.DataFrame()
+        return existing
     meta = meta.drop_duplicates("종목명", keep="last").set_index("종목명")
     dates = sorted(hist["일자_dt"].dt.normalize().unique())
+    if not existing.empty:
+        existing_dates = set(pd.to_datetime(existing["날짜"], errors="coerce").dropna().dt.strftime("%Y-%m-%d"))
+        dates = [d for d in dates if pd.to_datetime(d).strftime("%Y-%m-%d") not in existing_dates]
     rows = []
 
     for cur_date in dates:
@@ -362,19 +384,25 @@ def build_replay_score_trend(top_n=3, min_lookback=10):
         day_df["날짜"] = pd.to_datetime(cur_date).strftime("%Y-%m-%d")
         rows.append(day_df.head(max(20, int(top_n) * 8)))
 
-    replay = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+    replay_new = pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=replay_cols)
+    frames = []
+    if not existing.empty:
+        frames.append(existing)
+    if not replay_new.empty:
+        frames.append(replay_new)
+    replay = pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame(columns=replay_cols)
     if replay.empty:
         return replay
-    cols = [
-        "종목명", "종목코드", "AI수급점수", "매수후보", "진입유형", "스윙우선순위",
-        "기관동행점수", "수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "종목체급", "전략슬리브",
-        "거래대금활력", "20일평균거래대금(억)", "진입코멘트", "매도점검", "테마",
-        "정배열", "추세품질점수", "MA5", "MA10", "MA20", "순위", "날짜"
-    ]
-    for col in cols:
+    for col in replay_cols:
         if col not in replay.columns:
             replay[col] = None
-    replay = replay[cols]
+    replay = replay[replay_cols]
+    replay["날짜_dt"] = pd.to_datetime(replay["날짜"], errors="coerce")
+    replay["순위"] = pd.to_numeric(replay["순위"], errors="coerce").fillna(9999)
+    replay = replay.dropna(subset=["날짜_dt", "종목명"])
+    replay = replay.sort_values(["날짜_dt", "순위", "종목명"])
+    replay = replay.drop_duplicates(["날짜", "종목명"], keep="first")
+    replay = replay.drop(columns=["날짜_dt"])
     write_table_dual(replay, "replay_score_trend.csv", index=False, encoding="utf-8-sig")
     return replay
 
@@ -416,6 +444,7 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
     score["AI수급점수"] = pd.to_numeric(score["AI수급점수"], errors="coerce")
     score["날짜_dt"] = pd.to_datetime(score["날짜"], errors="coerce")
     score = score.dropna(subset=["날짜_dt", "종목명", "순위"])
+    backtest_start_date = score["날짜_dt"].min().normalize() if not score.empty else None
     day_slices = []
     for _, day_df in score.groupby("날짜_dt", sort=True):
         day = day_df.copy()
@@ -633,7 +662,8 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
 
     all_dates = sorted(prices["일자_dt"].dt.normalize().unique())
     first_signal_date = signal["진입일_dt"].min().normalize()
-    sim_dates = [pd.to_datetime(d).normalize() for d in all_dates if pd.to_datetime(d).normalize() >= first_signal_date]
+    first_sim_date = backtest_start_date if backtest_start_date is not None else first_signal_date
+    sim_dates = [pd.to_datetime(d).normalize() for d in all_dates if pd.to_datetime(d).normalize() >= first_sim_date]
     initial_cash = DEFAULT_INITIAL_CASH
     max_positions = DEFAULT_MAX_POSITIONS
     slot_cash = initial_cash / max_positions
