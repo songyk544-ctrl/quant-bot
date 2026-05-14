@@ -1,4 +1,9 @@
 .streamlit/
+.env
+.env.*
+secrets.toml
+*.pem
+*.key
 __pycache__/
 *.pyc
 *.parquet
