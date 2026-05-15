@@ -666,12 +666,22 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
     sim_dates = [pd.to_datetime(d).normalize() for d in all_dates if pd.to_datetime(d).normalize() >= first_sim_date]
     initial_cash = DEFAULT_INITIAL_CASH
     max_positions = DEFAULT_MAX_POSITIONS
-    slot_cash = initial_cash / max_positions
     cash = initial_cash
     positions = []
     perf_rows = []
     closed_pnls = {}
     prev_equity = initial_cash
+
+    def _mark_positions_value(cur_date):
+        total = 0.0
+        for pos in positions:
+            px = price_by_stock.get(pos["종목명"])
+            if px is not None and not px[px["일자_dt"].dt.normalize() <= cur_date].empty:
+                mark_price = float(px[px["일자_dt"].dt.normalize() <= cur_date].iloc[-1]["종가"])
+            else:
+                mark_price = float(pos["진입가"])
+            total += mark_price * pos["수량"]
+        return total
 
     for cur_date in sim_dates:
         realized = []
@@ -737,7 +747,9 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 held_names.discard(old_pos["종목명"])
                 closed_pnls[cur_date.strftime("%Y-%m-%d")] = closed_pnls.get(cur_date.strftime("%Y-%m-%d"), []) + [pnl]
                 switched_today = True
-            budget = min(slot_cash, cash)
+            current_equity_for_buy = cash + _mark_positions_value(cur_date)
+            dynamic_slot_cash = current_equity_for_buy / max(1, max_positions)
+            budget = min(dynamic_slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
                 continue
@@ -755,14 +767,7 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
                 "진입유형": new_sleeve,
             })
 
-        invested_value = 0.0
-        for pos in positions:
-            px = price_by_stock.get(pos["종목명"])
-            if px is not None and not px[px["일자_dt"].dt.normalize() <= cur_date].empty:
-                mark_price = float(px[px["일자_dt"].dt.normalize() <= cur_date].iloc[-1]["종가"])
-            else:
-                mark_price = float(pos["진입가"])
-            invested_value += mark_price * pos["수량"]
+        invested_value = _mark_positions_value(cur_date)
         equity_value = cash + invested_value
         day_key = cur_date.strftime("%Y-%m-%d")
         day_pnls = closed_pnls.get(day_key, [])

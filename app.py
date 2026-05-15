@@ -474,6 +474,103 @@ def render_stock_decision_panel(row):
         unsafe_allow_html=True,
     )
 
+def render_stock_playbook(row):
+    buy_candidate = str(row.get("매수후보", "관찰"))
+    entry_type = str(row.get("진입유형", "관찰"))
+    sleeve = str(row.get("전략슬리브", "관찰"))
+    sell_check = str(row.get("매도점검", "보유/관찰"))
+    entry_comment = str(row.get("진입코멘트", "추가 확인 필요"))
+    signal_grade = str(row.get("신호등급", "-"))
+    swing = float(pd.to_numeric(row.get("스윙우선순위", 0), errors="coerce") or 0.0)
+    ai_score = float(pd.to_numeric(row.get("AI수급점수", 0), errors="coerce") or 0.0)
+    inst = float(pd.to_numeric(row.get("기관동행점수", 0), errors="coerce") or 0.0)
+    trend_quality = float(pd.to_numeric(row.get("추세품질점수", 0), errors="coerce") or 0.0)
+    f_str = float(pd.to_numeric(row.get("외인강도(%)", 0), errors="coerce") or 0.0)
+    p_str = float(pd.to_numeric(row.get("연기금강도(%)", 0), errors="coerce") or 0.0)
+    avg_value = float(pd.to_numeric(row.get("20일평균거래대금(억)", 0), errors="coerce") or 0.0)
+    is_aligned = bool(row.get("정배열", False))
+
+    risk_words = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈", "회피"]
+    has_risk = any(w in sell_check for w in risk_words) or entry_type in ["회피", "과열주의"]
+    if buy_candidate == "신규후보" and not has_risk:
+        verdict = "매수 후보"
+        verdict_color = "#86EFAC"
+        action = "종가 기준 거래대금과 수급 유지 확인 후 후보군 안에서 우선 검토"
+    elif has_risk:
+        verdict = "진입 보류"
+        verdict_color = "#FCA5A5"
+        action = "신규 진입보다 보유 리스크와 추세 회복 여부를 먼저 확인"
+    else:
+        verdict = "관찰 후보"
+        verdict_color = "#FCD34D"
+        action = "가격 눌림 또는 수급 개선이 추가 확인될 때만 후보 승격 검토"
+
+    reasons = []
+    if buy_candidate == "신규후보":
+        reasons.append("오늘 신규후보 조건 통과")
+    if "주도" in sleeve or "주도" in entry_type:
+        reasons.append(f"{sleeve}/{entry_type} 성격")
+    elif entry_type in ["눌림목", "돌파"]:
+        reasons.append(f"{entry_type} 진입 조건")
+    if p_str > 0:
+        reasons.append(f"연기금 수급 우호({p_str:+.1f}%)")
+    if f_str > 0:
+        reasons.append(f"외인 수급 우호({f_str:+.1f}%)")
+    if inst >= 20:
+        reasons.append(f"기관동행 {inst:.1f}")
+    if is_aligned or trend_quality >= 55:
+        reasons.append(f"추세품질 {trend_quality:.0f}")
+    if avg_value >= 500:
+        reasons.append(f"거래대금 {avg_value:,.0f}억")
+    if not reasons:
+        reasons.append(entry_comment if entry_comment else "추천 근거 추가 확인 필요")
+
+    risks = []
+    if has_risk:
+        risks.append(sell_check)
+    if p_str < 0:
+        risks.append(f"연기금 약화({p_str:+.1f}%)")
+    if f_str < 0:
+        risks.append(f"외인 약화({f_str:+.1f}%)")
+    if not is_aligned and trend_quality < 45:
+        risks.append("정배열/추세품질 미흡")
+    if entry_type == "과열주의":
+        risks.append("과열 추격주의")
+    if not risks:
+        risks.append("뚜렷한 매도 점검 없음")
+
+    reason_html = "".join(f"<li>{html.escape(str(x))}</li>" for x in reasons[:5])
+    risk_html = "".join(f"<li>{html.escape(str(x))}</li>" for x in risks[:4])
+    st.markdown(
+        dedent(f"""
+        <div style="background:linear-gradient(135deg,#111827,#101827); border:1px solid #2B364C; border-radius:16px; padding:14px; margin:10px 0 12px 0;">
+            <div style="display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;">
+                <div>
+                    <div style="color:#9CA3AF; font-size:0.78em; font-weight:800;">운용 판단</div>
+                    <div style="color:{verdict_color}; font-size:1.34em; font-weight:900; margin-top:2px;">{html.escape(verdict)}</div>
+                    <div style="color:#CBD5E1; font-size:0.86em; margin-top:5px;">{html.escape(action)}</div>
+                </div>
+                <div style="text-align:right;">
+                    <div style="color:#F8FAFC; font-size:1.2em; font-weight:900;">스윙 {swing:.1f}</div>
+                    <div style="color:#9CA3AF; font-size:0.8em;">AI {ai_score:.1f} · {html.escape(signal_grade)}</div>
+                </div>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:10px; margin-top:12px;">
+                <div style="background:#151E2F; border:1px solid #2A344A; border-radius:12px; padding:10px 12px;">
+                    <div style="color:#86EFAC; font-weight:800; font-size:0.86em;">추천 사유</div>
+                    <ul style="margin:7px 0 0 18px; padding:0; color:#D1D5DB; font-size:0.84em; line-height:1.55;">{reason_html}</ul>
+                </div>
+                <div style="background:#151E2F; border:1px solid #2A344A; border-radius:12px; padding:10px 12px;">
+                    <div style="color:#FCA5A5; font-weight:800; font-size:0.86em;">보류/리스크</div>
+                    <ul style="margin:7px 0 0 18px; padding:0; color:#D1D5DB; font-size:0.84em; line-height:1.55;">{risk_html}</ul>
+                </div>
+            </div>
+            <div style="color:#9CA3AF; font-size:0.80em; margin-top:10px;">운용 메모: {html.escape(entry_comment)}</div>
+        </div>
+        """).strip(),
+        unsafe_allow_html=True,
+    )
+
 st.markdown(
     """
     <style>
@@ -1134,7 +1231,17 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
     closed_rows = []
     perf_rows = []
     prev_equity = float(initial_cash)
-    per_slot_cash = float(initial_cash) / max(1, int(max_positions))
+
+    def _mark_positions_value(cur_date):
+        total = 0.0
+        for pos in positions:
+            px = prices.get(pos["종목명"])
+            if px is not None and not px.loc[px.index <= cur_date].empty:
+                mark_price = float(px.loc[px.index <= cur_date].iloc[-1])
+            else:
+                mark_price = float(pos["진입가"])
+            total += mark_price * pos["수량"]
+        return total
 
     for cur_date in dates:
         cur_date = pd.to_datetime(cur_date).normalize()
@@ -1224,7 +1331,9 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                     "청산사유": "더강한후보교체",
                 })
                 switched_today = True
-            budget = min(per_slot_cash, cash)
+            current_equity_for_buy = cash + _mark_positions_value(cur_date)
+            dynamic_slot_cash = current_equity_for_buy / max(1, int(max_positions))
+            budget = min(dynamic_slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
                 continue
@@ -1245,14 +1354,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 "진입유형": new_entry_type,
             })
 
-        invested_value = 0.0
-        for pos in positions:
-            px = prices.get(pos["종목명"])
-            if px is not None and not px.loc[px.index <= cur_date].empty:
-                mark_price = float(px.loc[px.index <= cur_date].iloc[-1])
-            else:
-                mark_price = float(pos["진입가"])
-            invested_value += mark_price * pos["수량"]
+        invested_value = _mark_positions_value(cur_date)
         equity = cash + invested_value
         daily_ret = ((equity - prev_equity) / prev_equity * 100.0) if prev_equity else 0.0
         perf_rows.append({
@@ -2859,6 +2961,7 @@ else:
         ).strip()
         st.markdown(title_html, unsafe_allow_html=True)
         render_stock_decision_panel(selected_row)
+        render_stock_playbook(selected_row)
         st.markdown(
             f"""
             <div class="premium-panel">
@@ -3691,8 +3794,8 @@ else:
                         )
                     ).properties(height=300)
                     st.altair_chart(apply_altair_theme(base_chart), width='stretch')
-                    slot_cash = float(backtest_initial_cash) / max(1, int(backtest_max_positions))
-                    st.caption(f"전략선은 초기자금 {int(backtest_initial_cash):,}원, 최대 {int(backtest_max_positions)}종목, 종목당 약 {int(slot_cash):,}원 배정, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다.")
+                    slot_cash = float(current_equity) / max(1, int(backtest_max_positions))
+                    st.caption(f"전략선은 초기자금 {int(backtest_initial_cash):,}원, 최대 {int(backtest_max_positions)}종목, 매수 시점 총자산 기준 종목당 약 1/{int(backtest_max_positions)} 재투자, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다. 현재 기준 다음 슬롯은 약 {int(slot_cash):,}원입니다.")
 
                     if benchmark_fetch_errors:
                         err_names = ", ".join("KOSPI" if x == "^KS11" else ("NASDAQ" if x == "^IXIC" else x) for x in sorted(set(benchmark_fetch_errors)))
@@ -3927,7 +4030,7 @@ else:
                 if not alloc_df.empty:
                     alloc_df["비중(%)"] = alloc_df["평가금액"] / alloc_df["평가금액"].sum() * 100.0
                     alloc_df = alloc_df.sort_values("평가금액", ascending=False)
-                    chart_col, table_col = st.columns([1.05, 1.15])
+                    chart_col, summary_col = st.columns([1.05, 1.15])
                     with chart_col:
                         alloc_chart = px.pie(
                             alloc_df,
@@ -3951,16 +4054,25 @@ else:
                             annotations=[dict(text="평가<br>비중", x=0.5, y=0.5, font_size=15, showarrow=False, font_color="#E5E7EB")],
                         )
                         st.plotly_chart(alloc_chart, width="stretch", config={"displayModeBar": False})
-                    with table_col:
-                        st.dataframe(
-                            alloc_df[["종목명", "평가금액", "비중(%)", "스윙우선순위", "AI수급점수", "매도점검"]].style.format({
-                                "평가금액": "{:,.0f}원",
-                                "비중(%)": "{:.1f}%",
-                                "스윙우선순위": "{:.2f}",
-                                "AI수급점수": "{:.2f}",
-                            }),
-                            hide_index=True,
-                            width="stretch",
+                    with summary_col:
+                        top_alloc = alloc_df.iloc[0]
+                        top_name = html.escape(str(top_alloc.get("종목명", "-")))
+                        top_weight = float(pd.to_numeric(top_alloc.get("비중(%)"), errors="coerce") or 0.0)
+                        top_eval = float(pd.to_numeric(top_alloc.get("평가금액"), errors="coerce") or 0.0)
+                        concentration_label = "분산 양호" if top_weight < 45 else ("집중 점검" if top_weight < 60 else "집중 높음")
+                        st.markdown(
+                            f"""
+                            <div class="decision-card" style="min-height:250px;">
+                                <div class="decision-label">비중 요약</div>
+                                <div class="decision-value">{concentration_label}</div>
+                                <div class="decision-meta">
+                                    최대 비중: {top_name} {top_weight:.1f}%<br>
+                                    해당 평가금액: {top_eval:,.0f}원<br>
+                                    상세 손익과 매도 점검은 아래 현황 표 하나에서 확인합니다.
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
                         )
 
                 sell_words = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
@@ -4041,7 +4153,7 @@ else:
                     f"""
                     <div style="background:linear-gradient(135deg, #121827, #0f1523); border:1px solid #2A344A; border-radius:14px; padding:10px 14px; margin:10px 0 10px 0;">
                         <div style="color:#E5E7EB; font-size:1.0em; font-weight:800;">내 포트폴리오 현황</div>
-                        <div style="color:#9CA3AF; font-size:0.84em; margin-top:2px;">종목별 매수금액/수익금액을 테이블과 카드에서 바로 확인하세요.</div>
+                        <div style="color:#9CA3AF; font-size:0.84em; margin-top:2px;">손익, 비중, 스윙 순위, 매도 점검을 한 표로 압축했습니다.</div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -4057,8 +4169,8 @@ else:
                 ) * 100.0
                 df_view["상태"] = (df_view["수급이탈위험"] | df_view["매도점검위험"]).apply(lambda x: "⚠ 경보" if bool(x) else "정상")
                 display_cols = [
-                    "종목명", "상태", "리스크사유", "비중(%)", "매수금액", "수익금액", "수익률(%)",
-                    "스윙우선순위", "현재_순위", "AI수급점수", "AI순위", "매수후보", "진입유형", "매도점검", "신호등급", "신호신뢰도",
+                    "종목명", "상태", "리스크사유", "비중(%)", "수익률(%)", "수익금액",
+                    "스윙우선순위", "현재_순위", "매도점검",
                     "외인강도(%)", "연기금강도(%)", "현재가", "수량", "매수가"
                 ]
                 df_display_port = df_view[display_cols].copy()
@@ -4069,14 +4181,10 @@ else:
                 st.dataframe(
                     df_display_port.style.apply(_row_style, axis=1).format({
                         "비중(%)": "{:.1f}%",
-                        "매수금액": "{:,.0f}원",
                         "수익금액": "{:+,.0f}원",
                         "수익률(%)": "{:+.2f}%",
                         "스윙우선순위": "{:.2f}",
                         "현재_순위": "{:.0f}위",
-                        "AI수급점수": "{:.2f}",
-                        "AI순위": "{:.0f}위",
-                        "신호신뢰도": "{:.1f}",
                         "외인강도(%)": "{:+.1f}%",
                         "연기금강도(%)": "{:+.1f}%",
                         "현재가": "{:,.0f}",
