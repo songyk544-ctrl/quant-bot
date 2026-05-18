@@ -1,7 +1,7 @@
 {
   "thresholds": {
-    "swing_warn_threshold": 11,
-    "ai_critical_threshold": 15
+    "swing_warn_threshold": 0,
+    "ai_critical_threshold": 0
   },
   "portfolio": [
     {
