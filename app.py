@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import altair as alt
 import os
@@ -1634,6 +1635,50 @@ def build_admin_assistant_context(df_summary_local, core_tickers_local):
     now_txt = now_kst().strftime("%Y-%m-%d %H:%M KST")
     parts.append(f"[기준시각]\n{now_txt}")
 
+    def _num(row, col, default=0.0):
+        try:
+            val = pd.to_numeric(row.get(col, default), errors="coerce")
+            if pd.isna(val):
+                return default
+            return float(val)
+        except Exception:
+            return default
+
+    def _txt(row, col, default="-"):
+        val = row.get(col, default)
+        if pd.isna(val):
+            return default
+        text = str(val).strip()
+        return text if text else default
+
+    def _fmt_money(v):
+        try:
+            return f"{float(v):,.0f}원"
+        except Exception:
+            return "-"
+
+    def _fmt_bool(v):
+        return "Y" if bool(v) else "N"
+
+    def _format_stock_detail(row, prefix="-"):
+        name = _txt(row, "종목명")
+        market_cap = _num(row, "시가총액")
+        cap_text = f"{market_cap:,.0f}억" if market_cap > 0 else "-"
+        ma5 = _num(row, "MA5")
+        ma10 = _num(row, "MA10")
+        ma20 = _num(row, "MA20")
+        ma_text = f"MA5 {ma5:,.0f} / MA10 {ma10:,.0f} / MA20 {ma20:,.0f}" if max(ma5, ma10, ma20) > 0 else "MA 데이터 없음"
+        return "\n".join([
+            f"{prefix} {name} | {_txt(row, '테마표시', _txt(row, '테마', _txt(row, '섹터', '-')))} | 체급 {_txt(row, '종목체급')} | 시총 {cap_text}",
+            f"  가격: 현재 {_fmt_money(_num(row, '현재가'))} / 등락 {_num(row, '등락률'):+.2f}% / 후보 {_txt(row, '매수후보')} / 진입 {_txt(row, '진입유형')} / 슬리브 {_txt(row, '전략슬리브')}",
+            f"  점수: 스윙 {_num(row, '스윙우선순위'):.1f}({int(_num(row, '현재_순위'))}위) / AI수급 {_num(row, 'AI수급점수'):.1f}({int(_num(row, 'AI순위'))}위) / 기관동행 {_num(row, '기관동행점수'):.1f} / 수급품질 {_num(row, '수급품질점수'):.1f} / 주도주 {_num(row, '주도주점수'):.1f}",
+            f"  기술: 정배열 {_fmt_bool(row.get('정배열', False))} / 추세품질 {_num(row, '추세품질점수', 50):.0f} / {ma_text} / 이격도 {_num(row, '이격도(%)'):+.1f}% / RSI {_num(row, 'RSI'):.1f}",
+            f"  거래: 20일평균거래대금 {_num(row, '20일평균거래대금(억)'):,.0f}억 / 거래대금활력 {_num(row, '거래대금활력'):.2f} / 손바뀜 {_num(row, '손바뀜(%)'):.1f}% / 수급지속 {_num(row, '수급지속일수'):.0f}일",
+            f"  수급: 외인 {_num(row, '외인강도(%)'):+.2f}% / 연기금 {_num(row, '연기금강도(%)'):+.2f}% / 투신 {_num(row, '투신강도(%)'):+.2f}% / 사모 {_num(row, '사모강도(%)'):+.2f}% / 연기금5일 {_num(row, '연기금5일강도(%)'):+.2f}% / 연기금10일 {_num(row, '연기금10일강도(%)'):+.2f}%",
+            f"  뉴스/정성: 뉴스테마가점 {_num(row, '뉴스테마가점'):+.1f} / 뉴스톤 {_num(row, '뉴스톤계수'):+.2f} / 부정뉴스키워드 {_num(row, '뉴스부정키워드수'):.0f}",
+            f"  시스템 코멘트: 진입코멘트={_txt(row, '진입코멘트')} / 매도점검={_txt(row, '매도점검')}",
+        ])
+
     try:
         market_lines = []
         for name, data in (core_tickers_local or {}).items():
@@ -1646,7 +1691,15 @@ def build_admin_assistant_context(df_summary_local, core_tickers_local):
 
     df = df_summary_local.copy() if df_summary_local is not None else pd.DataFrame()
     if not df.empty:
-        for col in ["스윙우선순위", "AI수급점수", "현재_순위", "AI순위", "현재가", "등락률", "기관동행점수", "외인강도(%)", "연기금강도(%)"]:
+        numeric_context_cols = [
+            "스윙우선순위", "AI수급점수", "현재_순위", "AI순위", "현재가", "등락률",
+            "기관동행점수", "수급품질점수", "주도주점수", "외인강도(%)", "연기금강도(%)",
+            "투신강도(%)", "사모강도(%)", "연기금5일강도(%)", "연기금10일강도(%)",
+            "시가총액", "추세품질점수", "MA5", "MA10", "MA20", "이격도(%)", "RSI",
+            "손바뀜(%)", "수급지속일수", "20일평균거래대금(억)", "거래대금활력",
+            "뉴스테마가점", "뉴스톤계수", "뉴스부정키워드수",
+        ]
+        for col in numeric_context_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
         buy_df = df[df.get("매수후보", pd.Series("", index=df.index)).astype(str).eq("신규후보")].copy()
@@ -1671,6 +1724,50 @@ def build_admin_assistant_context(df_summary_local, core_tickers_local):
             )
         parts.append("[알파레이더 상위]\n" + "\n".join(lines))
 
+        detail_targets = []
+        if not buy_df.empty:
+            detail_targets.extend(buy_df["종목명"].dropna().astype(str).head(5).tolist())
+        sell_words = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
+        if "매도점검" in df.columns:
+            risk_df = df[df["매도점검"].fillna("").astype(str).apply(lambda x: any(w in x for w in sell_words))].copy()
+            risk_df = risk_df.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False]).head(5)
+            detail_targets.extend(risk_df["종목명"].dropna().astype(str).tolist())
+        detail_targets.extend(radar["종목명"].dropna().astype(str).head(8).tolist())
+        detail_targets = list(dict.fromkeys([x for x in detail_targets if x]))[:12]
+        detail_df = df[df["종목명"].astype(str).isin(detail_targets)].copy() if "종목명" in df.columns else pd.DataFrame()
+        if not detail_df.empty:
+            detail_df["_detail_order"] = detail_df["종목명"].astype(str).map({name: i for i, name in enumerate(detail_targets)})
+            detail_df = detail_df.sort_values("_detail_order")
+            detail_blocks = [_format_stock_detail(row) for _, row in detail_df.iterrows()]
+            parts.append("[GPT 정밀 검토용 종목 상세]\n" + "\n\n".join(detail_blocks))
+
+        try:
+            trend_df = load_score_trend_safe()
+            if not trend_df.empty and detail_targets:
+                trend_df = trend_df[trend_df["종목명"].astype(str).isin(detail_targets)].copy()
+                if not trend_df.empty:
+                    for col in ["스윙우선순위", "AI수급점수", "순위"]:
+                        if col in trend_df.columns:
+                            trend_df[col] = pd.to_numeric(trend_df[col], errors="coerce").fillna(0.0)
+                    trend_df["날짜_dt"] = pd.to_datetime(trend_df["날짜"], errors="coerce")
+                    trend_lines = []
+                    for name in detail_targets[:8]:
+                        sub = trend_df[trend_df["종목명"].astype(str).eq(name)].sort_values("날짜_dt").tail(4)
+                        if sub.empty:
+                            continue
+                        snapshots = []
+                        for _, r in sub.iterrows():
+                            d = r.get("날짜")
+                            sw = float(r.get("스윙우선순위", 0) or 0)
+                            ai = float(r.get("AI수급점수", 0) or 0)
+                            rk = int(float(r.get("순위", 0) or 0))
+                            snapshots.append(f"{d}:스윙{sw:.1f}/AI{ai:.1f}/순위{rk}")
+                        trend_lines.append(f"- {name}: " + " -> ".join(snapshots))
+                    if trend_lines:
+                        parts.append("[최근 점수 흐름]\n" + "\n".join(trend_lines))
+        except Exception:
+            pass
+
         if "테마표시" in df.columns:
             theme_df = df.copy()
             theme_df["테마표시"] = theme_df["테마표시"].fillna("기타").astype(str)
@@ -1689,7 +1786,17 @@ def build_admin_assistant_context(df_summary_local, core_tickers_local):
     base_cols = ["종목명", "수량", "매수가"]
     port = load_admin_portfolio_df(base_cols)
     if not port.empty and not df.empty:
-        join_cols = [c for c in ["종목명", "현재가", "등락률", "스윙우선순위", "현재_순위", "AI수급점수", "매수후보", "진입유형", "매도점검", "외인강도(%)", "연기금강도(%)"] if c in df.columns]
+        join_cols = [
+            c for c in [
+                "종목명", "현재가", "등락률", "스윙우선순위", "현재_순위", "AI수급점수", "AI순위",
+                "매수후보", "진입유형", "전략슬리브", "진입코멘트", "매도점검",
+                "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)",
+                "기관동행점수", "수급품질점수", "정배열", "추세품질점수", "MA5", "MA10", "MA20",
+                "이격도(%)", "RSI", "거래대금활력", "20일평균거래대금(억)", "뉴스부정키워드수",
+                "테마표시", "테마", "섹터", "종목체급", "시가총액",
+            ]
+            if c in df.columns
+        ]
         joined = pd.merge(port, df[join_cols], on="종목명", how="left")
         lines = []
         total_buy = 0.0
@@ -1704,12 +1811,17 @@ def build_admin_assistant_context(df_summary_local, core_tickers_local):
             total_eval += eval_amt
             ret = ((cur - buy) / buy * 100.0) if buy > 0 and cur > 0 else 0.0
             lines.append(
-                f"- {row.get('종목명','-')}: 수익률 {ret:+.2f}%, 평가 {eval_amt:,.0f}원, "
-                f"스윙 {float(pd.to_numeric(row.get('스윙우선순위',0), errors='coerce') or 0):.1f}, "
+                f"- {row.get('종목명','-')}: 수익률 {ret:+.2f}%, 매수 {buy_amt:,.0f}원, 평가 {eval_amt:,.0f}원, "
+                f"스윙 {_num(row, '스윙우선순위'):.1f}({int(_num(row, '현재_순위'))}위), "
+                f"AI {_num(row, 'AI수급점수'):.1f}({int(_num(row, 'AI순위'))}위), "
+                f"추세품질 {_num(row, '추세품질점수', 50):.0f}, 정배열 {_fmt_bool(row.get('정배열', False))}, "
+                f"외인 {_num(row, '외인강도(%)'):+.2f}%, 연기금 {_num(row, '연기금강도(%)'):+.2f}%, "
                 f"점검 {row.get('매도점검','-')}"
             )
         total_ret = ((total_eval - total_buy) / total_buy * 100.0) if total_buy > 0 else 0.0
         parts.append(f"[내 포트폴리오]\n총매수 {total_buy:,.0f}원 / 평가 {total_eval:,.0f}원 / 수익률 {total_ret:+.2f}%\n" + "\n".join(lines))
+        detail_blocks = [_format_stock_detail(row) for _, row in joined.iterrows()]
+        parts.append("[내 보유 종목 상세]\n" + "\n\n".join(detail_blocks))
     elif not port.empty:
         lines = [f"- {r.get('종목명','-')}: 수량 {r.get('수량',0)}, 매수가 {float(r.get('매수가',0)):,.0f}원" for _, r in port.iterrows()]
         parts.append("[내 포트폴리오]\n" + "\n".join(lines))
@@ -1743,6 +1855,99 @@ def clip_text(text, max_chars=5000):
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + "\n...(길이 제한으로 일부 생략)"
+
+def build_gpt_handoff_prompt(context_text, user_question, prompt_mode="포트폴리오 점검"):
+    mode_guides = {
+        "포트폴리오 점검": "내 보유 종목을 먼저 점검하고, 유지/축소/교체검토를 구분해줘.",
+        "오늘 매수 후보": "오늘 신규 후보 중 실제로 관심을 둘 후보를 1~3개로 압축하고, 진입 보류 조건도 같이 써줘.",
+        "매도 점검": "보유 종목 중 매도/축소/추적주의가 필요한 종목을 우선순위로 정리해줘.",
+        "백테스트 진단": "현재 백테스트 성과와 약점을 보고, 과최적화 가능성과 개선 포인트를 짚어줘.",
+        "자유 질문": "사용자 질문에 맞춰 앱 데이터 안에서만 근거를 찾아 답해줘.",
+    }
+    mode_guide = mode_guides.get(prompt_mode, mode_guides["자유 질문"])
+    question = str(user_question or "").strip()
+    if not question:
+        question = mode_guide
+
+    return f"""너는 국내주식 스윙 트레이딩 운용 보조 AI다.
+사용자는 연기금/기관 수급, 외인 수급, 주도주 눌림목/돌파, 1~2주 보유 관점을 중요하게 본다.
+
+아래 [앱 데이터]만 근거로 답해라.
+없는 데이터는 추측하지 말고 "앱 데이터상 확인 불가"라고 말해라.
+매수/매도는 단정하지 말고 유지, 점검, 교체검토, 신규관찰처럼 실행 단계로 말해라.
+기존 보유 종목을 단순히 새 후보가 좋아 보인다는 이유만으로 교체하지 말고, 기존 종목 약화 + 새 후보 우위가 같이 있을 때만 교체검토라고 말해라.
+스윙점수와 AI점수를 그대로 믿지 말고, 반드시 기술적 위치(정배열/MA5·MA10·MA20/이격도/RSI), 거래대금, 수급 지속성, 매도점검 문구, 뉴스 리스크를 함께 검증해라.
+점수는 높은데 역배열, 거래대금 저하, 과열, 수급 약화, 부정 뉴스가 있으면 명확히 보류 또는 점검으로 낮춰 말해라.
+반대로 점수가 조금 낮아도 대형 주도주, 정배열, 거래대금 활력, 수급 유지가 좋으면 관찰 가치가 있는지 따로 짚어라.
+답변은 모바일에서 보기 좋게 짧고 명확하게 작성해라.
+
+[분석 모드]
+{prompt_mode}
+
+[이번 요청]
+{question}
+
+[앱 데이터]
+{context_text}
+
+[답변 형식]
+1. 한 줄 결론
+2. 보유 종목 점검
+3. 신규 후보/교체 후보
+4. 기술적/수급상 반박 포인트
+5. 오늘 바로 확인할 액션
+6. 데이터상 부족한 점
+"""
+
+def render_clipboard_copy_button(text, button_label="프롬프트 클립보드에 복사"):
+    payload = json.dumps(str(text or ""))
+    components.html(
+        f"""
+        <div style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+            <button id="copyPromptBtn" style="
+                width:100%;
+                border:1px solid #2F6B4A;
+                background:linear-gradient(135deg,#123220,#0f2419);
+                color:#DFFFEF;
+                border-radius:10px;
+                padding:11px 14px;
+                font-size:14px;
+                font-weight:800;
+                cursor:pointer;
+            ">{html.escape(button_label)}</button>
+            <div id="copyPromptStatus" style="margin-top:6px; color:#9CA3AF; font-size:12px;"></div>
+        </div>
+        <script>
+        const promptText = {payload};
+        const btn = document.getElementById("copyPromptBtn");
+        const status = document.getElementById("copyPromptStatus");
+        async function copyPrompt() {{
+            try {{
+                if (navigator.clipboard && window.isSecureContext) {{
+                    await navigator.clipboard.writeText(promptText);
+                }} else {{
+                    const area = document.createElement("textarea");
+                    area.value = promptText;
+                    area.style.position = "fixed";
+                    area.style.left = "-9999px";
+                    document.body.appendChild(area);
+                    area.focus();
+                    area.select();
+                    document.execCommand("copy");
+                    document.body.removeChild(area);
+                }}
+                status.textContent = "복사 완료. ChatGPT에 바로 붙여넣으세요.";
+                status.style.color = "#86EFAC";
+            }} catch (err) {{
+                status.textContent = "자동 복사가 막혔습니다. 아래 텍스트 영역에서 전체 선택 후 복사하세요.";
+                status.style.color = "#FCA5A5";
+            }}
+        }}
+        btn.addEventListener("click", copyPrompt);
+        </script>
+        """,
+        height=76,
+    )
 
 def generate_assistant_answer(prompt, primary_model=None, fallback_model=None, max_retries=2):
     """
@@ -2523,25 +2728,28 @@ else:
     render_product_header(df_summary)
     st.markdown(render_macro_cards(core_tickers), unsafe_allow_html=True)
 
-    tab_labels = ["전략 대시보드", "알파 레이더", "종목 분석"]
+    tab_labels = ["전략 대시보드", "알파 레이더", "종목 분석"] if is_admin else ["알파 레이더", "종목 분석"]
     if is_admin:
         tab_labels.append("포트폴리오 비서")
-        tab_labels.append("AI 비서")
+        tab_labels.append("GPT 프롬프트")
     tab_labels.extend(["매크로", "주도 테마"])
     tabs = st.tabs(tab_labels)
-    tab5 = tabs[0]
-    tab3 = tabs[1]
-    tab4 = tabs[2]
     if is_admin:
+        tab5 = tabs[0]
+        tab3 = tabs[1]
+        tab4 = tabs[2]
         tab7 = tabs[3]
         tab8 = tabs[4]
         tab1 = tabs[5]
         tab2 = tabs[6]
     else:
+        tab5 = None
+        tab3 = tabs[0]
+        tab4 = tabs[1]
         tab7 = None
         tab8 = None
-        tab1 = tabs[3]
-        tab2 = tabs[4]
+        tab1 = tabs[2]
+        tab2 = tabs[3]
 
     # --- 탭 1: 매크로 인사이트 ---
     with tab1:
@@ -3557,382 +3765,383 @@ else:
                             st.error(f"분석 중 오류 발생: {e}")
 
     # --- 메인: 전략 대시보드 ---
-    with tab5:
-        render_section_header(f"{APP_NAME} 전략 대시보드", "백테스트, 현재 포지션, 신규 후보를 한 화면에서 운용 관점으로 확인합니다.", badge_text="Strategy")
-        if not is_vip:
-            show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
-        else:
-            df_swing_perf = load_swing_performance_safe()
-            df_swing_trades = load_swing_trades_safe()
-            available_dates = pd.to_datetime(df_swing_trades.get("진입일_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
-            if available_dates.empty and not df_swing_perf.empty:
-                available_dates = pd.to_datetime(df_swing_perf.get("날짜_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
-            if not available_dates.empty:
-                min_date = available_dates.min().date()
-                hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
-                max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
-                selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
-                bt_col1, bt_col2 = st.columns(2)
-                with bt_col1:
-                    cash_text = st.text_input("초기 투자금", value="5,000,000")
-                    try:
-                        backtest_initial_cash = int(str(cash_text).replace(",", "").strip())
-                    except Exception:
-                        backtest_initial_cash = 5_000_000
-                    backtest_initial_cash = max(1_000_000, min(100_000_000, backtest_initial_cash))
-                    st.caption(f"적용 금액: {backtest_initial_cash:,}원")
-                with bt_col2:
-                    backtest_max_positions = st.number_input(
-                        "최대 보유 종목수",
-                        min_value=1,
-                        max_value=5,
-                        value=3,
-                        step=1,
-                        format="%d",
-                    )
-                portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
-                    df_swing_trades,
-                    df_history,
-                    initial_cash=backtest_initial_cash,
-                    max_positions=backtest_max_positions,
-                    start_date=selected_start_date,
-                )
+    if is_admin and tab5 is not None:
+        with tab5:
+            render_section_header(f"{APP_NAME} 전략 대시보드", "백테스트, 현재 포지션, 신규 후보를 한 화면에서 운용 관점으로 확인합니다.", badge_text="Strategy")
+            if not is_vip:
+                show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
             else:
-                portfolio_perf, portfolio_positions, portfolio_closed = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-                backtest_initial_cash = 5_000_000
-                backtest_max_positions = 3
-
-            if not portfolio_perf.empty:
-                portfolio_perf["날짜_dt"] = pd.to_datetime(portfolio_perf["날짜"], errors="coerce")
-                df_filtered = portfolio_perf[portfolio_perf['날짜_dt'].dt.date >= selected_start_date].copy()
-
-                if not df_filtered.empty:
-                    df_filtered["전략 누적수익률"] = pd.to_numeric(df_filtered["수익률(%)"], errors="coerce").fillna(0.0)
-                    equity = 1.0 + (df_filtered["전략 누적수익률"] / 100.0)
-                    df_filtered["기간 MDD"] = (((equity / equity.cummax()) - 1.0) * 100.0).round(2)
-
-                    benchmark_fetch_errors = []
-                    try:
-                        def compute_benchmark_returns(ticker_symbol):
-                            hist = fetch_yahoo_chart_history(ticker_symbol, range_period="2y", interval="1d")
-                            if hist.empty:
-                                hist = yf.Ticker(ticker_symbol).history(period="2y")
-                            if hist.empty:
-                                benchmark_fetch_errors.append(ticker_symbol)
-                                return [float("nan")] * len(df_filtered)
-
-                            idx = hist.index
-                            if getattr(idx, "tz", None) is not None:
-                                idx = idx.tz_localize(None)
-                            hist.index = idx.normalize()
-                            hist = hist.dropna(subset=['Close'])
-                            base_df = hist[hist.index <= pd.to_datetime(selected_start_date)]
-                            base_close = float(base_df['Close'].dropna().iloc[-1]) if not base_df.empty and not base_df['Close'].dropna().empty else None
-                            if base_close is None or base_close == 0:
-                                benchmark_fetch_errors.append(ticker_symbol)
-                                return [float("nan")] * len(df_filtered)
-
-                            rets = []
-                            for d in df_filtered['날짜_dt']:
-                                close_series = hist[hist.index <= d]['Close'].dropna()
-                                if close_series.empty:
-                                    rets.append(rets[-1] if rets else float("nan"))
-                                    continue
-                                ret = ((float(close_series.iloc[-1]) - base_close) / base_close) * 100.0
-                                rets.append(ret if not pd.isna(ret) else (rets[-1] if rets else float("nan")))
-                            return rets
-
-                        df_filtered['KOSPI 누적수익률'] = compute_benchmark_returns('^KS11')
-                        df_filtered['NASDAQ 누적수익률'] = compute_benchmark_returns('^IXIC')
-                    except Exception as e:
-                        print(f"[WARN] 벤치마크 수익률 계산 실패: {e}")
-                        df_filtered['KOSPI 누적수익률'] = [float("nan")] * len(df_filtered)
-                        df_filtered['NASDAQ 누적수익률'] = [float("nan")] * len(df_filtered)
-                        benchmark_fetch_errors = ['^KS11', '^IXIC']
-
-                    chart_df = df_filtered.copy()
-                    baseline_row = {c: None for c in chart_df.columns}
-                    baseline_row.update({
-                        "날짜": selected_start_date.strftime("%Y-%m-%d"),
-                        "날짜_dt": pd.to_datetime(selected_start_date),
-                        "일간수익률": 0.0,
-                        "전략 누적수익률": 0.0,
-                        "기간 MDD": 0.0,
-                        "KOSPI 누적수익률": 0.0,
-                        "NASDAQ 누적수익률": 0.0,
-                        "평가금액": float(backtest_initial_cash),
-                        "현금": float(backtest_initial_cash),
-                        "투자금액": 0,
-                        "보유종목수": 0,
-                    })
-                    chart_df = pd.concat([pd.DataFrame([baseline_row]), chart_df], ignore_index=True)
-                    chart_df = chart_df.drop_duplicates(subset=["날짜_dt"], keep="first").sort_values("날짜_dt")
-
-                    def _safe_last(series):
-                        val = series.iloc[-1] if len(series) > 0 else float("nan")
-                        return 0.0 if pd.isna(val) else float(val)
-
-                    def _safe_daily_diff(series):
-                        if len(series) <= 1:
-                            return 0.0
-                        a, b = series.iloc[-1], series.iloc[-2]
-                        if pd.isna(a) or pd.isna(b):
-                            return 0.0
-                        return float(a - b)
-
-                    closed_trades = portfolio_closed.copy()
-                    if "수익률" not in closed_trades.columns:
-                        closed_trades["수익률"] = 0.0
-                    closed_trades["수익률"] = pd.to_numeric(closed_trades["수익률"], errors="coerce").fillna(0.0)
-                    if "청산일" in closed_trades.columns:
-                        closed_trades["청산일_dt"] = pd.to_datetime(closed_trades["청산일"], errors="coerce")
-                    if "보유일수" not in closed_trades.columns:
-                        closed_trades["보유일수"] = 0
-                    primary_open_trades = portfolio_positions.copy()
-                    new_candidates = df_summary[df_summary.get("매수후보", pd.Series("", index=df_summary.index)).astype(str).eq("신규후보")].copy()
-                    if not new_candidates.empty:
-                        for c in ["스윙우선순위", "AI수급점수", "현재가"]:
-                            if c in new_candidates.columns:
-                                new_candidates[c] = pd.to_numeric(new_candidates[c], errors="coerce").fillna(0.0)
-                        new_candidates = new_candidates.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
-                    win_rate = (closed_trades["수익률"].gt(0).mean() * 100.0) if not closed_trades.empty else 0.0
-                    avg_ret = float(closed_trades["수익률"].mean()) if not closed_trades.empty else 0.0
-                    d5 = closed_trades[closed_trades["보유일수"] == 5]
-                    signal_closed = closed_trades[closed_trades.get("청산방식", "").astype(str).eq("시그널")] if "청산방식" in closed_trades.columns else closed_trades
-                    d10 = closed_trades[closed_trades["보유일수"] == 10]
-                    d5_ret = float(d5["수익률"].mean()) if not d5.empty else 0.0
-                    d10_ret = float(d10["수익률"].mean()) if not d10.empty else 0.0
-
-                    current_port_ret = _safe_last(df_filtered['전략 누적수익률'])
-                    current_equity = _safe_last(df_filtered["평가금액"])
-                    current_cash = _safe_last(df_filtered["현금"])
-                    current_kospi_ret = _safe_last(df_filtered['KOSPI 누적수익률'])
-                    current_nasdaq_ret = _safe_last(df_filtered['NASDAQ 누적수익률'])
-                    current_mdd = float(df_filtered["기간 MDD"].min()) if "기간 MDD" in df_filtered.columns else 0.0
-                    current_risk_state = "High" if current_mdd <= -8 else ("Medium" if current_mdd <= -4 else "Low")
-                    port_daily_diff = _safe_daily_diff(df_filtered['전략 누적수익률'])
-                    kospi_daily_diff = _safe_daily_diff(df_filtered['KOSPI 누적수익률'])
-                    nasdaq_daily_diff = _safe_daily_diff(df_filtered['NASDAQ 누적수익률'])
-                    alpha_kospi = current_port_ret - current_kospi_ret
-                    alpha_nasdaq = current_port_ret - current_nasdaq_ret
-                    alpha_color = "#36C06A" if alpha_kospi >= 0 else "#E04B4B"
-                    alpha_nasdaq_color = "#36C06A" if alpha_nasdaq >= 0 else "#E04B4B"
-                    port_delta_color = "#36C06A" if port_daily_diff >= 0 else "#E04B4B"
-                    kospi_delta_color = "#36C06A" if kospi_daily_diff >= 0 else "#E04B4B"
-                    nasdaq_delta_color = "#36C06A" if nasdaq_daily_diff >= 0 else "#E04B4B"
-
-                    st.markdown(
-                        f"""
-                        <div class="kpi-grid">
-                            <div class="kpi-card">
-                                <div class="kpi-title">{int(backtest_initial_cash):,}원 포트폴리오 수익률</div>
-                                <div class="kpi-value">{current_port_ret:+.2f}%</div>
-                                <span class="kpi-delta" style="background: rgba(54,192,106,0.18); color:{port_delta_color};">최근 {port_daily_diff:+.2f}%</span>
-                                <div class="kpi-meta">평가금액 {current_equity:,.0f}원 · 현금 {current_cash:,.0f}원</div>
-                            </div>
-                            <div class="kpi-card">
-                                <div class="kpi-title">KOSPI 누적 수익률</div>
-                                <div class="kpi-value">{current_kospi_ret:+.2f}%</div>
-                                <span class="kpi-delta" style="background: rgba(59,130,246,0.16); color:{kospi_delta_color};">최근 {kospi_daily_diff:+.2f}%</span>
-                                <div class="kpi-meta">초과 성과 <span style="color:{alpha_color}; font-weight:700;">{alpha_kospi:+.2f}%p</span></div>
-                            </div>
-                            <div class="kpi-card">
-                                <div class="kpi-title">NASDAQ 누적 수익률</div>
-                                <div class="kpi-value">{current_nasdaq_ret:+.2f}%</div>
-                                <span class="kpi-delta" style="background: rgba(167,139,250,0.16); color:{nasdaq_delta_color};">최근 {nasdaq_daily_diff:+.2f}%</span>
-                                <div class="kpi-meta">초과 성과 <span style="color:{alpha_nasdaq_color}; font-weight:700;">{alpha_nasdaq:+.2f}%p</span></div>
-                            </div>
-                            <div class="kpi-card">
-                                <div class="kpi-title">진행 중 스윙</div>
-                                <div class="kpi-value">{len(primary_open_trades):,}</div>
-                                <span class="kpi-delta" style="background: rgba(252,211,77,0.16); color:#FCD34D;">최대 5종목</span>
-                            </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
+                df_swing_perf = load_swing_performance_safe()
+                df_swing_trades = load_swing_trades_safe()
+                available_dates = pd.to_datetime(df_swing_trades.get("진입일_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
+                if available_dates.empty and not df_swing_perf.empty:
+                    available_dates = pd.to_datetime(df_swing_perf.get("날짜_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
+                if not available_dates.empty:
+                    min_date = available_dates.min().date()
+                    hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
+                    max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
+                    selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
+                    bt_col1, bt_col2 = st.columns(2)
+                    with bt_col1:
+                        cash_text = st.text_input("초기 투자금", value="5,000,000")
+                        try:
+                            backtest_initial_cash = int(str(cash_text).replace(",", "").strip())
+                        except Exception:
+                            backtest_initial_cash = 5_000_000
+                        backtest_initial_cash = max(1_000_000, min(100_000_000, backtest_initial_cash))
+                        st.caption(f"적용 금액: {backtest_initial_cash:,}원")
+                    with bt_col2:
+                        backtest_max_positions = st.number_input(
+                            "최대 보유 종목수",
+                            min_value=1,
+                            max_value=5,
+                            value=3,
+                            step=1,
+                            format="%d",
+                        )
+                    portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
+                        df_swing_trades,
+                        df_history,
+                        initial_cash=backtest_initial_cash,
+                        max_positions=backtest_max_positions,
+                        start_date=selected_start_date,
                     )
+                else:
+                    portfolio_perf, portfolio_positions, portfolio_closed = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+                    backtest_initial_cash = 5_000_000
+                    backtest_max_positions = 3
 
-                    st.markdown(
-                        f"""
-                        <div class="score-kpi-grid">
-                            <div class="score-kpi"><div class="score-kpi-label">종료 거래</div><div class="score-kpi-value">{len(closed_trades):,}</div></div>
-                            <div class="score-kpi"><div class="score-kpi-label">승률</div><div class="score-kpi-value">{win_rate:.1f}%</div></div>
-                            <div class="score-kpi"><div class="score-kpi-label">평균 수익률</div><div class="score-kpi-value">{avg_ret:+.2f}%</div></div>
-                        </div>
-                        <div class="score-kpi-grid">
-                            <div class="score-kpi"><div class="score-kpi-label">D+5 평균</div><div class="score-kpi-value">{d5_ret:+.2f}%</div></div>
-                            <div class="score-kpi"><div class="score-kpi-label">시그널 종료</div><div class="score-kpi-value">{len(signal_closed):,}</div></div>
-                            <div class="score-kpi"><div class="score-kpi-label">신규 후보</div><div class="score-kpi-value">{len(new_candidates):,}</div></div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                if not portfolio_perf.empty:
+                    portfolio_perf["날짜_dt"] = pd.to_datetime(portfolio_perf["날짜"], errors="coerce")
+                    df_filtered = portfolio_perf[portfolio_perf['날짜_dt'].dt.date >= selected_start_date].copy()
 
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    chart_df['날짜_표시'] = chart_df['날짜_dt'].dt.strftime('%m/%d')
-                    df_melt = chart_df.melt(
-                        id_vars=['날짜_표시'],
-                        value_vars=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
-                        var_name='포트폴리오',
-                        value_name='차트수익률'
-                    )
-                    df_melt['포트폴리오'] = df_melt['포트폴리오'].replace({
-                        '전략 누적수익률': '전략',
-                        'KOSPI 누적수익률': 'KOSPI',
-                        'NASDAQ 누적수익률': 'NASDAQ',
-                    })
-                    base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
-                        x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
-                        y=alt.Y('차트수익률:Q', title="누적 수익률 (%)"),
-                        color=alt.Color(
-                            '포트폴리오:N',
-                            scale=alt.Scale(
-                                domain=['전략', 'KOSPI', 'NASDAQ'],
-                                range=['#E74C3C', '#AAAAAA', '#A78BFA']
-                            ),
-                            legend=alt.Legend(title=None, orient='bottom', direction='horizontal', columns=3, labelLimit=80)
+                    if not df_filtered.empty:
+                        df_filtered["전략 누적수익률"] = pd.to_numeric(df_filtered["수익률(%)"], errors="coerce").fillna(0.0)
+                        equity = 1.0 + (df_filtered["전략 누적수익률"] / 100.0)
+                        df_filtered["기간 MDD"] = (((equity / equity.cummax()) - 1.0) * 100.0).round(2)
+
+                        benchmark_fetch_errors = []
+                        try:
+                            def compute_benchmark_returns(ticker_symbol):
+                                hist = fetch_yahoo_chart_history(ticker_symbol, range_period="2y", interval="1d")
+                                if hist.empty:
+                                    hist = yf.Ticker(ticker_symbol).history(period="2y")
+                                if hist.empty:
+                                    benchmark_fetch_errors.append(ticker_symbol)
+                                    return [float("nan")] * len(df_filtered)
+
+                                idx = hist.index
+                                if getattr(idx, "tz", None) is not None:
+                                    idx = idx.tz_localize(None)
+                                hist.index = idx.normalize()
+                                hist = hist.dropna(subset=['Close'])
+                                base_df = hist[hist.index <= pd.to_datetime(selected_start_date)]
+                                base_close = float(base_df['Close'].dropna().iloc[-1]) if not base_df.empty and not base_df['Close'].dropna().empty else None
+                                if base_close is None or base_close == 0:
+                                    benchmark_fetch_errors.append(ticker_symbol)
+                                    return [float("nan")] * len(df_filtered)
+
+                                rets = []
+                                for d in df_filtered['날짜_dt']:
+                                    close_series = hist[hist.index <= d]['Close'].dropna()
+                                    if close_series.empty:
+                                        rets.append(rets[-1] if rets else float("nan"))
+                                        continue
+                                    ret = ((float(close_series.iloc[-1]) - base_close) / base_close) * 100.0
+                                    rets.append(ret if not pd.isna(ret) else (rets[-1] if rets else float("nan")))
+                                return rets
+
+                            df_filtered['KOSPI 누적수익률'] = compute_benchmark_returns('^KS11')
+                            df_filtered['NASDAQ 누적수익률'] = compute_benchmark_returns('^IXIC')
+                        except Exception as e:
+                            print(f"[WARN] 벤치마크 수익률 계산 실패: {e}")
+                            df_filtered['KOSPI 누적수익률'] = [float("nan")] * len(df_filtered)
+                            df_filtered['NASDAQ 누적수익률'] = [float("nan")] * len(df_filtered)
+                            benchmark_fetch_errors = ['^KS11', '^IXIC']
+
+                        chart_df = df_filtered.copy()
+                        baseline_row = {c: None for c in chart_df.columns}
+                        baseline_row.update({
+                            "날짜": selected_start_date.strftime("%Y-%m-%d"),
+                            "날짜_dt": pd.to_datetime(selected_start_date),
+                            "일간수익률": 0.0,
+                            "전략 누적수익률": 0.0,
+                            "기간 MDD": 0.0,
+                            "KOSPI 누적수익률": 0.0,
+                            "NASDAQ 누적수익률": 0.0,
+                            "평가금액": float(backtest_initial_cash),
+                            "현금": float(backtest_initial_cash),
+                            "투자금액": 0,
+                            "보유종목수": 0,
+                        })
+                        chart_df = pd.concat([pd.DataFrame([baseline_row]), chart_df], ignore_index=True)
+                        chart_df = chart_df.drop_duplicates(subset=["날짜_dt"], keep="first").sort_values("날짜_dt")
+
+                        def _safe_last(series):
+                            val = series.iloc[-1] if len(series) > 0 else float("nan")
+                            return 0.0 if pd.isna(val) else float(val)
+
+                        def _safe_daily_diff(series):
+                            if len(series) <= 1:
+                                return 0.0
+                            a, b = series.iloc[-1], series.iloc[-2]
+                            if pd.isna(a) or pd.isna(b):
+                                return 0.0
+                            return float(a - b)
+
+                        closed_trades = portfolio_closed.copy()
+                        if "수익률" not in closed_trades.columns:
+                            closed_trades["수익률"] = 0.0
+                        closed_trades["수익률"] = pd.to_numeric(closed_trades["수익률"], errors="coerce").fillna(0.0)
+                        if "청산일" in closed_trades.columns:
+                            closed_trades["청산일_dt"] = pd.to_datetime(closed_trades["청산일"], errors="coerce")
+                        if "보유일수" not in closed_trades.columns:
+                            closed_trades["보유일수"] = 0
+                        primary_open_trades = portfolio_positions.copy()
+                        new_candidates = df_summary[df_summary.get("매수후보", pd.Series("", index=df_summary.index)).astype(str).eq("신규후보")].copy()
+                        if not new_candidates.empty:
+                            for c in ["스윙우선순위", "AI수급점수", "현재가"]:
+                                if c in new_candidates.columns:
+                                    new_candidates[c] = pd.to_numeric(new_candidates[c], errors="coerce").fillna(0.0)
+                            new_candidates = new_candidates.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
+                        win_rate = (closed_trades["수익률"].gt(0).mean() * 100.0) if not closed_trades.empty else 0.0
+                        avg_ret = float(closed_trades["수익률"].mean()) if not closed_trades.empty else 0.0
+                        d5 = closed_trades[closed_trades["보유일수"] == 5]
+                        signal_closed = closed_trades[closed_trades.get("청산방식", "").astype(str).eq("시그널")] if "청산방식" in closed_trades.columns else closed_trades
+                        d10 = closed_trades[closed_trades["보유일수"] == 10]
+                        d5_ret = float(d5["수익률"].mean()) if not d5.empty else 0.0
+                        d10_ret = float(d10["수익률"].mean()) if not d10.empty else 0.0
+
+                        current_port_ret = _safe_last(df_filtered['전략 누적수익률'])
+                        current_equity = _safe_last(df_filtered["평가금액"])
+                        current_cash = _safe_last(df_filtered["현금"])
+                        current_kospi_ret = _safe_last(df_filtered['KOSPI 누적수익률'])
+                        current_nasdaq_ret = _safe_last(df_filtered['NASDAQ 누적수익률'])
+                        current_mdd = float(df_filtered["기간 MDD"].min()) if "기간 MDD" in df_filtered.columns else 0.0
+                        current_risk_state = "High" if current_mdd <= -8 else ("Medium" if current_mdd <= -4 else "Low")
+                        port_daily_diff = _safe_daily_diff(df_filtered['전략 누적수익률'])
+                        kospi_daily_diff = _safe_daily_diff(df_filtered['KOSPI 누적수익률'])
+                        nasdaq_daily_diff = _safe_daily_diff(df_filtered['NASDAQ 누적수익률'])
+                        alpha_kospi = current_port_ret - current_kospi_ret
+                        alpha_nasdaq = current_port_ret - current_nasdaq_ret
+                        alpha_color = "#36C06A" if alpha_kospi >= 0 else "#E04B4B"
+                        alpha_nasdaq_color = "#36C06A" if alpha_nasdaq >= 0 else "#E04B4B"
+                        port_delta_color = "#36C06A" if port_daily_diff >= 0 else "#E04B4B"
+                        kospi_delta_color = "#36C06A" if kospi_daily_diff >= 0 else "#E04B4B"
+                        nasdaq_delta_color = "#36C06A" if nasdaq_daily_diff >= 0 else "#E04B4B"
+
+                        st.markdown(
+                            f"""
+                            <div class="kpi-grid">
+                                <div class="kpi-card">
+                                    <div class="kpi-title">{int(backtest_initial_cash):,}원 포트폴리오 수익률</div>
+                                    <div class="kpi-value">{current_port_ret:+.2f}%</div>
+                                    <span class="kpi-delta" style="background: rgba(54,192,106,0.18); color:{port_delta_color};">최근 {port_daily_diff:+.2f}%</span>
+                                    <div class="kpi-meta">평가금액 {current_equity:,.0f}원 · 현금 {current_cash:,.0f}원</div>
+                                </div>
+                                <div class="kpi-card">
+                                    <div class="kpi-title">KOSPI 누적 수익률</div>
+                                    <div class="kpi-value">{current_kospi_ret:+.2f}%</div>
+                                    <span class="kpi-delta" style="background: rgba(59,130,246,0.16); color:{kospi_delta_color};">최근 {kospi_daily_diff:+.2f}%</span>
+                                    <div class="kpi-meta">초과 성과 <span style="color:{alpha_color}; font-weight:700;">{alpha_kospi:+.2f}%p</span></div>
+                                </div>
+                                <div class="kpi-card">
+                                    <div class="kpi-title">NASDAQ 누적 수익률</div>
+                                    <div class="kpi-value">{current_nasdaq_ret:+.2f}%</div>
+                                    <span class="kpi-delta" style="background: rgba(167,139,250,0.16); color:{nasdaq_delta_color};">최근 {nasdaq_daily_diff:+.2f}%</span>
+                                    <div class="kpi-meta">초과 성과 <span style="color:{alpha_nasdaq_color}; font-weight:700;">{alpha_nasdaq:+.2f}%p</span></div>
+                                </div>
+                                <div class="kpi-card">
+                                    <div class="kpi-title">진행 중 스윙</div>
+                                    <div class="kpi-value">{len(primary_open_trades):,}</div>
+                                    <span class="kpi-delta" style="background: rgba(252,211,77,0.16); color:#FCD34D;">최대 5종목</span>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
                         )
-                    ).properties(height=300)
-                    st.altair_chart(apply_altair_theme(base_chart), width='stretch')
-                    slot_cash = float(current_equity) / max(1, int(backtest_max_positions))
-                    st.caption(f"전략선은 초기자금 {int(backtest_initial_cash):,}원, 최대 {int(backtest_max_positions)}종목, 매수 시점 총자산 기준 종목당 약 1/{int(backtest_max_positions)} 재투자, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다. 현재 기준 다음 슬롯은 약 {int(slot_cash):,}원입니다.")
 
-                    if benchmark_fetch_errors:
-                        err_names = ", ".join("KOSPI" if x == "^KS11" else ("NASDAQ" if x == "^IXIC" else x) for x in sorted(set(benchmark_fetch_errors)))
-                        st.caption(f"일부 벤치마크 데이터가 지연되어 표시되지 않았습니다: {err_names}")
-
-                    with st.expander("리스크 보조 지표", expanded=False):
-                        st.caption(f"MDD는 누적수익률이 고점 대비 얼마나 내려왔는지 보는 지표입니다. 선택 기간 기준 현재 최대낙폭은 {current_mdd:.2f}%이고 상태는 {current_risk_state}입니다.")
-
-                    if not new_candidates.empty:
-                        today_view = new_candidates.copy()
-                        today_view["추천구분"] = "신규 후보"
-                        today_cols = [
-                            "종목명", "전략슬리브", "진입유형", "스윙우선순위",
-                            "AI수급점수", "현재가", "매도점검", "추천구분"
-                        ]
-                        today_cols = [c for c in today_cols if c in today_view.columns]
-                        st.markdown("#### 오늘 신규 스윙 후보")
-                        st.dataframe(
-                            today_view[today_cols].style.format({
-                                "스윙우선순위": "{:.2f}",
-                                "AI수급점수": "{:.2f}",
-                                "현재가": "{:,.0f}원",
-                            }),
-                            hide_index=True,
-                            width='stretch'
+                        st.markdown(
+                            f"""
+                            <div class="score-kpi-grid">
+                                <div class="score-kpi"><div class="score-kpi-label">종료 거래</div><div class="score-kpi-value">{len(closed_trades):,}</div></div>
+                                <div class="score-kpi"><div class="score-kpi-label">승률</div><div class="score-kpi-value">{win_rate:.1f}%</div></div>
+                                <div class="score-kpi"><div class="score-kpi-label">평균 수익률</div><div class="score-kpi-value">{avg_ret:+.2f}%</div></div>
+                            </div>
+                            <div class="score-kpi-grid">
+                                <div class="score-kpi"><div class="score-kpi-label">D+5 평균</div><div class="score-kpi-value">{d5_ret:+.2f}%</div></div>
+                                <div class="score-kpi"><div class="score-kpi-label">시그널 종료</div><div class="score-kpi-value">{len(signal_closed):,}</div></div>
+                                <div class="score-kpi"><div class="score-kpi-label">신규 후보</div><div class="score-kpi-value">{len(new_candidates):,}</div></div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
                         )
 
-                    if not primary_open_trades.empty:
-                        open_view = primary_open_trades.copy()
-                        current_signal_cols = ["종목명", "스윙우선순위", "현재_순위", "매수후보", "진입유형", "매도점검"]
-                        signal_now = df_summary[[c for c in current_signal_cols if c in df_summary.columns]].copy()
-                        open_view = pd.merge(open_view, signal_now, on="종목명", how="left")
-                        open_view["매도알림"] = open_view["매도점검"].fillna("보유/관찰").astype(str).apply(
-                            lambda x: "매도 점검" if any(k in x for k in ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]) else "보유"
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        chart_df['날짜_표시'] = chart_df['날짜_dt'].dt.strftime('%m/%d')
+                        df_melt = chart_df.melt(
+                            id_vars=['날짜_표시'],
+                            value_vars=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
+                            var_name='포트폴리오',
+                            value_name='차트수익률'
                         )
-                        sell_alerts = open_view[open_view["매도알림"].eq("매도 점검")].copy()
-                        if not sell_alerts.empty:
-                            st.warning("진행 중 포지션 중 매도 점검 신호가 있습니다.")
-                            st.dataframe(
-                                sell_alerts[["종목명", "평가수익률", "스윙우선순위", "매수후보", "진입유형", "매도점검"]].style.format({
-                                    "평가수익률": "{:+.2f}%",
-                                    "스윙우선순위": "{:.2f}",
-                                }),
-                                hide_index=True,
-                                width="stretch",
-                            )
-
-                        open_summary = open_view.rename(columns={
-                            "진입일": "최근진입일",
-                            "평가수익률": "최근평가수익률",
-                            "스윙우선순위": "최근점수",
-                        }).copy()
-                        open_summary["신호횟수"] = 1
-                        open_summary["최고순위"] = pd.to_numeric(open_summary.get("현재_순위", 0), errors="coerce").fillna(0).astype(int)
-                        open_summary["평균평가수익률"] = pd.to_numeric(open_summary["최근평가수익률"], errors="coerce").fillna(0.0)
-                        open_summary["최근점수"] = pd.to_numeric(open_summary["최근점수"], errors="coerce").fillna(0.0)
-                        open_summary["방향"] = open_summary["최근평가수익률"].apply(lambda v: "plus" if v >= 0 else "minus")
-                        open_summary = open_summary.sort_values(["최근평가수익률", "최근점수"], ascending=[False, False])
-
-                        st.markdown("#### 진행 중 종목 요약")
-                        base_open_chart = alt.Chart(open_summary).encode(
-                            y=alt.Y(
-                                "종목명:N",
-                                sort="-x",
-                                title=None,
-                                axis=alt.Axis(labelLimit=180, labelPadding=6),
-                            ),
-                            x=alt.X("최근평가수익률:Q", title="현재평가수익률 (%)"),
-                        )
-                        open_bar = base_open_chart.mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+                        df_melt['포트폴리오'] = df_melt['포트폴리오'].replace({
+                            '전략 누적수익률': '전략',
+                            'KOSPI 누적수익률': 'KOSPI',
+                            'NASDAQ 누적수익률': 'NASDAQ',
+                        })
+                        base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
+                            x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
+                            y=alt.Y('차트수익률:Q', title="누적 수익률 (%)"),
                             color=alt.Color(
-                                "방향:N",
-                                scale=alt.Scale(domain=["plus", "minus"], range=["#36C06A", "#E04B4B"]),
-                                legend=None,
-                            ),
-                            tooltip=[
-                                alt.Tooltip("종목명:N"),
-                                alt.Tooltip("최근평가수익률:Q", format="+.2f", title="최근 평가수익률"),
-                                alt.Tooltip("평균평가수익률:Q", format="+.2f", title="평균 평가수익률"),
-                                alt.Tooltip("신호횟수:Q", title="신호 횟수"),
-                                alt.Tooltip("최근진입일:N", title="최근 진입일"),
-                            ],
-                        )
-                        open_text = base_open_chart.mark_text(
-                            align="left",
-                            baseline="middle",
-                            dx=5,
-                            color="#CBD5E1",
-                            fontSize=11,
-                        ).encode(text=alt.Text("최근평가수익률:Q", format="+.1f"))
-                        open_chart = (open_bar + open_text).properties(height=max(220, min(520, 32 * len(open_summary))))
-                        st.altair_chart(apply_altair_theme(open_chart), width="stretch")
+                                '포트폴리오:N',
+                                scale=alt.Scale(
+                                    domain=['전략', 'KOSPI', 'NASDAQ'],
+                                    range=['#E74C3C', '#AAAAAA', '#A78BFA']
+                                ),
+                                legend=alt.Legend(title=None, orient='bottom', direction='horizontal', columns=3, labelLimit=80)
+                            )
+                        ).properties(height=300)
+                        st.altair_chart(apply_altair_theme(base_chart), width='stretch')
+                        slot_cash = float(current_equity) / max(1, int(backtest_max_positions))
+                        st.caption(f"전략선은 초기자금 {int(backtest_initial_cash):,}원, 최대 {int(backtest_max_positions)}종목, 매수 시점 총자산 기준 종목당 약 1/{int(backtest_max_positions)} 재투자, 중복 보유 금지 기준의 가상 포트폴리오 평가수익률입니다. 현재 기준 다음 슬롯은 약 {int(slot_cash):,}원입니다.")
 
-                        summary_cols = [
-                            "종목명", "최근진입일", "보유일수", "진입가", "현재가", "수량",
-                            "최고순위", "최근점수", "최근평가수익률", "매도알림"
-                        ]
-                        summary_cols = [c for c in summary_cols if c in open_summary.columns]
-                        st.dataframe(
-                            open_summary[summary_cols].style.format({
-                                "진입가": "{:,.0f}",
-                                "현재가": "{:,.0f}",
-                                "수량": "{:,.0f}",
-                                "최근점수": "{:.2f}",
-                                "최근평가수익률": "{:+.2f}%",
-                            }),
-                            hide_index=True,
-                            width='stretch'
-                        )
+                        if benchmark_fetch_errors:
+                            err_names = ", ".join("KOSPI" if x == "^KS11" else ("NASDAQ" if x == "^IXIC" else x) for x in sorted(set(benchmark_fetch_errors)))
+                            st.caption(f"일부 벤치마크 데이터가 지연되어 표시되지 않았습니다: {err_names}")
 
-                    if not closed_trades.empty:
-                        portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
-                        legacy_log_cols = ["진입일", "청산일", "종목명", "진입순위", "추천소스", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
-                        view_cols = [c for c in portfolio_log_cols if c in closed_trades.columns]
-                        if len(view_cols) < 5:
-                            view_cols = [c for c in legacy_log_cols if c in closed_trades.columns]
-                        trade_view = closed_trades.sort_values("청산일_dt", ascending=False)[view_cols].head(80)
-                        with st.expander("포트폴리오 진입/청산 거래 로그", expanded=False):
-                            format_cols = {
-                                "매수금액": "{:,.0f}원",
-                                "청산금액": "{:,.0f}원",
-                                "실현손익": "{:+,.0f}원",
-                                "진입가": "{:,.0f}",
-                                "청산가": "{:,.0f}",
-                                "수익률": "{:+.2f}%",
-                            }
+                        with st.expander("리스크 보조 지표", expanded=False):
+                            st.caption(f"MDD는 누적수익률이 고점 대비 얼마나 내려왔는지 보는 지표입니다. 선택 기간 기준 현재 최대낙폭은 {current_mdd:.2f}%이고 상태는 {current_risk_state}입니다.")
+
+                        if not new_candidates.empty:
+                            today_view = new_candidates.copy()
+                            today_view["추천구분"] = "신규 후보"
+                            today_cols = [
+                                "종목명", "전략슬리브", "진입유형", "스윙우선순위",
+                                "AI수급점수", "현재가", "매도점검", "추천구분"
+                            ]
+                            today_cols = [c for c in today_cols if c in today_view.columns]
+                            st.markdown("#### 오늘 신규 스윙 후보")
                             st.dataframe(
-                                trade_view.style.format({k: v for k, v in format_cols.items() if k in trade_view.columns}),
+                                today_view[today_cols].style.format({
+                                    "스윙우선순위": "{:.2f}",
+                                    "AI수급점수": "{:.2f}",
+                                    "현재가": "{:,.0f}원",
+                                }),
                                 hide_index=True,
                                 width='stretch'
                             )
-                else:
-                    render_empty_state("백테스트 데이터 없음", "선택하신 기간에 해당하는 스윙 성과 데이터가 없습니다.")
-            else:
-                render_empty_state("데이터 대기", "swing_performance.csv가 아직 생성되지 않았습니다. 다음 스크래퍼 실행 후 표시됩니다.")
 
-    # --- 탭 7: 관리자 전용 포트폴리오 ---
+                        if not primary_open_trades.empty:
+                            open_view = primary_open_trades.copy()
+                            current_signal_cols = ["종목명", "스윙우선순위", "현재_순위", "매수후보", "진입유형", "매도점검"]
+                            signal_now = df_summary[[c for c in current_signal_cols if c in df_summary.columns]].copy()
+                            open_view = pd.merge(open_view, signal_now, on="종목명", how="left")
+                            open_view["매도알림"] = open_view["매도점검"].fillna("보유/관찰").astype(str).apply(
+                                lambda x: "매도 점검" if any(k in x for k in ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]) else "보유"
+                            )
+                            sell_alerts = open_view[open_view["매도알림"].eq("매도 점검")].copy()
+                            if not sell_alerts.empty:
+                                st.warning("진행 중 포지션 중 매도 점검 신호가 있습니다.")
+                                st.dataframe(
+                                    sell_alerts[["종목명", "평가수익률", "스윙우선순위", "매수후보", "진입유형", "매도점검"]].style.format({
+                                        "평가수익률": "{:+.2f}%",
+                                        "스윙우선순위": "{:.2f}",
+                                    }),
+                                    hide_index=True,
+                                    width="stretch",
+                                )
+
+                            open_summary = open_view.rename(columns={
+                                "진입일": "최근진입일",
+                                "평가수익률": "최근평가수익률",
+                                "스윙우선순위": "최근점수",
+                            }).copy()
+                            open_summary["신호횟수"] = 1
+                            open_summary["최고순위"] = pd.to_numeric(open_summary.get("현재_순위", 0), errors="coerce").fillna(0).astype(int)
+                            open_summary["평균평가수익률"] = pd.to_numeric(open_summary["최근평가수익률"], errors="coerce").fillna(0.0)
+                            open_summary["최근점수"] = pd.to_numeric(open_summary["최근점수"], errors="coerce").fillna(0.0)
+                            open_summary["방향"] = open_summary["최근평가수익률"].apply(lambda v: "plus" if v >= 0 else "minus")
+                            open_summary = open_summary.sort_values(["최근평가수익률", "최근점수"], ascending=[False, False])
+
+                            st.markdown("#### 진행 중 종목 요약")
+                            base_open_chart = alt.Chart(open_summary).encode(
+                                y=alt.Y(
+                                    "종목명:N",
+                                    sort="-x",
+                                    title=None,
+                                    axis=alt.Axis(labelLimit=180, labelPadding=6),
+                                ),
+                                x=alt.X("최근평가수익률:Q", title="현재평가수익률 (%)"),
+                            )
+                            open_bar = base_open_chart.mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4).encode(
+                                color=alt.Color(
+                                    "방향:N",
+                                    scale=alt.Scale(domain=["plus", "minus"], range=["#36C06A", "#E04B4B"]),
+                                    legend=None,
+                                ),
+                                tooltip=[
+                                    alt.Tooltip("종목명:N"),
+                                    alt.Tooltip("최근평가수익률:Q", format="+.2f", title="최근 평가수익률"),
+                                    alt.Tooltip("평균평가수익률:Q", format="+.2f", title="평균 평가수익률"),
+                                    alt.Tooltip("신호횟수:Q", title="신호 횟수"),
+                                    alt.Tooltip("최근진입일:N", title="최근 진입일"),
+                                ],
+                            )
+                            open_text = base_open_chart.mark_text(
+                                align="left",
+                                baseline="middle",
+                                dx=5,
+                                color="#CBD5E1",
+                                fontSize=11,
+                            ).encode(text=alt.Text("최근평가수익률:Q", format="+.1f"))
+                            open_chart = (open_bar + open_text).properties(height=max(220, min(520, 32 * len(open_summary))))
+                            st.altair_chart(apply_altair_theme(open_chart), width="stretch")
+
+                            summary_cols = [
+                                "종목명", "최근진입일", "보유일수", "진입가", "현재가", "수량",
+                                "최고순위", "최근점수", "최근평가수익률", "매도알림"
+                            ]
+                            summary_cols = [c for c in summary_cols if c in open_summary.columns]
+                            st.dataframe(
+                                open_summary[summary_cols].style.format({
+                                    "진입가": "{:,.0f}",
+                                    "현재가": "{:,.0f}",
+                                    "수량": "{:,.0f}",
+                                    "최근점수": "{:.2f}",
+                                    "최근평가수익률": "{:+.2f}%",
+                                }),
+                                hide_index=True,
+                                width='stretch'
+                            )
+
+                        if not closed_trades.empty:
+                            portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
+                            legacy_log_cols = ["진입일", "청산일", "종목명", "진입순위", "추천소스", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
+                            view_cols = [c for c in portfolio_log_cols if c in closed_trades.columns]
+                            if len(view_cols) < 5:
+                                view_cols = [c for c in legacy_log_cols if c in closed_trades.columns]
+                            trade_view = closed_trades.sort_values("청산일_dt", ascending=False)[view_cols].head(80)
+                            with st.expander("포트폴리오 진입/청산 거래 로그", expanded=False):
+                                format_cols = {
+                                    "매수금액": "{:,.0f}원",
+                                    "청산금액": "{:,.0f}원",
+                                    "실현손익": "{:+,.0f}원",
+                                    "진입가": "{:,.0f}",
+                                    "청산가": "{:,.0f}",
+                                    "수익률": "{:+.2f}%",
+                                }
+                                st.dataframe(
+                                    trade_view.style.format({k: v for k, v in format_cols.items() if k in trade_view.columns}),
+                                    hide_index=True,
+                                    width='stretch'
+                                )
+                    else:
+                        render_empty_state("백테스트 데이터 없음", "선택하신 기간에 해당하는 스윙 성과 데이터가 없습니다.")
+                else:
+                    render_empty_state("데이터 대기", "swing_performance.csv가 아직 생성되지 않았습니다. 다음 스크래퍼 실행 후 표시됩니다.")
+
+        # --- 탭 7: 관리자 전용 포트폴리오 ---
     if is_admin and tab7 is not None:
         with tab7:
             render_section_header("포트폴리오 비서", "보유·매도점검·교체 후보를 백테스트 기준과 연결해 먼저 판단합니다.", badge_text="Assistant")
@@ -4354,96 +4563,47 @@ else:
 
     if is_admin and tab8 is not None:
         with tab8:
-            render_section_header("AI 포트폴리오 비서", "현재 앱의 포트폴리오·알파레이더·백테스트·매크로 데이터를 참고해 대화합니다.", badge_text="Private AI")
-            st.caption("관리자 전용입니다. 답변은 현재 앱 데이터 기반의 보조 판단이며, 최종 매매 결정은 직접 확인하세요.")
+            render_section_header("GPT 프롬프트 빌더", "앱 데이터를 ChatGPT에 바로 넘길 수 있는 운용 프롬프트로 압축합니다.", badge_text="Copy Mode")
+            st.caption("관리자 전용입니다. 느린 내장 AI 호출 없이, 아래 프롬프트를 복사해서 ChatGPT에 붙여넣어 사용하세요.")
 
-            if "assistant_chat_messages" not in st.session_state:
-                st.session_state.assistant_chat_messages = [
-                    {
-                        "role": "assistant",
-                        "content": "현재 앱 데이터를 바탕으로 포트폴리오, 신규 후보, 매도 점검, 백테스트에 대해 물어보세요.",
-                    }
-                ]
+            prompt_col1, prompt_col2 = st.columns([0.95, 1.05])
+            with prompt_col1:
+                prompt_mode = st.selectbox(
+                    "분석 모드",
+                    ["포트폴리오 점검", "오늘 매수 후보", "매도 점검", "백테스트 진단", "자유 질문"],
+                    index=0,
+                )
+            with prompt_col2:
+                context_chars = st.select_slider(
+                    "데이터 포함량",
+                    options=[6000, 9000, 12000, 16000],
+                    value=12000,
+                    format_func=lambda x: f"{x:,}자",
+                )
 
-            quick_cols = st.columns(3)
-            quick_questions = [
-                "내 포트폴리오에서 지금 가장 먼저 점검할 종목은?",
-                "오늘 신규후보 중 1개만 고른다면?",
-                "백테스트 기준으로 지금 전략의 약점은?",
-            ]
-            for q_col, q_text in zip(quick_cols, quick_questions):
-                with q_col:
-                    if st.button(q_text, use_container_width=True):
-                        st.session_state.assistant_pending_question = q_text
-                        st.rerun()
+            default_questions = {
+                "포트폴리오 점검": "내 현재 포트폴리오에서 유지, 축소 점검, 교체검토 종목을 구분해줘.",
+                "오늘 매수 후보": "오늘 신규 매수 후보 중 실제로 1~3개만 고른다면 무엇을 우선 볼지 정리해줘.",
+                "매도 점검": "보유 종목 중 수급이 깨졌거나 지지선 훼손 가능성이 있는 종목을 먼저 짚어줘.",
+                "백테스트 진단": "현재 백테스트 성과가 신뢰 가능한지, 어떤 장에서 약할 수 있는지 평가해줘.",
+                "자유 질문": "",
+            }
+            user_prompt_question = st.text_area(
+                "ChatGPT에게 물어볼 질문",
+                value=default_questions.get(prompt_mode, ""),
+                height=92,
+            )
 
-            with st.expander("AI가 참고하는 현재 데이터 요약 보기", expanded=False):
-                st.text(build_admin_assistant_context(df_summary, core_tickers)[:6000])
+            context_text = clip_text(build_admin_assistant_context(df_summary, core_tickers), int(context_chars))
+            handoff_prompt = build_gpt_handoff_prompt(context_text, user_prompt_question, prompt_mode)
 
-            for msg in st.session_state.assistant_chat_messages:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
+            st.text_area(
+                "복사용 프롬프트",
+                value=handoff_prompt,
+                height=520,
+                help="복사 버튼이 브라우저 정책상 막히면 이 영역에서 전체 선택 후 복사하세요.",
+            )
+            render_clipboard_copy_button(handoff_prompt)
 
-            pending_question = st.session_state.pop("assistant_pending_question", None)
-            user_question = pending_question or st.chat_input("예: 지금 보유 종목 계속 들고 가도 돼?")
-
-            if user_question:
-                st.session_state.assistant_chat_messages.append({"role": "user", "content": user_question})
-                with st.chat_message("user"):
-                    st.markdown(user_question)
-
-                if not client:
-                    answer = "GEMINI_API_KEY가 설정되지 않아 AI 비서를 사용할 수 없습니다."
-                    st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
-                    with st.chat_message("assistant"):
-                        st.error(answer)
-                else:
-                    context_text = clip_text(build_admin_assistant_context(df_summary, core_tickers), 6000)
-                    recent_chat = "\n".join(
-                        f"{m['role']}: {clip_text(m['content'], 700)}"
-                        for m in st.session_state.assistant_chat_messages[-5:]
-                    )
-                    prompt = f"""
-너는 {APP_NAME} 사용자를 위한 개인 포트폴리오 비서야.
-사용자는 국내 주식 스윙 트레이딩을 하고, 연기금/기관 수급, 주도주 눌림목/돌파, 1~2주 보유 관점을 중요하게 본다.
-
-반드시 아래 [앱 데이터] 안의 사실만 근거로 답해.
-없는 데이터는 추측하지 말고, "앱 데이터상 확인 불가"라고 말해.
-답변은 짧고 실행 중심으로 해라.
-매수/매도는 단정하지 말고 "유지", "점검", "교체검토", "신규관찰"처럼 단계로 말해라.
-현재 보유 포트폴리오를 갑자기 갈아엎는 공격적인 조언은 피하고, 약화 신호와 강한 대체 후보가 같이 있을 때만 교체검토를 말해라.
-
-[앱 데이터]
-{context_text}
-
-[최근 대화]
-{recent_chat}
-
-[사용자 질문]
-{user_question}
-
-[답변 형식]
-1. 결론
-2. 근거
-3. 지금 확인할 액션
-"""
-                    with st.chat_message("assistant"):
-                        try:
-                            answer = generate_assistant_answer(prompt)
-                            if not answer:
-                                answer = "응답이 비어 있습니다. 질문을 조금 더 구체적으로 다시 입력해 주세요."
-                            st.markdown(answer)
-                            st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
-                        except Exception as e:
-                            answer = f"AI 비서 응답 중 오류가 발생했습니다: {e}"
-                            st.error(answer)
-                            st.session_state.assistant_chat_messages.append({"role": "assistant", "content": answer})
-
-            if st.button("대화 초기화", use_container_width=True):
-                st.session_state.assistant_chat_messages = [
-                    {
-                        "role": "assistant",
-                        "content": "대화를 초기화했습니다. 현재 앱 데이터 기준으로 다시 질문해 주세요.",
-                    }
-                ]
-                st.rerun()
+            with st.expander("프롬프트에 포함된 앱 데이터만 보기", expanded=False):
+                st.text(context_text)
