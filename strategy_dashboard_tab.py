@@ -292,7 +292,7 @@ def render_strategy_dashboard_tab(
                 st.caption("승률은 단독 판단 지표가 아닙니다. 거래당 기대값이 플러스이고 평균수익이 평균손실보다 충분히 크면 승률이 50% 미만이어도 전략성이 있을 수 있습니다. 5거래일 평균수익은 매수 후 5거래일에 청산된 거래들의 평균 수익률입니다.")
 
                 st.markdown("<br>", unsafe_allow_html=True)
-                chart_df['날짜_표시'] = chart_df['날짜_dt'].dt.strftime('%m/%d')
+                chart_df['날짜_표시'] = chart_df['날짜_dt'].dt.strftime('%y/%m/%d')
                 df_melt = chart_df.melt(
                     id_vars=['날짜_표시'],
                     value_vars=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],

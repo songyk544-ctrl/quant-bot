@@ -3490,20 +3490,37 @@ else:
     # --- 메인: 전략 대시보드 ---
     if is_admin and tab5 is not None:
         with tab5:
-            render_strategy_dashboard_tab(
-                APP_NAME,
-                is_vip,
-                df_summary,
-                df_history,
-                render_section_header,
-                show_premium_paywall,
-                render_empty_state,
-                apply_altair_theme,
-                load_swing_performance_safe,
-                load_swing_trades_safe,
-                fetch_yahoo_chart_history,
-                macro_data,
-            )
+            try:
+                render_strategy_dashboard_tab(
+                    APP_NAME,
+                    is_vip,
+                    df_summary,
+                    df_history,
+                    render_section_header,
+                    show_premium_paywall,
+                    render_empty_state,
+                    apply_altair_theme,
+                    load_swing_performance_safe,
+                    load_swing_trades_safe,
+                    fetch_yahoo_chart_history,
+                    macro_data=macro_data,
+                )
+            except TypeError as e:
+                if "macro_data" not in str(e) and "positional" not in str(e):
+                    raise
+                render_strategy_dashboard_tab(
+                    APP_NAME,
+                    is_vip,
+                    df_summary,
+                    df_history,
+                    render_section_header,
+                    show_premium_paywall,
+                    render_empty_state,
+                    apply_altair_theme,
+                    load_swing_performance_safe,
+                    load_swing_trades_safe,
+                    fetch_yahoo_chart_history,
+                )
 
     if is_admin and tab6 is not None:
         with tab6:
