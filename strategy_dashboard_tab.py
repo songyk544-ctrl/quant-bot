@@ -292,9 +292,8 @@ def render_strategy_dashboard_tab(
                 st.caption("승률은 단독 판단 지표가 아닙니다. 거래당 기대값이 플러스이고 평균수익이 평균손실보다 충분히 크면 승률이 50% 미만이어도 전략성이 있을 수 있습니다. 5거래일 평균수익은 매수 후 5거래일에 청산된 거래들의 평균 수익률입니다.")
 
                 st.markdown("<br>", unsafe_allow_html=True)
-                chart_df['날짜_표시'] = chart_df['날짜_dt'].dt.strftime('%y/%m/%d')
                 df_melt = chart_df.melt(
-                    id_vars=['날짜_표시'],
+                    id_vars=['날짜_dt'],
                     value_vars=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
                     var_name='포트폴리오',
                     value_name='차트수익률'
@@ -305,7 +304,11 @@ def render_strategy_dashboard_tab(
                     'NASDAQ 누적수익률': 'NASDAQ',
                 })
                 base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
-                    x=alt.X('날짜_표시:O', axis=alt.Axis(title=None, labelAngle=-45)),
+                    x=alt.X(
+                        '날짜_dt:T',
+                        title=None,
+                        axis=alt.Axis(format='%y/%m/%d', labelAngle=-45),
+                    ),
                     y=alt.Y('차트수익률:Q', title="누적 수익률 (%)"),
                     color=alt.Color(
                         '포트폴리오:N',
