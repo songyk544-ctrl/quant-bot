@@ -22,8 +22,57 @@ def render_strategy_dashboard_tab(
     load_swing_performance_safe,
     load_swing_trades_safe,
     fetch_yahoo_chart_history,
+    macro_data=None,
 ):
     render_section_header(f"{app_name} 전략 대시보드", "백테스트, 현재 포지션, 신규 후보를 한 화면에서 운용 관점으로 확인합니다.", badge_text="Strategy")
+    st.markdown("#### 실전 계좌 방어 모드")
+    guard_col1, guard_col2 = st.columns(2)
+    with guard_col1:
+        live_initial_capital = st.number_input(
+            "실전 초기 투자금",
+            min_value=0,
+            max_value=1_000_000_000,
+            value=int(st.session_state.get("live_initial_capital", 5_200_000)),
+            step=100_000,
+            format="%d",
+            key="strategy_live_initial_capital",
+        )
+    with guard_col2:
+        live_current_equity = st.number_input(
+            "실전 현재 평가금액",
+            min_value=0,
+            max_value=1_000_000_000,
+            value=int(st.session_state.get("live_current_equity", 4_200_000)),
+            step=100_000,
+            format="%d",
+            key="strategy_live_current_equity",
+        )
+    st.session_state["live_initial_capital"] = int(live_initial_capital)
+    st.session_state["live_current_equity"] = int(live_current_equity)
+    live_drawdown_pct = (
+        (float(live_current_equity) - float(live_initial_capital)) / float(live_initial_capital) * 100.0
+        if live_initial_capital > 0 else 0.0
+    )
+    if live_drawdown_pct <= -15.0:
+        st.error(f"실전 비상 모드: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다. 신규매수보다 손실 확대 차단이 우선입니다.")
+    elif live_drawdown_pct <= -8.0:
+        st.warning(f"방어 모드: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다. 신규매수는 중지하고 보유 종목만 점검합니다.")
+    else:
+        st.success(f"정상/주의 구간: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다.")
+
+    if isinstance(macro_data, dict) and macro_data:
+        macro_flags = []
+        for label, payload in macro_data.items():
+            if not isinstance(payload, dict):
+                continue
+            value = payload.get("value")
+            change_pct = payload.get("change_pct")
+            text = f"{label} {float(value):,.2f} ({float(change_pct):+.2f}%)" if value is not None and change_pct is not None else str(label)
+            if ("VIX" in label and value is not None and float(value) >= 22) or ("환율" in label and change_pct is not None and float(change_pct) >= 0.8) or ("NASDAQ" in label and change_pct is not None and float(change_pct) <= -1.0) or ("WTI" in label and change_pct is not None and float(change_pct) >= 3.0):
+                macro_flags.append(text)
+        if macro_flags:
+            st.warning("매크로 위험 신호: " + " / ".join(macro_flags[:4]) + " · 신규매수 축소 또는 현금 보유를 우선 검토하세요.")
+
     if not is_vip:
         show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
     else:

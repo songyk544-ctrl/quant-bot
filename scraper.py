@@ -139,7 +139,10 @@ SWING_HORIZONS = (5, 10)
 PRIMARY_SWING_HORIZON = 10
 DEFAULT_INITIAL_CASH = 5_000_000.0
 DEFAULT_MAX_POSITIONS = 3
-HISTORY_LOOKBACK_DAYS = 120
+NORMAL_LOOKBACK_DAYS = 20
+FULL_PARSE_LOOKBACK_DAYS = 120
+SUPER_PARSE_DEFAULT_MONTHS = 6
+SUPER_PARSE_MAX_YEARS = 2
 SIGNAL_MAX_HOLD_DAYS = 20
 SOFT_TARGET_RETURN = 8.0
 HARD_TARGET_RETURN = 15.0
@@ -2631,6 +2634,107 @@ def get_live_macro_and_news():
     
     return macro_str, news_str, macro_recency_score, repeated_topics_text
 
+
+def _history_row_from_kis_daily(name, daily):
+    close_prc = safe_api_float(daily.get('stck_clpr'))
+    vol = safe_api_float(daily.get('acml_vol'))
+    trade_value = vol * close_prc
+    f_amt = safe_api_float(daily.get('frgn_ntby_qty')) * close_prc
+    p_amt = safe_api_float(daily.get('fund_ntby_qty')) * close_prc
+    t_amt = safe_api_float(daily.get('ivtr_ntby_qty')) * close_prc
+    pef_amt = safe_api_float(daily.get('pe_fund_ntby_vol')) * close_prc
+    return {
+        '종목명': name,
+        '일자': daily.get('stck_bsop_date', ''),
+        '종가': close_prc,
+        '외인': f_amt / 1_000_000,
+        '연기금': p_amt / 1_000_000,
+        '투신': t_amt / 1_000_000,
+        '사모': pef_amt / 1_000_000,
+        '거래량': vol,
+        '거래대금(억)': trade_value / 100_000_000,
+    }
+
+
+def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=None):
+    months = int(years) * 12 if years else int(months or SUPER_PARSE_DEFAULT_MONTHS)
+    months = max(SUPER_PARSE_DEFAULT_MONTHS, min(months, SUPER_PARSE_MAX_YEARS * 12))
+    print(f"🧱 [super-parse] 최근 {months}개월 가격/수급 누적 수집을 시작합니다.")
+
+    migrate_csv_to_sqlite_once([
+        ("data", "data.csv"),
+        ("history", "history.csv"),
+        ("score_trend", "score_trend.csv"),
+        ("replay_score_trend", "replay_score_trend.csv"),
+        ("swing_trades", "swing_trades.csv"),
+        ("swing_performance", "swing_performance.csv"),
+    ])
+
+    token = get_kis_access_token()
+    kis_app_key, kis_app_secret = resolve_kis_credentials()
+    if not token or not kis_app_key or not kis_app_secret:
+        print("❌ KIS 인증 정보가 유효하지 않아 super-parse를 중단합니다.")
+        return
+
+    df_target = get_target_stock_list()
+    if df_target.empty:
+        print("❌ 수집 대상 종목이 없어 super-parse를 중단합니다.")
+        return
+    if max_stocks:
+        df_target = df_target.head(int(max_stocks))
+        print(f"🧪 테스트 제한: 상위 {len(df_target)}개 종목만 수집합니다.")
+
+    KST = timezone(timedelta(hours=9))
+    now_kst = datetime.now(KST)
+    input_date = now_kst.strftime("%Y%m%d")
+    cutoff = (now_kst - timedelta(days=months * 31)).date()
+    headers = {
+        "authorization": f"Bearer {token}",
+        "appkey": kis_app_key,
+        "appsecret": kis_app_secret,
+        "tr_id": "FHPTJ04160001",
+        "custtype": "P",
+    }
+    url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
+
+    history_rows = []
+    for idx, row in enumerate(df_target.itertuples(), start=1):
+        code = getattr(row, "종목코드")
+        name = getattr(row, "종목명")
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+            "FID_INPUT_DATE_1": input_date,
+            "FID_ORG_ADJ_PRC": "0",
+            "FID_ETC_CLS_CODE": "0",
+        }
+        try:
+            res = requests.get(url_kis, headers=headers, params=params, timeout=8)
+            if res.status_code == 200 and res.json().get("rt_cd") == "0":
+                for daily in res.json().get("output2", []):
+                    raw_date = str(daily.get("stck_bsop_date", ""))
+                    day = datetime.strptime(raw_date, "%Y%m%d").date() if raw_date else None
+                    if day and day >= cutoff:
+                        history_rows.append(_history_row_from_kis_daily(name, daily))
+            if idx % 25 == 0:
+                print(f"   - {idx}/{len(df_target)} 종목 수집 중...")
+            time.sleep(0.05)
+        except Exception as e:
+            print(f"[WARN] super-parse 수집 실패({name}/{code}): {e}")
+
+    if not history_rows:
+        print("❌ super-parse로 추가 수집된 데이터가 없습니다.")
+        return
+
+    merged_history = merge_history_snapshot(pd.DataFrame(history_rows))
+    write_table_dual(merged_history, "history.csv", index=False, encoding="utf-8-sig")
+    replay = build_replay_score_trend()
+    trades, perf = build_swing_backtest_files()
+    print(
+        f"✅ super-parse 완료: history {len(merged_history):,}행, "
+        f"replay {len(replay):,}행, trades {len(trades):,}행, performance {len(perf):,}행"
+    )
+
 def run_scraper(manual_full_parse=False):
     print("🚀 수집기 봇 가동 시작 (V40.4 기관 수급 눌림목 최적화 & 백테스트 방어)...")
     migrate_csv_to_sqlite_once([
@@ -2686,6 +2790,8 @@ def run_scraper(manual_full_parse=False):
     if manual_full_parse:
         force_full_parse = True
         print("🛠️ 수동 강제 옵션(--full-parse)으로 풀 파싱 모드를 실행합니다.")
+
+    history_lookback_days = FULL_PARSE_LOOKBACK_DAYS if force_full_parse else NORMAL_LOOKBACK_DAYS
 
     is_test_mode = False # 🔥 테스트 모드 여부를 감지하는 플래그 설정
 
@@ -2800,7 +2906,7 @@ def run_scraper(manual_full_parse=False):
                 if res.status_code == 200 and res.json().get('rt_cd') == "0":
                     daily_list = res.json().get('output2', [])
                     if daily_list:
-                        for idx, daily in enumerate(daily_list[:HISTORY_LOOKBACK_DAYS]): 
+                        for idx, daily in enumerate(daily_list[:history_lookback_days]): 
                             close_prc = safe_api_float(daily.get('stck_clpr'))
                             vol = safe_api_float(daily.get('acml_vol'))
                             trade_value = vol * close_prc
@@ -3203,5 +3309,12 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AlphaPulse scraper runner")
     parser.add_argument("--full-parse", action="store_true", help="슈퍼 캐시를 무시하고 KIS 풀 파싱을 강제 실행")
+    parser.add_argument("--super-parse", action="store_true", help="과거 가격/수급 데이터를 누적 수집하고 replay 백테스트를 재생성")
+    parser.add_argument("--months", type=int, default=SUPER_PARSE_DEFAULT_MONTHS, help="super-parse 수집 기간(개월), 기본 6개월")
+    parser.add_argument("--years", type=int, choices=[1, 2], help="super-parse 수집 기간(년), 최대 2년")
+    parser.add_argument("--max-stocks", type=int, help="super-parse 테스트용 최대 수집 종목 수")
     args = parser.parse_args()
-    run_scraper(manual_full_parse=args.full_parse)
+    if args.super_parse:
+        run_super_parse(months=args.months, years=args.years, max_stocks=args.max_stocks)
+    else:
+        run_scraper(manual_full_parse=args.full_parse)

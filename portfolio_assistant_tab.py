@@ -73,6 +73,47 @@ def render_portfolio_assistant_tab(
         total_eval_amount = float((qty_num * cur_num).sum())
         total_profit_amount = total_eval_amount - total_buy_amount
         total_profit_pct = (total_profit_amount / total_buy_amount * 100.0) if total_buy_amount > 0 else 0.0
+        st.markdown("#### 실전 계좌 방어 모드")
+        guard_col1, guard_col2 = st.columns(2)
+        with guard_col1:
+            live_initial_capital = st.number_input(
+                "실전 초기 투자금",
+                min_value=0,
+                max_value=1_000_000_000,
+                value=int(st.session_state.get("live_initial_capital", 5_200_000)),
+                step=100_000,
+                format="%d",
+            )
+        with guard_col2:
+            live_current_equity = st.number_input(
+                "실전 현재 평가금액",
+                min_value=0,
+                max_value=1_000_000_000,
+                value=int(st.session_state.get("live_current_equity", 4_200_000)),
+                step=100_000,
+                format="%d",
+            )
+        st.session_state["live_initial_capital"] = int(live_initial_capital)
+        st.session_state["live_current_equity"] = int(live_current_equity)
+        live_drawdown_pct = (
+            (float(live_current_equity) - float(live_initial_capital)) / float(live_initial_capital) * 100.0
+            if live_initial_capital > 0 else 0.0
+        )
+        capital_guard_active = live_drawdown_pct <= -8.0 or total_profit_pct <= -8.0
+        capital_emergency_active = live_drawdown_pct <= -15.0 or total_profit_pct <= -15.0
+        if capital_emergency_active:
+            st.error(
+                f"실전 비상 모드: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다. "
+                "신규매수/교체매수보다 현금화와 손실 확대 차단을 먼저 봅니다."
+            )
+        elif capital_guard_active:
+            st.warning(
+                f"방어 모드: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다. "
+                "신규매수는 중지하고 보유 종목 매도점검을 우선합니다."
+            )
+        else:
+            st.success(f"정상 운용 구간: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다.")
+
         pnl_color = "#36C06A" if total_profit_amount >= 0 else "#E04B4B"
         profit_amount_color = "#36C06A" if total_profit_amount >= 0 else "#E04B4B"
         st.markdown("#### 포트폴리오 손익 요약")
@@ -173,7 +214,9 @@ def render_portfolio_assistant_tab(
             weakest_risk_score = 0.0
             if not risk_rows.empty and "스윙우선순위" in risk_rows.columns:
                 weakest_risk_score = float(pd.to_numeric(risk_rows["스윙우선순위"], errors="coerce").fillna(0.0).min())
-            if not risk_rows.empty:
+            if capital_guard_active:
+                replacement_pool = replacement_pool.iloc[0:0].copy()
+            elif not risk_rows.empty:
                 replacement_pool = replacement_pool[replacement_pool["스윙우선순위"] >= weakest_risk_score + 5.0].copy()
             else:
                 replacement_pool = replacement_pool.iloc[0:0].copy()
@@ -183,7 +226,15 @@ def render_portfolio_assistant_tab(
         risk_names = ", ".join(risk_rows["종목명"].dropna().astype(str).head(3).tolist()) if not risk_rows.empty else "없음"
         hold_names = ", ".join(hold_rows["종목명"].dropna().astype(str).head(3).tolist()) if not hold_rows.empty else "없음"
         replacement_names = ", ".join(replacement_pool["종목명"].dropna().astype(str).head(3).tolist()) if not replacement_pool.empty else "없음"
-        if risk_rows.empty:
+        if capital_emergency_active:
+            assistant_verdict = "신규매수 중지"
+            assistant_meta = "계좌 낙폭이 비상 구간입니다. 새 후보보다 손실 확대 차단과 현금 비중 회복이 우선입니다."
+            verdict_color = "#FCA5A5"
+        elif capital_guard_active:
+            assistant_verdict = "방어 운용"
+            assistant_meta = "계좌 낙폭이 방어 구간입니다. 신규매수는 막고 보유 종목 리스크만 점검합니다."
+            verdict_color = "#FCD34D"
+        elif risk_rows.empty:
             assistant_verdict = "보유 유지"
             assistant_meta = "현재 보유 종목에서 명확한 매도 점검 신호는 없습니다."
             verdict_color = "#86EFAC"

@@ -21,6 +21,7 @@ from db_utils import read_table, write_table, migrate_csv_to_sqlite_once, table_
 from gpt_prompt_tab import render_gpt_prompt_tab
 from portfolio_assistant_tab import render_portfolio_assistant_tab
 from strategy_dashboard_tab import render_strategy_dashboard_tab
+from recommendation_validation_tab import render_recommendation_validation_tab
 from news_utils import (
     normalize_text as _normalize_text,
     extract_source as _extract_source,
@@ -2445,7 +2446,7 @@ else:
     render_product_header(df_summary)
     st.markdown(render_macro_cards(core_tickers), unsafe_allow_html=True)
 
-    tab_labels = ["전략 대시보드", "알파 레이더", "종목 분석"] if is_admin else ["알파 레이더", "종목 분석"]
+    tab_labels = ["전략 대시보드", "추천 검증", "알파 레이더", "종목 분석"] if is_admin else ["알파 레이더", "종목 분석"]
     if is_admin:
         tab_labels.append("포트폴리오 비서")
         tab_labels.append("GPT 프롬프트")
@@ -2453,14 +2454,16 @@ else:
     tabs = st.tabs(tab_labels)
     if is_admin:
         tab5 = tabs[0]
-        tab3 = tabs[1]
-        tab4 = tabs[2]
-        tab7 = tabs[3]
-        tab8 = tabs[4]
-        tab1 = tabs[5]
-        tab2 = tabs[6]
+        tab6 = tabs[1]
+        tab3 = tabs[2]
+        tab4 = tabs[3]
+        tab7 = tabs[4]
+        tab8 = tabs[5]
+        tab1 = tabs[6]
+        tab2 = tabs[7]
     else:
         tab5 = None
+        tab6 = None
         tab3 = tabs[0]
         tab4 = tabs[1]
         tab7 = None
@@ -3499,9 +3502,14 @@ else:
                 load_swing_performance_safe,
                 load_swing_trades_safe,
                 fetch_yahoo_chart_history,
+                macro_data,
             )
 
-        # --- 탭 7: 관리자 전용 포트폴리오 ---
+    if is_admin and tab6 is not None:
+        with tab6:
+            render_recommendation_validation_tab(render_section_header, apply_altair_theme, render_empty_state)
+
+    # --- 탭 7: 관리자 전용 포트폴리오 ---
     if is_admin and tab7 is not None:
         with tab7:
             render_portfolio_assistant_tab(
