@@ -521,6 +521,16 @@ def render_strategy_dashboard_tab(
                         column_order=summary_cols,
                         width='stretch'
                     )
+                else:
+                    latest_perf_row = df_filtered.sort_values("날짜_dt").iloc[-1] if not df_filtered.empty else pd.Series(dtype=object)
+                    latest_mode = str(latest_perf_row.get("시장모드", score_mode_label))
+                    target_count = int(pd.to_numeric(latest_perf_row.get("목표보유종목수", 0), errors="coerce") or 0)
+                    cash_value = float(pd.to_numeric(latest_perf_row.get("현금", 0.0), errors="coerce") or 0.0)
+                    st.info(
+                        f"현재 {score_mode_label} 모드는 {latest_mode} 상태입니다. "
+                        f"목표 보유 종목수 {target_count}개로 판단되어 현금 대기 중입니다. "
+                        f"현금 {cash_value:,.0f}원 기준으로 다음 진입 신호를 기다립니다."
+                    )
 
                 if not closed_trades.empty:
                     portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
