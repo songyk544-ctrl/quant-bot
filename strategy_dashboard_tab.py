@@ -25,54 +25,6 @@ def render_strategy_dashboard_tab(
     macro_data=None,
 ):
     render_section_header(f"{app_name} 전략 대시보드", "백테스트, 현재 포지션, 신규 후보를 한 화면에서 운용 관점으로 확인합니다.", badge_text="Strategy")
-    st.markdown("#### 실전 계좌 방어 모드")
-    guard_col1, guard_col2 = st.columns(2)
-    with guard_col1:
-        live_initial_capital = st.number_input(
-            "실전 초기 투자금",
-            min_value=0,
-            max_value=1_000_000_000,
-            value=int(st.session_state.get("live_initial_capital", 5_200_000)),
-            step=100_000,
-            format="%d",
-            key="strategy_live_initial_capital",
-        )
-    with guard_col2:
-        live_current_equity = st.number_input(
-            "실전 현재 평가금액",
-            min_value=0,
-            max_value=1_000_000_000,
-            value=int(st.session_state.get("live_current_equity", 4_200_000)),
-            step=100_000,
-            format="%d",
-            key="strategy_live_current_equity",
-        )
-    st.session_state["live_initial_capital"] = int(live_initial_capital)
-    st.session_state["live_current_equity"] = int(live_current_equity)
-    live_drawdown_pct = (
-        (float(live_current_equity) - float(live_initial_capital)) / float(live_initial_capital) * 100.0
-        if live_initial_capital > 0 else 0.0
-    )
-    if live_drawdown_pct <= -15.0:
-        st.error(f"실전 비상 모드: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다. 신규매수보다 손실 확대 차단이 우선입니다.")
-    elif live_drawdown_pct <= -8.0:
-        st.warning(f"방어 모드: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다. 신규매수는 중지하고 보유 종목만 점검합니다.")
-    else:
-        st.success(f"정상/주의 구간: 초기자금 대비 {live_drawdown_pct:+.2f}%입니다.")
-
-    if isinstance(macro_data, dict) and macro_data:
-        macro_flags = []
-        for label, payload in macro_data.items():
-            if not isinstance(payload, dict):
-                continue
-            value = payload.get("value")
-            change_pct = payload.get("change_pct")
-            text = f"{label} {float(value):,.2f} ({float(change_pct):+.2f}%)" if value is not None and change_pct is not None else str(label)
-            if ("VIX" in label and value is not None and float(value) >= 22) or ("환율" in label and change_pct is not None and float(change_pct) >= 0.8) or ("NASDAQ" in label and change_pct is not None and float(change_pct) <= -1.0) or ("WTI" in label and change_pct is not None and float(change_pct) >= 3.0):
-                macro_flags.append(text)
-        if macro_flags:
-            st.warning("매크로 위험 신호: " + " / ".join(macro_flags[:4]) + " · 신규매수 축소 또는 현금 보유를 우선 검토하세요.")
-
     if not is_vip:
         show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
     else:
@@ -91,19 +43,34 @@ def render_strategy_dashboard_tab(
             current_start = current_start.date() if not pd.isna(current_start) else min_date
             st.session_state["strategy_backtest_start_date"] = max(min_date, min(max_date, current_start))
             quick_ranges = [
+                ("직접 선택", st.session_state["strategy_backtest_start_date"]),
                 ("최근 1주", max_date - pd.Timedelta(days=7)),
                 ("최근 1개월", max_date - pd.Timedelta(days=31)),
                 ("최근 3개월", max_date - pd.Timedelta(days=93)),
                 ("최근 6개월", max_date - pd.Timedelta(days=186)),
                 ("올해", pd.Timestamp(max_date).replace(month=1, day=1)),
             ]
-            quick_cols = st.columns(len(quick_ranges))
-            for quick_col, (label, target_dt) in zip(quick_cols, quick_ranges):
+            quick_labels = [label for label, _ in quick_ranges]
+            if hasattr(st, "segmented_control"):
+                quick_label = st.segmented_control(
+                    "기간 빠른 선택",
+                    quick_labels,
+                    default="직접 선택",
+                    key="strategy_quick_range",
+                )
+            else:
+                quick_label = st.radio(
+                    "기간 빠른 선택",
+                    quick_labels,
+                    horizontal=True,
+                    index=0,
+                    key="strategy_quick_range",
+                )
+            if quick_label and quick_label != "직접 선택":
+                target_dt = dict(quick_ranges)[quick_label]
                 target_date = pd.to_datetime(target_dt).date()
                 target_date = max(min_date, min(max_date, target_date))
-                with quick_col:
-                    if st.button(label, use_container_width=True, key=f"strategy_range_{label}"):
-                        st.session_state["strategy_backtest_start_date"] = target_date
+                st.session_state["strategy_backtest_start_date"] = target_date
             selected_start_date = st.date_input(
                 "🗓️ 벤치마크 시작(기준)일 선택",
                 min_value=min_date,
@@ -128,12 +95,24 @@ def render_strategy_dashboard_tab(
                     step=1,
                     format="%d",
                 )
-            score_mode_label = st.radio(
-                "백테스트 정렬 기준",
-                ["스윙점수", "AI점수", "공격/방어"],
-                horizontal=True,
-                help="공격/방어는 시장 상태와 후보 강도에 따라 보유 종목 수를 0~최대값으로 조절합니다.",
-            )
+            score_options = ["공격/방어", "스윙점수", "AI점수"]
+            if hasattr(st, "segmented_control"):
+                score_mode_label = st.segmented_control(
+                    "백테스트 모드",
+                    score_options,
+                    default="공격/방어",
+                    key="strategy_score_mode",
+                    help="공격/방어는 시장 상태와 후보 강도에 따라 보유 종목 수를 0~최대값으로 조절합니다.",
+                )
+            else:
+                score_mode_label = st.radio(
+                    "백테스트 모드",
+                    score_options,
+                    horizontal=True,
+                    index=0,
+                    key="strategy_score_mode",
+                    help="공격/방어는 시장 상태와 후보 강도에 따라 보유 종목 수를 0~최대값으로 조절합니다.",
+                )
             score_mode = "adaptive" if score_mode_label == "공격/방어" else ("ai" if score_mode_label == "AI점수" else "swing")
             portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
                 df_swing_trades,
