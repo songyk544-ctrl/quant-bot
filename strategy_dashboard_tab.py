@@ -130,11 +130,11 @@ def render_strategy_dashboard_tab(
                 )
             score_mode_label = st.radio(
                 "백테스트 정렬 기준",
-                ["스윙점수", "AI점수"],
+                ["스윙점수", "AI점수", "공격/방어"],
                 horizontal=True,
-                help="같은 진입일 후보를 어떤 점수 기준으로 우선 매수할지 비교합니다.",
+                help="공격/방어는 시장 상태와 후보 강도에 따라 보유 종목 수를 0~최대값으로 조절합니다.",
             )
-            score_mode = "ai" if score_mode_label == "AI점수" else "swing"
+            score_mode = "adaptive" if score_mode_label == "공격/방어" else ("ai" if score_mode_label == "AI점수" else "swing")
             portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
                 df_swing_trades,
                 df_history,

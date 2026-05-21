@@ -48,7 +48,9 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
     signal = trades[trades["청산방식"].astype(str).eq("시그널")].copy()
     if signal.empty:
         signal = trades[trades["보유일수"].eq(10)].copy()
-    score_col = "AI수급점수" if str(score_mode).lower() == "ai" else "스윙우선순위"
+    score_mode_key = str(score_mode).lower()
+    adaptive_mode = score_mode_key in {"adaptive", "attack_defense", "dynamic"}
+    score_col = "AI수급점수" if score_mode_key == "ai" else "스윙우선순위"
     fallback_score_col = "스윙우선순위" if score_col == "AI수급점수" else "AI수급점수"
     if score_col not in signal.columns and fallback_score_col in signal.columns:
         score_col = fallback_score_col
@@ -59,6 +61,43 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         ["진입일_dt", score_col, "진입순위"],
         ascending=[True, False, True],
     )
+
+    market_frame = hist.copy()
+    market_frame["전일종가"] = market_frame.groupby("종목명")["종가"].shift(1)
+    market_frame["일간등락률"] = ((market_frame["종가"] / market_frame["전일종가"]) - 1.0) * 100.0
+    market_frame["MA20"] = market_frame.groupby("종목명")["종가"].transform(lambda s: s.rolling(20, min_periods=5).mean())
+    market_frame["MA20상회"] = market_frame["종가"] >= market_frame["MA20"]
+    market_state = (
+        market_frame.dropna(subset=["일간등락률"])
+        .groupby(market_frame["일자_dt"].dt.normalize())
+        .agg(
+            평균등락률=("일간등락률", "mean"),
+            상승비율=("일간등락률", lambda s: float((s > 0).mean())),
+            MA20상회비율=("MA20상회", "mean"),
+        )
+    )
+
+    def _target_positions_for_day(cur_date, todays):
+        if not adaptive_mode:
+            return int(max_positions), "고정"
+        state = market_state.loc[cur_date] if cur_date in market_state.index else None
+        avg_ret = float(state.get("평균등락률", 0.0)) if state is not None else 0.0
+        up_ratio = float(state.get("상승비율", 0.5)) if state is not None else 0.5
+        ma20_ratio = float(state.get("MA20상회비율", 0.5)) if state is not None else 0.5
+        max_score = float(pd.to_numeric(todays[score_col], errors="coerce").max()) if not todays.empty else 0.0
+        has_leader = False
+        if not todays.empty and "진입유형" in todays.columns:
+            has_leader = todays["진입유형"].astype(str).str.contains("주도", na=False).any()
+
+        if avg_ret <= -1.2 or up_ratio <= 0.32 or ma20_ratio <= 0.38:
+            return 0, "방어"
+        if avg_ret <= -0.35 or up_ratio <= 0.43 or ma20_ratio <= 0.46:
+            return 1, "선별"
+        if max_score >= 65 and up_ratio >= 0.52 and ma20_ratio >= 0.52:
+            return int(max_positions), "공격"
+        if has_leader and max_score >= 58 and up_ratio >= 0.48:
+            return min(int(max_positions), 2), "공격대기"
+        return min(int(max_positions), 1), "관찰"
 
     cash = float(initial_cash)
     positions = []
@@ -116,8 +155,11 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         if not todays.empty:
             todays[score_col] = pd.to_numeric(todays[score_col], errors="coerce").fillna(0.0)
             todays = todays.sort_values([score_col, "진입순위"], ascending=[False, True])
+        target_positions, market_mode = _target_positions_for_day(cur_date, todays)
         held_names = {p["종목명"] for p in positions}
         for _, sig in todays.iterrows():
+            if target_positions <= 0:
+                break
             name = str(sig.get("종목명", "")).strip()
             if not name or name in held_names:
                 continue
@@ -127,7 +169,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             new_score = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
             swing_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
             new_entry_type = str(sig.get("진입유형", ""))
-            if len(positions) >= int(max_positions):
+            if len(positions) >= int(target_positions):
                 if switched_today:
                     break
                 weakest_idx = None
@@ -167,7 +209,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 switched_today = True
 
             current_equity_for_buy = cash + _mark_positions_value(cur_date)
-            dynamic_slot_cash = current_equity_for_buy / max(1, int(max_positions))
+            dynamic_slot_cash = current_equity_for_buy / max(1, int(target_positions))
             budget = min(dynamic_slot_cash, cash)
             qty = int(budget // entry_price)
             if qty <= 0:
@@ -201,6 +243,8 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             "수익률(%)": round(((equity - float(initial_cash)) / float(initial_cash)) * 100.0, 4),
             "일간수익률": round(daily_ret, 4),
             "보유종목수": len(positions),
+            "목표보유종목수": int(target_positions),
+            "시장모드": market_mode,
             "실현손익": round(realized_today, 0),
         })
         prev_equity = equity
