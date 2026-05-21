@@ -14,10 +14,16 @@ def empty_capital_limited_result():
     )
 
 
-def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_000, max_positions=3, start_date=None):
+def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_000, max_positions=3, start_date=None, score_mode="swing"):
     """초기자금과 동시보유 제한을 둔 실제 포트폴리오형 스윙 시뮬레이션."""
     if df_trades.empty or df_history.empty:
         return empty_capital_limited_result()
+
+    trades = df_trades.copy()
+    if "진입일_dt" not in trades.columns and "진입일" in trades.columns:
+        trades["진입일_dt"] = pd.to_datetime(trades["진입일"], errors="coerce")
+    if "청산일_dt" not in trades.columns and "청산일" in trades.columns:
+        trades["청산일_dt"] = pd.to_datetime(trades["청산일"], errors="coerce")
 
     hist = df_history.copy()
     if not {"종목명", "일자", "종가"}.issubset(hist.columns):
@@ -39,12 +45,19 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
     if not dates:
         return empty_capital_limited_result()
 
-    signal = df_trades[df_trades["청산방식"].astype(str).eq("시그널")].copy()
+    signal = trades[trades["청산방식"].astype(str).eq("시그널")].copy()
     if signal.empty:
-        signal = df_trades[df_trades["보유일수"].eq(10)].copy()
+        signal = trades[trades["보유일수"].eq(10)].copy()
+    score_col = "AI수급점수" if str(score_mode).lower() == "ai" else "스윙우선순위"
+    fallback_score_col = "스윙우선순위" if score_col == "AI수급점수" else "AI수급점수"
+    if score_col not in signal.columns and fallback_score_col in signal.columns:
+        score_col = fallback_score_col
+    if score_col not in signal.columns:
+        signal[score_col] = 0.0
+    signal[score_col] = pd.to_numeric(signal[score_col], errors="coerce").fillna(0.0)
     signal = signal.dropna(subset=["진입일_dt"]).sort_values(
-        ["진입일_dt", "진입순위", "스윙우선순위"],
-        ascending=[True, True, False],
+        ["진입일_dt", score_col, "진입순위"],
+        ascending=[True, False, True],
     )
 
     cash = float(initial_cash)
@@ -100,6 +113,9 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         positions = remaining
 
         todays = signal[signal["진입일_dt"].dt.normalize().eq(cur_date)].copy()
+        if not todays.empty:
+            todays[score_col] = pd.to_numeric(todays[score_col], errors="coerce").fillna(0.0)
+            todays = todays.sort_values([score_col, "진입순위"], ascending=[False, True])
         held_names = {p["종목명"] for p in positions}
         for _, sig in todays.iterrows():
             name = str(sig.get("종목명", "")).strip()
@@ -108,7 +124,8 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             entry_price = float(pd.to_numeric(sig.get("진입가"), errors="coerce") or 0.0)
             if entry_price <= 0:
                 continue
-            new_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
+            new_score = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
+            swing_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
             new_entry_type = str(sig.get("진입유형", ""))
             if len(positions) >= int(max_positions):
                 if switched_today:
@@ -119,7 +136,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 for pos_idx, pos in enumerate(positions):
                     mark_price = _last_price(pos["종목명"], cur_date, pos["진입가"])
                     pos_ret = ((mark_price - float(pos["진입가"])) / float(pos["진입가"]) * 100.0) if float(pos["진입가"]) > 0 else 0.0
-                    pos_score = float(pos.get("스윙우선순위", 0.0) or 0.0)
+                    pos_score = float(pos.get("전략점수", pos.get("스윙우선순위", 0.0)) or 0.0)
                     if weakest_idx is None or (pos_ret, pos_score) < (weakest_ret, weakest_score):
                         weakest_idx = pos_idx
                         weakest_score = pos_score
@@ -168,7 +185,8 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 "청산일_dt": sig.get("청산일_dt"),
                 "청산사유": str(sig.get("청산사유", "")),
                 "상태": str(sig.get("상태", "")),
-                "스윙우선순위": new_score,
+                "스윙우선순위": swing_score,
+                "전략점수": new_score,
                 "진입유형": new_entry_type,
             })
 

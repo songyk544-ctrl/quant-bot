@@ -85,7 +85,31 @@ def render_strategy_dashboard_tab(
             min_date = available_dates.min().date()
             hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
             max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
-            selected_start_date = st.date_input("🗓️ 벤치마크 시작(기준)일 선택", min_value=min_date, max_value=max_date, value=min_date)
+            if "strategy_backtest_start_date" not in st.session_state:
+                st.session_state["strategy_backtest_start_date"] = min_date
+            current_start = pd.to_datetime(st.session_state.get("strategy_backtest_start_date", min_date), errors="coerce")
+            current_start = current_start.date() if not pd.isna(current_start) else min_date
+            st.session_state["strategy_backtest_start_date"] = max(min_date, min(max_date, current_start))
+            quick_ranges = [
+                ("최근 1주", max_date - pd.Timedelta(days=7)),
+                ("최근 1개월", max_date - pd.Timedelta(days=31)),
+                ("최근 3개월", max_date - pd.Timedelta(days=93)),
+                ("최근 6개월", max_date - pd.Timedelta(days=186)),
+                ("올해", pd.Timestamp(max_date).replace(month=1, day=1)),
+            ]
+            quick_cols = st.columns(len(quick_ranges))
+            for quick_col, (label, target_dt) in zip(quick_cols, quick_ranges):
+                target_date = pd.to_datetime(target_dt).date()
+                target_date = max(min_date, min(max_date, target_date))
+                with quick_col:
+                    if st.button(label, use_container_width=True, key=f"strategy_range_{label}"):
+                        st.session_state["strategy_backtest_start_date"] = target_date
+            selected_start_date = st.date_input(
+                "🗓️ 벤치마크 시작(기준)일 선택",
+                min_value=min_date,
+                max_value=max_date,
+                key="strategy_backtest_start_date",
+            )
             bt_col1, bt_col2 = st.columns(2)
             with bt_col1:
                 cash_text = st.text_input("초기 투자금", value="5,000,000")
@@ -104,12 +128,20 @@ def render_strategy_dashboard_tab(
                     step=1,
                     format="%d",
                 )
+            score_mode_label = st.radio(
+                "백테스트 정렬 기준",
+                ["스윙점수", "AI점수"],
+                horizontal=True,
+                help="같은 진입일 후보를 어떤 점수 기준으로 우선 매수할지 비교합니다.",
+            )
+            score_mode = "ai" if score_mode_label == "AI점수" else "swing"
             portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
                 df_swing_trades,
                 df_history,
                 initial_cash=backtest_initial_cash,
                 max_positions=backtest_max_positions,
                 start_date=selected_start_date,
+                score_mode=score_mode,
             )
         else:
             portfolio_perf, portfolio_positions, portfolio_closed = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()

@@ -228,7 +228,9 @@ def render_gpt_prompt_tab(df_summary, core_tickers, build_context, render_sectio
     st.caption(f"생성된 데이터팩은 약 {len(prompt_text):,}자입니다. 표는 Markdown 형식입니다.")
 
     st.markdown("#### 미리보기")
-    st.dataframe(pack_df.tail(30), hide_index=True, width="stretch")
+    if not pack_df.empty and "일자" in pack_df.columns:
+        st.caption(f"선택 기간 반영: {len(pack_df):,}거래일 · {pack_df['일자'].iloc[0]} ~ {pack_df['일자'].iloc[-1]}")
+    st.dataframe(pack_df, hide_index=True, width="stretch")
 
     with st.expander("복사용 데이터팩 원문", expanded=False):
         st.text_area("Markdown 원문", value=prompt_text, height=420)
