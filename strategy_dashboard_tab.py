@@ -533,7 +533,7 @@ def render_strategy_dashboard_tab(
                     )
 
                 if not closed_trades.empty:
-                    portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
+                    portfolio_log_cols = ["진입일", "청산일", "종목명", "보유일수", "수량", "진입가", "청산가", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
                     legacy_log_cols = ["진입일", "청산일", "종목명", "진입순위", "추천소스", "보유일수", "청산방식", "청산사유", "진입가", "청산가", "수익률", "진입유형"]
                     view_cols = [c for c in portfolio_log_cols if c in closed_trades.columns]
                     if len(view_cols) < 5:
@@ -541,6 +541,9 @@ def render_strategy_dashboard_tab(
                     trade_view = closed_trades.sort_values("청산일_dt", ascending=False)[view_cols].head(80)
                     with st.expander("포트폴리오 진입/청산 거래 로그", expanded=False):
                         format_cols = {
+                            "수량": "{:.0f}",
+                            "진입가": "{:,.0f}",
+                            "청산가": "{:,.0f}",
                             "매수금액": "{:,.0f}원",
                             "청산금액": "{:,.0f}원",
                             "실현손익": "{:+,.0f}원",

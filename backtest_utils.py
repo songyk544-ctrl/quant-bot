@@ -3,7 +3,7 @@ import pandas as pd
 
 PERF_COLS = ["날짜", "평가금액", "현금", "투자금액", "수익률(%)", "일간수익률", "보유종목수", "실현손익"]
 POSITION_COLS = ["종목명", "진입일", "진입가", "수량", "매수금액", "현재가", "평가금액", "평가손익", "평가수익률", "보유일수", "상태"]
-CLOSED_COLS = ["진입일", "청산일", "종목명", "보유일수", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
+CLOSED_COLS = ["진입일", "청산일", "종목명", "보유일수", "수량", "진입가", "청산가", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
 
 
 def empty_capital_limited_result():
@@ -141,6 +141,9 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                     "청산일": cur_date.strftime("%Y-%m-%d"),
                     "종목명": pos["종목명"],
                     "보유일수": _holding_days(pos["진입일_dt"], cur_date),
+                    "수량": pos["수량"],
+                    "진입가": round(pos["진입가"], 0),
+                    "청산가": round(exit_price, 0),
                     "매수금액": round(pos["매수금액"], 0),
                     "청산금액": round(exit_value, 0),
                     "실현손익": round(pnl, 0),
@@ -200,6 +203,9 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                     "청산일": cur_date.strftime("%Y-%m-%d"),
                     "종목명": old_pos["종목명"],
                     "보유일수": _holding_days(old_pos["진입일_dt"], cur_date),
+                    "수량": old_pos["수량"],
+                    "진입가": round(old_pos["진입가"], 0),
+                    "청산가": round(exit_price, 0),
                     "매수금액": round(old_pos["매수금액"], 0),
                     "청산금액": round(exit_value, 0),
                     "실현손익": round(pnl, 0),
