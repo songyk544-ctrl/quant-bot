@@ -381,7 +381,12 @@ def build_replay_score_trend(top_n=3, min_lookback=10):
             continue
         day_df = pd.DataFrame(day_rows)
         max_buy_candidates = resolve_max_buy_candidates(20.0)
-        day_df = apply_swing_strategy_overlay(day_df, current_vix=20.0, max_buy_candidates=max_buy_candidates)
+        day_df = apply_swing_strategy_overlay(
+            day_df,
+            current_vix=20.0,
+            max_buy_candidates=max_buy_candidates,
+            as_of_date=cur_date,
+        )
         day_df = day_df.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False]).reset_index(drop=True)
         day_df["순위"] = range(1, len(day_df) + 1)
         day_df["날짜"] = pd.to_datetime(cur_date).strftime("%Y-%m-%d")
@@ -1653,7 +1658,7 @@ def apply_pullback_trade_rules(df_final, current_vix=20.0):
     return out.sort_values("AI수급점수", ascending=False)
 
 
-def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=2):
+def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=2, as_of_date=None):
     """
     사용자의 1~2주 스윙 성향에 맞춰 연기금 중심 수급, 눌림목/돌파 진입유형,
     후보 수 제한, 보유 점검 신호를 한 번 더 입힙니다.
@@ -1711,6 +1716,10 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
             if not raw_hist.empty and {"종목명", "일자", "연기금", "투신", "사모", "외인"}.issubset(raw_hist.columns):
                 raw_hist = raw_hist.copy()
                 raw_hist["일자_dt"] = pd.to_datetime(raw_hist["일자"].astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce")
+                if as_of_date is not None:
+                    cutoff_dt = pd.to_datetime(as_of_date, errors="coerce")
+                    if pd.notna(cutoff_dt):
+                        raw_hist = raw_hist[raw_hist["일자_dt"].dt.normalize() <= cutoff_dt.normalize()]
                 raw_hist = raw_hist.dropna(subset=["일자_dt"]).sort_values(["종목명", "일자_dt"])
                 marcap_map = dict(zip(out["종목명"].astype(str), _num("시가총액").replace(0, pd.NA)))
                 avg_value_map = dict(zip(out["종목명"].astype(str), avg_value_20d.replace(0, pd.NA)))
