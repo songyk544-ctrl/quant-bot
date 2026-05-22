@@ -2686,8 +2686,13 @@ def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=No
 
     KST = timezone(timedelta(hours=9))
     now_kst = datetime.now(KST)
-    input_date = now_kst.strftime("%Y%m%d")
+    is_eod_updated = (now_kst.hour > 15) or (now_kst.hour == 15 and now_kst.minute >= 40)
+    ref_date = now_kst.date() if is_eod_updated else (now_kst - timedelta(days=1)).date()
+    while ref_date.weekday() >= 5:
+        ref_date = ref_date - timedelta(days=1)
+    input_date = ref_date.strftime("%Y%m%d")
     cutoff = (now_kst - timedelta(days=months * 31)).date()
+    print(f"   - 기준일: {input_date} / 컷오프: {cutoff.strftime('%Y%m%d')}")
     headers = {
         "authorization": f"Bearer {token}",
         "appkey": kis_app_key,
@@ -2698,6 +2703,8 @@ def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=No
     url_kis = f"{URL_BASE}/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
     history_rows = []
+    empty_response_count = 0
+    failed_response_count = 0
     for idx, row in enumerate(df_target.itertuples(), start=1):
         code = getattr(row, "종목코드")
         name = getattr(row, "종목명")
@@ -2710,12 +2717,20 @@ def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=No
         }
         try:
             res = requests.get(url_kis, headers=headers, params=params, timeout=8)
-            if res.status_code == 200 and res.json().get("rt_cd") == "0":
-                for daily in res.json().get("output2", []):
+            payload = res.json() if res.text else {}
+            if res.status_code == 200 and payload.get("rt_cd") == "0":
+                daily_rows = payload.get("output2", [])
+                if not daily_rows:
+                    empty_response_count += 1
+                for daily in daily_rows:
                     raw_date = str(daily.get("stck_bsop_date", ""))
                     day = datetime.strptime(raw_date, "%Y%m%d").date() if raw_date else None
                     if day and day >= cutoff:
                         history_rows.append(_history_row_from_kis_daily(name, daily))
+            else:
+                failed_response_count += 1
+                if failed_response_count <= 3:
+                    print(f"[WARN] super-parse 응답 실패({name}/{code}): status={res.status_code} rt_cd={payload.get('rt_cd')} msg={payload.get('msg1')}")
             if idx % 25 == 0:
                 print(f"   - {idx}/{len(df_target)} 종목 수집 중...")
             time.sleep(0.05)
@@ -2723,6 +2738,7 @@ def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=No
             print(f"[WARN] super-parse 수집 실패({name}/{code}): {e}")
 
     if not history_rows:
+        print(f"[INFO] 빈 응답 종목 수: {empty_response_count}, 실패 응답 종목 수: {failed_response_count}")
         print("❌ super-parse로 추가 수집된 데이터가 없습니다.")
         return
 
