@@ -2656,6 +2656,78 @@ def _history_row_from_kis_daily(name, daily):
     }
 
 
+def _previous_kis_cursor_date(oldest_raw_date):
+    try:
+        cursor = datetime.strptime(str(oldest_raw_date), "%Y%m%d").date() - timedelta(days=1)
+    except Exception:
+        return None
+    while cursor.weekday() >= 5:
+        cursor = cursor - timedelta(days=1)
+    return cursor.strftime("%Y%m%d")
+
+
+def _collect_kis_history_backfill(name, code, url_kis, headers, input_date, cutoff, max_pages):
+    rows = []
+    seen_dates = set()
+    cursor_date = input_date
+    empty_pages = 0
+    failed_pages = 0
+
+    for page in range(1, max_pages + 1):
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+            "FID_INPUT_DATE_1": cursor_date,
+            "FID_ORG_ADJ_PRC": "0",
+            "FID_ETC_CLS_CODE": "0",
+        }
+        res = requests.get(url_kis, headers=headers, params=params, timeout=8)
+        payload = res.json() if res.text else {}
+        if res.status_code != 200 or payload.get("rt_cd") != "0":
+            failed_pages += 1
+            if failed_pages <= 2:
+                print(f"[WARN] super-parse 응답 실패({name}/{code}): status={res.status_code} rt_cd={payload.get('rt_cd')} msg={payload.get('msg1')}")
+            break
+
+        daily_rows = payload.get("output2", [])
+        if not daily_rows:
+            empty_pages += 1
+            break
+
+        page_dates = []
+        added_on_page = 0
+        for daily in daily_rows:
+            raw_date = str(daily.get("stck_bsop_date", ""))
+            if not raw_date:
+                continue
+            try:
+                day = datetime.strptime(raw_date, "%Y%m%d").date()
+            except Exception:
+                continue
+            page_dates.append(raw_date)
+            if day >= cutoff and raw_date not in seen_dates:
+                rows.append(_history_row_from_kis_daily(name, daily))
+                seen_dates.add(raw_date)
+                added_on_page += 1
+
+        if not page_dates:
+            empty_pages += 1
+            break
+
+        oldest_raw_date = min(page_dates)
+        oldest_day = datetime.strptime(oldest_raw_date, "%Y%m%d").date()
+        if oldest_day <= cutoff:
+            break
+
+        next_cursor_date = _previous_kis_cursor_date(oldest_raw_date)
+        if not next_cursor_date or next_cursor_date >= cursor_date or added_on_page == 0:
+            break
+        cursor_date = next_cursor_date
+        time.sleep(0.03)
+
+    return rows, empty_pages, failed_pages, len(seen_dates)
+
+
 def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=None):
     months = int(years) * 12 if years else int(months or SUPER_PARSE_DEFAULT_MONTHS)
     months = max(SUPER_PARSE_DEFAULT_MONTHS, min(months, SUPER_PARSE_MAX_YEARS * 12))
@@ -2693,6 +2765,8 @@ def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=No
     input_date = ref_date.strftime("%Y%m%d")
     cutoff = (now_kst - timedelta(days=months * 31)).date()
     print(f"   - 기준일: {input_date} / 컷오프: {cutoff.strftime('%Y%m%d')}")
+    max_pages = max(1, min(28, int((months * 22 + 29) // 30) + 2))
+    print(f"   - 종목당 최대 {max_pages}회 backfill 호출")
     headers = {
         "authorization": f"Bearer {token}",
         "appkey": kis_app_key,
@@ -2705,34 +2779,20 @@ def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=No
     history_rows = []
     empty_response_count = 0
     failed_response_count = 0
+    total_page_dates = 0
     for idx, row in enumerate(df_target.itertuples(), start=1):
         code = getattr(row, "종목코드")
         name = getattr(row, "종목명")
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": code,
-            "FID_INPUT_DATE_1": input_date,
-            "FID_ORG_ADJ_PRC": "0",
-            "FID_ETC_CLS_CODE": "0",
-        }
         try:
-            res = requests.get(url_kis, headers=headers, params=params, timeout=8)
-            payload = res.json() if res.text else {}
-            if res.status_code == 200 and payload.get("rt_cd") == "0":
-                daily_rows = payload.get("output2", [])
-                if not daily_rows:
-                    empty_response_count += 1
-                for daily in daily_rows:
-                    raw_date = str(daily.get("stck_bsop_date", ""))
-                    day = datetime.strptime(raw_date, "%Y%m%d").date() if raw_date else None
-                    if day and day >= cutoff:
-                        history_rows.append(_history_row_from_kis_daily(name, daily))
-            else:
-                failed_response_count += 1
-                if failed_response_count <= 3:
-                    print(f"[WARN] super-parse 응답 실패({name}/{code}): status={res.status_code} rt_cd={payload.get('rt_cd')} msg={payload.get('msg1')}")
+            rows, empty_pages, failed_pages, page_dates = _collect_kis_history_backfill(
+                name, code, url_kis, headers, input_date, cutoff, max_pages
+            )
+            history_rows.extend(rows)
+            empty_response_count += empty_pages
+            failed_response_count += failed_pages
+            total_page_dates += page_dates
             if idx % 25 == 0:
-                print(f"   - {idx}/{len(df_target)} 종목 수집 중...")
+                print(f"   - {idx}/{len(df_target)} 종목 수집 중... 누적 원천일자 {total_page_dates:,}개")
             time.sleep(0.05)
         except Exception as e:
             print(f"[WARN] super-parse 수집 실패({name}/{code}): {e}")

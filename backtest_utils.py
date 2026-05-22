@@ -5,6 +5,48 @@ PERF_COLS = ["날짜", "평가금액", "현금", "투자금액", "수익률(%)",
 POSITION_COLS = ["종목명", "진입일", "진입가", "수량", "매수금액", "현재가", "평가금액", "평가손익", "평가수익률", "보유일수", "상태"]
 CLOSED_COLS = ["진입일", "청산일", "종목명", "보유일수", "수량", "진입가", "청산가", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
 
+ADAPTIVE_THRESHOLD_PROFILES = {
+    "현재값": {
+        "severe_avg_ret": -1.2,
+        "severe_up_ratio": 0.32,
+        "severe_ma20_ratio": 0.38,
+        "weak_avg_ret": -0.35,
+        "weak_up_ratio": 0.43,
+        "weak_ma20_ratio": 0.46,
+        "attack_score": 65.0,
+        "attack_up_ratio": 0.52,
+        "attack_ma20_ratio": 0.52,
+        "leader_score": 58.0,
+        "leader_up_ratio": 0.48,
+    },
+    "v2 견고형": {
+        "severe_avg_ret": -1.3057,
+        "severe_up_ratio": 0.2851,
+        "severe_ma20_ratio": 0.3951,
+        "weak_avg_ret": -0.4783,
+        "weak_up_ratio": 0.4382,
+        "weak_ma20_ratio": 0.4688,
+        "attack_score": 62.406,
+        "attack_up_ratio": 0.5306,
+        "attack_ma20_ratio": 0.493,
+        "leader_score": 58.0355,
+        "leader_up_ratio": 0.4549,
+    },
+    "v3 상대강도": {
+        "severe_avg_ret": -1.3057,
+        "severe_up_ratio": 0.2851,
+        "severe_ma20_ratio": 0.3951,
+        "weak_avg_ret": -0.4783,
+        "weak_up_ratio": 0.4382,
+        "weak_ma20_ratio": 0.4688,
+        "attack_score": 62.406,
+        "attack_up_ratio": 0.5306,
+        "attack_ma20_ratio": 0.493,
+        "leader_score": 58.0355,
+        "leader_up_ratio": 0.4549,
+    },
+}
+
 
 def empty_capital_limited_result():
     return (
@@ -14,7 +56,7 @@ def empty_capital_limited_result():
     )
 
 
-def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_000, max_positions=3, start_date=None, score_mode="swing"):
+def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_000, max_positions=3, start_date=None, score_mode="swing", adaptive_profile="현재값"):
     """초기자금과 동시보유 제한을 둔 실제 포트폴리오형 스윙 시뮬레이션."""
     if df_trades.empty or df_history.empty:
         return empty_capital_limited_result()
@@ -50,6 +92,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         signal = trades[trades["보유일수"].eq(10)].copy()
     score_mode_key = str(score_mode).lower()
     adaptive_mode = score_mode_key in {"adaptive", "attack_defense", "dynamic"}
+    adaptive_rules = ADAPTIVE_THRESHOLD_PROFILES.get(str(adaptive_profile), ADAPTIVE_THRESHOLD_PROFILES["현재값"])
     score_col = "AI수급점수" if score_mode_key == "ai" else "스윙우선순위"
     fallback_score_col = "스윙우선순위" if score_col == "AI수급점수" else "AI수급점수"
     if score_col not in signal.columns and fallback_score_col in signal.columns:
@@ -65,6 +108,16 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
     market_frame = hist.copy()
     market_frame["전일종가"] = market_frame.groupby("종목명")["종가"].shift(1)
     market_frame["일간등락률"] = ((market_frame["종가"] / market_frame["전일종가"]) - 1.0) * 100.0
+    market_frame["일간등락률"] = pd.to_numeric(market_frame["일간등락률"], errors="coerce").replace([float("inf"), -float("inf")], pd.NA)
+    market_frame["5일수익률"] = market_frame.groupby("종목명")["종가"].pct_change(5) * 100.0
+    if "거래대금(억)" in market_frame.columns:
+        market_frame["거래대금_값"] = pd.to_numeric(market_frame["거래대금(억)"], errors="coerce")
+    elif "거래량" in market_frame.columns:
+        market_frame["거래대금_값"] = pd.to_numeric(market_frame["거래량"], errors="coerce")
+    else:
+        market_frame["거래대금_값"] = 0.0
+    market_frame["거래대금20"] = market_frame.groupby("종목명")["거래대금_값"].transform(lambda s: s.rolling(20, min_periods=5).mean())
+    market_frame["거래대금가속"] = (market_frame["거래대금_값"] / market_frame["거래대금20"]).replace([float("inf"), -float("inf")], pd.NA)
     market_frame["MA20"] = market_frame.groupby("종목명")["종가"].transform(lambda s: s.rolling(20, min_periods=5).mean())
     market_frame["MA20상회"] = market_frame["종가"] >= market_frame["MA20"]
     market_state = (
@@ -72,10 +125,13 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         .groupby(market_frame["일자_dt"].dt.normalize())
         .agg(
             평균등락률=("일간등락률", "mean"),
+            시장5일수익률=("5일수익률", "mean"),
             상승비율=("일간등락률", lambda s: float((s > 0).mean())),
             MA20상회비율=("MA20상회", "mean"),
         )
     )
+    entry_features = market_frame.set_index(["일자_dt", "종목명"])[["5일수익률", "거래대금가속"]].sort_index()
+    relative_strength_mode = str(adaptive_profile) == "v3 상대강도"
 
     def _target_positions_for_day(cur_date, todays):
         if not adaptive_mode:
@@ -89,13 +145,13 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         if not todays.empty and "진입유형" in todays.columns:
             has_leader = todays["진입유형"].astype(str).str.contains("주도", na=False).any()
 
-        if avg_ret <= -1.2 or up_ratio <= 0.32 or ma20_ratio <= 0.38:
+        if avg_ret <= adaptive_rules["severe_avg_ret"] or up_ratio <= adaptive_rules["severe_up_ratio"] or ma20_ratio <= adaptive_rules["severe_ma20_ratio"]:
             return 0, "방어"
-        if avg_ret <= -0.35 or up_ratio <= 0.43 or ma20_ratio <= 0.46:
+        if avg_ret <= adaptive_rules["weak_avg_ret"] or up_ratio <= adaptive_rules["weak_up_ratio"] or ma20_ratio <= adaptive_rules["weak_ma20_ratio"]:
             return 1, "선별"
-        if max_score >= 65 and up_ratio >= 0.52 and ma20_ratio >= 0.52:
+        if max_score >= adaptive_rules["attack_score"] and up_ratio >= adaptive_rules["attack_up_ratio"] and ma20_ratio >= adaptive_rules["attack_ma20_ratio"]:
             return int(max_positions), "공격"
-        if has_leader and max_score >= 58 and up_ratio >= 0.48:
+        if has_leader and max_score >= adaptive_rules["leader_score"] and up_ratio >= adaptive_rules["leader_up_ratio"]:
             return min(int(max_positions), 2), "공격대기"
         return min(int(max_positions), 1), "관찰"
 
@@ -120,6 +176,39 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             mark_price = _last_price(pos["종목명"], cur_date, pos["진입가"])
             total += mark_price * pos["수량"]
         return total
+
+    def _passes_relative_strength_filter(sig, cur_date, market_mode):
+        if not relative_strength_mode:
+            return True
+        if market_mode == "방어":
+            return False
+        name = str(sig.get("종목명", "")).strip()
+        try:
+            feature = entry_features.loc[(cur_date, name)]
+        except Exception:
+            return False
+        stock_ret5 = float(pd.to_numeric(feature.get("5일수익률", 0.0), errors="coerce") or 0.0)
+        volume_accel = float(pd.to_numeric(feature.get("거래대금가속", 0.0), errors="coerce") or 0.0)
+        state = market_state.loc[cur_date] if cur_date in market_state.index else None
+        market_ret5 = float(state.get("시장5일수익률", 0.0)) if state is not None else 0.0
+        relative_ret5 = stock_ret5 - market_ret5
+        score_value = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
+        is_leader = "주도" in str(sig.get("진입유형", ""))
+        if stock_ret5 <= -4.0:
+            return False
+        if stock_ret5 >= 18.0 and volume_accel >= 1.25:
+            return False
+        if volume_accel >= 4.0:
+            return False
+        if relative_ret5 >= 3.0 and stock_ret5 <= 14.0:
+            return True
+        if relative_ret5 >= 1.2 and volume_accel >= 0.85 and stock_ret5 <= 12.0:
+            return True
+        if is_leader and relative_ret5 >= 0.0 and volume_accel >= 0.75 and score_value >= 58.0:
+            return True
+        if score_value >= 66.0 and relative_ret5 >= -0.5 and volume_accel >= 1.0 and stock_ret5 <= 10.0:
+            return True
+        return False
 
     for cur_date in dates:
         cur_date = pd.to_datetime(cur_date).normalize()
@@ -168,6 +257,8 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
                 continue
             entry_price = float(pd.to_numeric(sig.get("진입가"), errors="coerce") or 0.0)
             if entry_price <= 0:
+                continue
+            if not _passes_relative_strength_filter(sig, cur_date, market_mode):
                 continue
             new_score = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
             swing_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
@@ -311,7 +402,7 @@ def compute_trade_quality_metrics(closed_trades):
     }
 
 
-def build_start_date_stability(df_trades, df_history, available_dates, selected_start_date, initial_cash, max_positions, limit=10):
+def build_start_date_stability(df_trades, df_history, available_dates, selected_start_date, initial_cash, max_positions, limit=10, score_mode="swing", adaptive_profile="현재값"):
     date_series = pd.Series(pd.to_datetime(available_dates, errors="coerce")).dropna()
     start_candidates = pd.Series(date_series.dt.date.unique()).sort_values()
     start_candidates = [d for d in start_candidates.tolist() if d >= selected_start_date]
@@ -324,6 +415,8 @@ def build_start_date_stability(df_trades, df_history, available_dates, selected_
             initial_cash=initial_cash,
             max_positions=max_positions,
             start_date=start_d,
+            score_mode=score_mode,
+            adaptive_profile=adaptive_profile,
         )
         if sim_perf.empty:
             continue
@@ -343,3 +436,75 @@ def build_start_date_stability(df_trades, df_history, available_dates, selected_
             "종료거래": int(len(sim_closed)),
         })
     return pd.DataFrame(rows)
+
+
+def build_adaptive_threshold_sensitivity(df_trades, df_history, available_dates, selected_start_date, initial_cash, max_positions, limit=5):
+    date_series = pd.Series(pd.to_datetime(available_dates, errors="coerce")).dropna()
+    start_candidates = pd.Series(date_series.dt.date.unique()).sort_values()
+    start_candidates = [d for d in start_candidates.tolist() if d >= selected_start_date]
+    if len(start_candidates) > int(limit):
+        positions = sorted(set([0, len(start_candidates) - 1] + [
+            round(i * (len(start_candidates) - 1) / max(1, int(limit) - 1)) for i in range(int(limit))
+        ]))
+        start_candidates = [start_candidates[i] for i in positions[: int(limit)]]
+
+    detail_rows = []
+    profile_names = ["현재값", "v2 견고형", "v3 상대강도"]
+    for profile_name in profile_names:
+        for start_d in start_candidates:
+            sim_perf, _, sim_closed = build_capital_limited_swing_sim(
+                df_trades,
+                df_history,
+                initial_cash=initial_cash,
+                max_positions=max_positions,
+                start_date=start_d,
+                score_mode="adaptive",
+                adaptive_profile=profile_name,
+            )
+            if sim_perf.empty:
+                continue
+            sim_perf = sim_perf.copy()
+            sim_perf["수익률(%)"] = pd.to_numeric(sim_perf.get("수익률(%)", 0.0), errors="coerce").fillna(0.0)
+            sim_equity = 1.0 + (sim_perf["수익률(%)"] / 100.0)
+            sim_mdd = float(((sim_equity / sim_equity.cummax()) - 1.0).min() * 100.0) if not sim_equity.empty else 0.0
+            sim_metrics = compute_trade_quality_metrics(sim_closed)
+            avg_positions = float(pd.to_numeric(sim_perf.get("보유종목수", 0), errors="coerce").fillna(0.0).mean())
+            detail_rows.append({
+                "프로필": profile_name,
+                "시작일": start_d.strftime("%Y-%m-%d"),
+                "전략수익률(%)": float(sim_perf["수익률(%)"].iloc[-1]),
+                "MDD(%)": sim_mdd,
+                "승률(%)": sim_metrics["win_rate"],
+                "거래당기대값(%)": sim_metrics["expectancy"],
+                "손익비": sim_metrics["payoff_ratio"],
+                "평균보유종목수": avg_positions,
+                "종료거래": int(len(sim_closed)),
+            })
+
+    detail = pd.DataFrame(detail_rows)
+    if detail.empty:
+        return pd.DataFrame(), detail
+    summary = (
+        detail.groupby("프로필", as_index=False)
+        .agg(
+            평균수익률=("전략수익률(%)", "mean"),
+            최저수익률=("전략수익률(%)", "min"),
+            최고수익률=("전략수익률(%)", "max"),
+            수익률표준편차=("전략수익률(%)", "std"),
+            평균MDD=("MDD(%)", "mean"),
+            최악MDD=("MDD(%)", "min"),
+            평균승률=("승률(%)", "mean"),
+            평균기대값=("거래당기대값(%)", "mean"),
+            평균보유종목수=("평균보유종목수", "mean"),
+        )
+    )
+    summary["수익률표준편차"] = summary["수익률표준편차"].fillna(0.0)
+    summary["견고성점수"] = (
+        summary["최저수익률"].clip(lower=-50, upper=100)
+        + summary["평균수익률"] * 0.35
+        + summary["평균기대값"] * 3.0
+        + summary["최악MDD"].clip(lower=-80, upper=0) * 0.45
+        - summary["수익률표준편차"].fillna(0.0) * 0.25
+    )
+    summary = summary.sort_values("견고성점수", ascending=False)
+    return summary, detail

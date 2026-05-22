@@ -1,13 +1,51 @@
+import json
+from pathlib import Path
+
 import altair as alt
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
 from backtest_utils import (
+    build_adaptive_threshold_sensitivity,
     build_capital_limited_swing_sim,
     build_start_date_stability,
     compute_trade_quality_metrics,
 )
+
+
+STRATEGY_SETTINGS_PATH = Path("data") / "strategy_settings.json"
+
+
+def _load_strategy_settings():
+    try:
+        if STRATEGY_SETTINGS_PATH.exists():
+            with STRATEGY_SETTINGS_PATH.open("r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_strategy_settings(settings):
+    try:
+        STRATEGY_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with STRATEGY_SETTINGS_PATH.open("w", encoding="utf-8") as f:
+            json.dump(settings, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def _parse_cash_amount(value, default=5_000_000):
+    try:
+        return int(str(value).replace(",", "").strip())
+    except Exception:
+        return default
+
+
+def _mark_strategy_date_manual():
+    st.session_state["strategy_quick_range"] = "직접 선택"
 
 
 def render_strategy_dashboard_tab(
@@ -28,6 +66,8 @@ def render_strategy_dashboard_tab(
     if not is_vip:
         show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
     else:
+        strategy_settings = _load_strategy_settings()
+        saved_initial_cash = _parse_cash_amount(strategy_settings.get("initial_cash", 5_000_000))
         df_swing_perf = load_swing_performance_safe()
         df_swing_trades = load_swing_trades_safe()
         available_dates = pd.to_datetime(df_swing_trades.get("진입일_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
@@ -77,25 +117,67 @@ def render_strategy_dashboard_tab(
                 min_value=min_date,
                 max_value=max_date,
                 key="strategy_backtest_start_date",
+                on_change=_mark_strategy_date_manual,
             )
-            bt_col1, bt_col2 = st.columns(2)
+            st.markdown(
+                """
+                <style>
+                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) {
+                    display: flex !important;
+                    flex-direction: row !important;
+                    flex-wrap: nowrap !important;
+                    gap: 0.5rem !important;
+                    align-items: flex-start !important;
+                }
+                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) > div[data-testid="column"]:first-child {
+                    flex: 1 1 auto !important;
+                    width: auto !important;
+                    min-width: 0 !important;
+                }
+                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) > div[data-testid="column"]:nth-child(2) {
+                    flex: 0 0 5.2rem !important;
+                    width: 5.2rem !important;
+                    min-width: 5.2rem !important;
+                }
+                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) div[data-testid="stButton"] > button {
+                    min-height: 3.05rem !important;
+                    white-space: nowrap !important;
+                    padding-left: 0.6rem !important;
+                    padding-right: 0.6rem !important;
+                }
+                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) div[data-testid="stTextInput"] input {
+                    min-height: 3.05rem !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            bt_col1, bt_col_save = st.columns([5, 1.2])
             with bt_col1:
-                cash_text = st.text_input("초기 투자금", value="5,000,000")
-                try:
-                    backtest_initial_cash = int(str(cash_text).replace(",", "").strip())
-                except Exception:
-                    backtest_initial_cash = 5_000_000
+                st.markdown('<span id="strategy-cash-row-anchor"></span>', unsafe_allow_html=True)
+                if "strategy_initial_cash_text" not in st.session_state:
+                    st.session_state["strategy_initial_cash_text"] = f"{saved_initial_cash:,}"
+                cash_text = st.text_input("초기 투자금", key="strategy_initial_cash_text")
+                backtest_initial_cash = _parse_cash_amount(cash_text, saved_initial_cash)
                 backtest_initial_cash = max(1_000_000, min(100_000_000, backtest_initial_cash))
                 st.caption(f"적용 금액: {backtest_initial_cash:,}원")
-            with bt_col2:
-                backtest_max_positions = st.number_input(
-                    "최대 보유 종목수",
-                    min_value=1,
-                    max_value=5,
-                    value=3,
-                    step=1,
-                    format="%d",
-                )
+            with bt_col_save:
+                st.markdown("<div style='height: 1.65rem;'></div>", unsafe_allow_html=True)
+                if st.button("저장", key="save_strategy_initial_cash", use_container_width=True):
+                    settings = _load_strategy_settings()
+                    settings["initial_cash"] = int(backtest_initial_cash)
+                    if _save_strategy_settings(settings):
+                        st.toast("초기 투자금을 저장했습니다.")
+                    else:
+                        st.warning("저장 실패")
+            backtest_max_positions = st.number_input(
+                "최대 보유 종목수",
+                min_value=1,
+                max_value=5,
+                value=3,
+                step=1,
+                format="%d",
+            )
             score_options = ["공격/방어", "스윙점수", "AI점수"]
             if hasattr(st, "segmented_control"):
                 score_mode_label = st.segmented_control(
@@ -115,6 +197,40 @@ def render_strategy_dashboard_tab(
                     help="공격/방어는 시장 상태와 후보 강도에 따라 보유 종목 수를 0~최대값으로 조절합니다.",
                 )
             score_mode = "adaptive" if score_mode_label == "공격/방어" else ("ai" if score_mode_label == "AI점수" else "swing")
+            adaptive_profile_label = "v1 기존"
+            adaptive_profile = "현재값"
+            if score_mode == "adaptive":
+                profile_options = ["v1 기존", "v2 견고형", "v3 상대강도"]
+                if hasattr(st, "segmented_control"):
+                    adaptive_profile_label = st.segmented_control(
+                        "공격/방어 프로필",
+                        profile_options,
+                        default="v2 견고형",
+                        key="strategy_adaptive_profile",
+                        help="v1은 기존 임계값, v2는 1년 데이터에서 시작일별 최저 수익률과 MDD를 함께 본 견고형 후보입니다.",
+                    )
+                else:
+                    adaptive_profile_label = st.radio(
+                        "공격/방어 프로필",
+                        profile_options,
+                        horizontal=True,
+                        index=1,
+                        key="strategy_adaptive_profile",
+                        help="v1은 기존 임계값, v2는 1년 데이터에서 시작일별 최저 수익률과 MDD를 함께 본 견고형 후보입니다.",
+                    )
+                adaptive_profile = "현재값" if adaptive_profile_label == "v1 기존" else adaptive_profile_label
+                with st.expander("v1/v2 변경 기준", expanded=False):
+                    st.markdown(
+                        """
+                        <div style="font-size:0.82rem; line-height:1.55; color:#AAB2C5;">
+                        <b>v1 기존</b>: 최근 구간 수익률은 좋았지만 일부 과거 시작일에서 크게 깨진 기존 임계값입니다.<br>
+                        <b>v2 견고형</b>: 1년 데이터에서 시작일별 최저 수익률 방어를 더 중시한 개별주 중심 후보입니다.<br>
+                        <b>v3 상대강도</b>: v2 후보 중 최근 5일 시장 대비 강하고 거래대금이 붙은 종목만 진입하는 필터형입니다.
+                        </div>
+                        """
+                        ,
+                        unsafe_allow_html=True,
+                    )
             portfolio_perf, portfolio_positions, portfolio_closed = build_capital_limited_swing_sim(
                 df_swing_trades,
                 df_history,
@@ -122,6 +238,7 @@ def render_strategy_dashboard_tab(
                 max_positions=backtest_max_positions,
                 start_date=selected_start_date,
                 score_mode=score_mode,
+                adaptive_profile=adaptive_profile,
             )
         else:
             portfolio_perf, portfolio_positions, portfolio_closed = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -304,8 +421,11 @@ def render_strategy_dashboard_tab(
                 st.caption("승률은 단독 판단 지표가 아닙니다. 거래당 기대값이 플러스이고 평균수익이 평균손실보다 충분히 크면 승률이 50% 미만이어도 전략성이 있을 수 있습니다. 5거래일 평균수익은 매수 후 5거래일에 청산된 거래들의 평균 수익률입니다.")
 
                 st.markdown("<br>", unsafe_allow_html=True)
+                chart_df["날짜_label"] = pd.to_datetime(chart_df["날짜_dt"], errors="coerce").dt.strftime("%y/%m/%d")
+                chart_df = chart_df.dropna(subset=["날짜_label"]).copy()
+                chart_date_order = chart_df.sort_values("날짜_dt")["날짜_label"].drop_duplicates().tolist()
                 df_melt = chart_df.melt(
-                    id_vars=['날짜_dt'],
+                    id_vars=['날짜_dt', '날짜_label'],
                     value_vars=['전략 누적수익률', 'KOSPI 누적수익률', 'NASDAQ 누적수익률'],
                     var_name='포트폴리오',
                     value_name='차트수익률'
@@ -317,9 +437,10 @@ def render_strategy_dashboard_tab(
                 })
                 base_chart = alt.Chart(df_melt).mark_line(point=True).encode(
                     x=alt.X(
-                        '날짜_dt:T',
+                        '날짜_label:O',
                         title=None,
-                        axis=alt.Axis(format='%y/%m/%d', labelAngle=-45),
+                        sort=chart_date_order,
+                        axis=alt.Axis(labelAngle=-45, labelLimit=72),
                     ),
                     y=alt.Y('차트수익률:Q', title="누적 수익률 (%)"),
                     color=alt.Color(
@@ -354,6 +475,8 @@ def render_strategy_dashboard_tab(
                                 backtest_initial_cash,
                                 backtest_max_positions,
                                 limit=10,
+                                score_mode=score_mode,
+                                adaptive_profile=adaptive_profile,
                             )
                             if stability_df.empty:
                                 st.info("분석 가능한 시작일 데이터가 부족합니다.")
@@ -417,6 +540,114 @@ def render_strategy_dashboard_tab(
                                 )
                         except Exception as e:
                             st.warning(f"시작일 안정성 분석 중 오류가 발생했습니다: {e}")
+
+                with st.expander("공격/방어 민감도 점검", expanded=False):
+                    st.caption("v1, v2, v3를 같은 시작일 묶음으로 비교해 성과 편차와 과최적화 가능성을 확인합니다. 버튼을 눌렀을 때만 계산합니다.")
+                    if st.button("공격/방어 임계값 민감도 분석 실행", use_container_width=True):
+                        try:
+                            sensitivity_summary, sensitivity_detail = build_adaptive_threshold_sensitivity(
+                                df_swing_trades,
+                                df_history,
+                                available_dates,
+                                selected_start_date,
+                                backtest_initial_cash,
+                                backtest_max_positions,
+                                limit=5,
+                            )
+                            if sensitivity_summary.empty:
+                                st.info("민감도 분석 가능한 데이터가 부족합니다.")
+                            else:
+                                best_row = sensitivity_summary.iloc[0]
+                                current_row = sensitivity_summary[sensitivity_summary["프로필"].eq("현재값")]
+                                current_score = float(current_row["견고성점수"].iloc[0]) if not current_row.empty else 0.0
+                                best_score = float(best_row.get("견고성점수", 0.0))
+                                overfit_gap = best_score - current_score
+                                if best_row["프로필"] == "현재값" and float(best_row.get("최저수익률", 0.0)) > 0:
+                                    overfit_label = "양호"
+                                    overfit_color = "#36C06A"
+                                elif overfit_gap <= 12:
+                                    overfit_label = "점검"
+                                    overfit_color = "#FCD34D"
+                                else:
+                                    overfit_label = "민감도 높음"
+                                    overfit_color = "#E04B4B"
+                                st.markdown(
+                                    f"""
+                                    <div class="stability-panel">
+                                        <div class="stability-grid">
+                                            <div class="stability-card">
+                                                <div class="stability-label">최상위 프로필</div>
+                                                <div class="stability-value">{best_row['프로필']}</div>
+                                            </div>
+                                            <div class="stability-card">
+                                                <div class="stability-label">최상위 평균수익률</div>
+                                                <div class="stability-value">{float(best_row['평균수익률']):+.2f}%</div>
+                                            </div>
+                                            <div class="stability-card">
+                                                <div class="stability-label">최상위 최저수익률</div>
+                                                <div class="stability-value">{float(best_row['최저수익률']):+.2f}%</div>
+                                            </div>
+                                            <div class="stability-card">
+                                                <div class="stability-label">최상위 최악 MDD</div>
+                                                <div class="stability-value">{float(best_row['최악MDD']):+.2f}%</div>
+                                            </div>
+                                        </div>
+                                        <div class="stability-verdict">
+                                            <div>
+                                                <div class="stability-verdict-title">과최적화 보조 판정</div>
+                                                <div class="stability-verdict-value" style="color:{overfit_color};">{overfit_label}</div>
+                                            </div>
+                                            <div class="stability-verdict-meta">
+                                                현재값 대비 견고성 차이 {overfit_gap:+.2f}<br>
+                                                분석 프로필 {len(sensitivity_summary):,}개
+                                            </div>
+                                        </div>
+                                    </div>
+                                    """,
+                                    unsafe_allow_html=True,
+                                )
+                                sensitivity_cols = [
+                                    "프로필", "견고성점수", "평균수익률", "최저수익률", "최고수익률",
+                                    "수익률표준편차", "최악MDD", "평균승률", "평균기대값", "평균보유종목수"
+                                ]
+                                sensitivity_cols = [c for c in sensitivity_cols if c in sensitivity_summary.columns]
+                                st.dataframe(
+                                    sensitivity_summary[sensitivity_cols].style.format({
+                                        "견고성점수": "{:.2f}",
+                                        "평균수익률": "{:+.2f}%",
+                                        "최저수익률": "{:+.2f}%",
+                                        "최고수익률": "{:+.2f}%",
+                                        "수익률표준편차": "{:.2f}",
+                                        "최악MDD": "{:+.2f}%",
+                                        "평균승률": "{:.1f}%",
+                                        "평균기대값": "{:+.2f}%",
+                                        "평균보유종목수": "{:.2f}",
+                                    }),
+                                    hide_index=True,
+                                    column_order=sensitivity_cols,
+                                    width="stretch",
+                                )
+                                with st.expander("시작일별 상세", expanded=False):
+                                    detail_cols = [
+                                        "프로필", "시작일", "전략수익률(%)", "MDD(%)",
+                                        "승률(%)", "거래당기대값(%)", "손익비", "평균보유종목수", "종료거래"
+                                    ]
+                                    detail_cols = [c for c in detail_cols if c in sensitivity_detail.columns]
+                                    st.dataframe(
+                                        sensitivity_detail[detail_cols].style.format({
+                                            "전략수익률(%)": "{:+.2f}%",
+                                            "MDD(%)": "{:+.2f}%",
+                                            "승률(%)": "{:.1f}%",
+                                            "거래당기대값(%)": "{:+.2f}%",
+                                            "손익비": "{:.2f}x",
+                                            "평균보유종목수": "{:.2f}",
+                                        }),
+                                        hide_index=True,
+                                        column_order=detail_cols,
+                                        width="stretch",
+                                    )
+                        except Exception as e:
+                            st.warning(f"공격/방어 민감도 분석 중 오류가 발생했습니다: {e}")
 
                 if not new_candidates.empty:
                     today_view = new_candidates.copy()
