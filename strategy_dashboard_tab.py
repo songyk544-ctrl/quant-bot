@@ -37,8 +37,9 @@ def render_strategy_dashboard_tab(
             min_date = available_dates.min().date()
             hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
             max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
+            default_start_date = max(min_date, min(max_date, (pd.Timestamp(max_date) - pd.Timedelta(days=31)).date()))
             if "strategy_backtest_start_date" not in st.session_state:
-                st.session_state["strategy_backtest_start_date"] = min_date
+                st.session_state["strategy_backtest_start_date"] = default_start_date
             current_start = pd.to_datetime(st.session_state.get("strategy_backtest_start_date", min_date), errors="coerce")
             current_start = current_start.date() if not pd.isna(current_start) else min_date
             st.session_state["strategy_backtest_start_date"] = max(min_date, min(max_date, current_start))
