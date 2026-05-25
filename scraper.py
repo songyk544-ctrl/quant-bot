@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import requests
-import json
 import time
 from datetime import datetime, timedelta, timezone 
 from bs4 import BeautifulSoup, FeatureNotFound
@@ -24,43 +23,25 @@ from news_utils import (
     is_similar_title as _is_similar_title,
     score_news_candidate as _score_news_candidate_base,
 )
+from services.kis_client import (
+    URL_BASE,
+    collect_kis_history_backfill as _collect_kis_history_backfill,
+    get_kis_access_token,
+    resolve_kis_credentials,
+    safe_api_float,
+)
+from services.backtest_generation_service import build_backtest_candidate_scores
+from services.scoring_service import (
+    blend_quant_qual_score,
+    calculate_dynamic_score,
+    calculate_qualitative_score,
+    calculate_rsi,
+    calculate_trend_quality,
+    score_disclosures_and_reports,
+)
+from services.telegram_service import build_telegram_action_message, send_telegram_message
 
-URL_BASE = "https://openapi.koreainvestment.com:9443"
-KIS_APP_KEY = os.environ.get("KIS_APP_KEY")
-KIS_APP_SECRET = os.environ.get("KIS_APP_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-
-def resolve_kis_credentials():
-    """
-    KIS 키 로딩 우선순위:
-    1) OS 환경변수
-    2) .streamlit/secrets.toml
-    3) secrets.toml
-    """
-    app_key = os.environ.get("KIS_APP_KEY")
-    app_secret = os.environ.get("KIS_APP_SECRET")
-    if app_key and app_secret:
-        return app_key, app_secret
-
-    candidate_files = [
-        Path(".streamlit/secrets.toml"),
-        Path("secrets.toml"),
-    ]
-    for p in candidate_files:
-        try:
-            if p.exists():
-                with p.open("rb") as f:
-                    parsed = tomllib.load(f)
-                app_key = parsed.get("KIS_APP_KEY")
-                app_secret = parsed.get("KIS_APP_SECRET")
-                if app_key and app_secret:
-                    return str(app_key), str(app_secret)
-        except Exception:
-            continue
-    return None, None
 
 def resolve_gemini_api_key():
     """
@@ -424,60 +405,12 @@ def build_swing_backtest_files(top_n=3, horizons=SWING_HORIZONS, primary_horizon
         return pd.DataFrame(), pd.DataFrame()
 
     replay_score = build_replay_score_trend(top_n=top_n)
-    score = pd.DataFrame()
     actual_score = pd.DataFrame()
     if csv_exists("score_trend.csv"):
         actual_score = load_score_trend_safe()
-        if not actual_score.empty and "날짜" in actual_score.columns:
-            actual_score = actual_score.copy()
-            actual_score["추천소스"] = "실제스냅샷"
-    if not replay_score.empty:
-        replay_score = replay_score.copy()
-        replay_score["추천소스"] = "리플레이"
-    if not actual_score.empty and not replay_score.empty:
-        # 실제 일일 스냅샷을 우선하되, 과거 스냅샷에 신규후보가 없던 날짜는
-        # 누적 history 기반 replay로 보강합니다. 이렇게 해야 백테스트 기간이
-        # 5월 8일처럼 첫 실제 신규후보 발생일로 잘리지 않습니다.
-        score = pd.concat([actual_score, replay_score], ignore_index=True, sort=False)
-    elif not actual_score.empty:
-        score = actual_score
-    else:
-        score = replay_score
     prices = _load_history_prices()
+    score, backtest_start_date = build_backtest_candidate_scores(actual_score, replay_score, top_n=top_n)
     if score.empty or prices.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    score = score.copy()
-    score["순위"] = pd.to_numeric(score["순위"], errors="coerce")
-    score["AI수급점수"] = pd.to_numeric(score["AI수급점수"], errors="coerce")
-    score["날짜_dt"] = pd.to_datetime(score["날짜"], errors="coerce")
-    score = score.dropna(subset=["날짜_dt", "종목명", "순위"])
-    backtest_start_date = score["날짜_dt"].min().normalize() if not score.empty else None
-    day_slices = []
-    for _, day_df in score.groupby("날짜_dt", sort=True):
-        day = day_df.copy()
-        if "추천소스" in day.columns:
-            actual_day = day[day["추천소스"].astype(str) == "실제스냅샷"].copy()
-            if not actual_day.empty and "매수후보" in actual_day.columns and (actual_day["매수후보"].astype(str) == "신규후보").any():
-                day = actual_day
-            else:
-                replay_day = day[day["추천소스"].astype(str) == "리플레이"].copy()
-                if not replay_day.empty:
-                    day = replay_day
-        if "매수후보" in day.columns and (day["매수후보"].astype(str) == "신규후보").any():
-            picked = day[day["매수후보"].astype(str) == "신규후보"].copy()
-            if "스윙우선순위" in picked.columns:
-                picked = picked.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
-            else:
-                picked = picked.sort_values(["순위", "AI수급점수"], ascending=[True, False])
-        else:
-            # 실제/리플레이 양쪽 모두 신규후보가 없던 날은 신규 매수가 없던 날로 봅니다.
-            continue
-        picked = picked.reset_index(drop=True)
-        picked["순위"] = range(1, len(picked) + 1)
-        day_slices.append(picked.head(int(top_n)))
-    score = pd.concat(day_slices, ignore_index=True) if day_slices else pd.DataFrame()
-    if score.empty:
         return pd.DataFrame(), pd.DataFrame()
 
     price_by_stock = {
@@ -1049,78 +982,9 @@ def load_dart_stock_to_corp_map():
         _DART_STOCK_TO_CORP = {}
     return _DART_STOCK_TO_CORP
 
-def get_kis_access_token():
-    kis_app_key, kis_app_secret = resolve_kis_credentials()
-    if not kis_app_key or not kis_app_secret:
-        return None
-    url = f"{URL_BASE}/oauth2/tokenP"
-    body = {"grant_type": "client_credentials", "appkey": kis_app_key, "appsecret": kis_app_secret}
-    try:
-        res = requests.post(url, headers={"content-type": "application/json"}, data=json.dumps(body), timeout=10)
-        return res.json().get("access_token")
-    except:
-        return None
-
 def safe_float(text):
     try: return float(text.replace(',', '').replace('%', '').strip())
     except: return 0.0
-
-def safe_api_float(val):
-    try: return float(val) if val else 0.0
-    except: return 0.0
-
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1: return 50.0
-    diffs = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-    gains = [d if d > 0 else 0 for d in diffs]
-    losses = [-d if d < 0 else 0 for d in diffs]
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    for i in range(period, len(diffs)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-    if avg_loss == 0: return 100.0
-    return 100.0 - (100.0 / (1.0 + (avg_gain / avg_loss)))
-
-def calculate_trend_quality(closes):
-    vals = []
-    for x in closes:
-        try:
-            val = float(x)
-        except Exception:
-            continue
-        if val > 0:
-            vals.append(val)
-    if not vals:
-        return {"ma5": 0.0, "ma10": 0.0, "ma20": 0.0, "aligned": False, "score": 0.0}
-    current = vals[0]
-    ma5 = sum(vals[:5]) / min(5, len(vals))
-    ma10 = sum(vals[:10]) / min(10, len(vals))
-    ma20 = sum(vals[:20]) / min(20, len(vals))
-    prev5 = sum(vals[5:10]) / len(vals[5:10]) if len(vals) >= 10 else ma5
-    prev10 = sum(vals[10:20]) / len(vals[10:20]) if len(vals) >= 20 else ma10
-
-    above20 = current >= ma20
-    short_above_mid = ma5 >= ma10
-    mid_above_long = ma10 >= ma20
-    short_slope = ma5 >= prev5
-    mid_slope = ma10 >= prev10
-    aligned = bool(above20 and short_above_mid and mid_above_long)
-    score = (
-        (20 if above20 else 0)
-        + (20 if short_above_mid else 0)
-        + (20 if mid_above_long else 0)
-        + (20 if short_slope else 0)
-        + (20 if mid_slope else 0)
-    )
-    return {
-        "ma5": round(ma5, 2),
-        "ma10": round(ma10, 2),
-        "ma20": round(ma20, 2),
-        "aligned": aligned,
-        "score": round(float(score), 2),
-    }
-
 
 def enrich_trend_quality_from_history(df_final):
     """history.csv의 최근 종가로 정배열/추세품질을 재계산해 캐시 모드에서도 같은 필터를 적용."""
@@ -1158,201 +1022,6 @@ def enrich_trend_quality_from_history(df_final):
     out["MA20"] = pd.to_numeric(ma20.fillna(out["MA20"] if "MA20" in out.columns else 0.0), errors="coerce").fillna(0.0)
     out["추세상승"] = (out["추세품질점수"] >= 55) & (out["MA5"] >= out["MA20"])
     return out
-
-# 🔥 [수급 로직 업데이트] 외인 비중 대폭 축소, 기관(투신/사모/연기금) 비중 극대화 (눌림목 최적화)
-def calculate_dynamic_score(
-    f_str, p_str, t_str, pef_str,
-    vol_surge, rsi_val, gap_20,
-    foreign_streak, pension_streak,
-    turnover_rate, is_ma20_rising,
-    per_val, roe_val, current_vix,
-    dip_buying_ratio=0.0
-):
-    
-    if current_vix < 25:
-        # 🚀 상승장: V41.1 눌림목 + 모멘텀 복원
-        zombie_penalty = 0 
-        fund_score = 0
-        
-        # 기관(투신4, 사모4, 연기금2)에 압도적 가중치, 외인(0.5)은 보조 지표로 강등
-        raw_str_sum = (t_str * 4) + (pef_str * 4) + (p_str * 2) + (f_str * 0.5)
-        strength_score = max(0, min(20, raw_str_sum * 2))
-        streak_score = max(0, min(10, (pension_streak * 1.5) + (foreign_streak * 0.5)))
-        supply_score = strength_score + streak_score # 최대 30점
-
-        # 모멘텀(최대 45): V40.4 수준으로 강하게 복원
-        turnover_score = 20 if turnover_rate >= 10 else (10 if turnover_rate >= 5 else 0)
-        v_score = 10 if vol_surge >= 150 else 0
-        r_score = 15 if 60 <= rsi_val <= 85 else (5 if 50 <= rsi_val < 60 else 0)
-        momentum_score = turnover_score + v_score + r_score
-
-        # 이격도/음봉매집 결합(최대 25)
-        if 102 <= gap_20 <= 108:
-            tech_score = 10
-            if float(dip_buying_ratio) >= 0.6:
-                tech_score += 15
-        elif 98 <= gap_20 < 102:
-            tech_score = 5
-            if float(dip_buying_ratio) >= 0.6:
-                tech_score += 15
-        else:
-            tech_score = 0
-
-        return max(0, min(100, int(supply_score + momentum_score + tech_score)))
-        
-    else:
-        # 🛡️ 하락장: 기관 방어 스윙 (연기금 주도, 투신/사모 보조)
-        zombie_penalty = -30 if turnover_rate < 1.5 else 0 
-        
-        # 연기금(5) 압도적 방어력, 투신/사모(2) 단가 관리 포착, 외인(0.5) 강등
-        raw_str_sum = (p_str * 5) + (t_str * 2) + (pef_str * 2) + (f_str * 0.5)
-        strength_score = max(0, min(20, raw_str_sum * 2))
-        streak_score = max(0, min(10, (pension_streak * 2.5) + (foreign_streak * 0.5)))
-        supply_score = strength_score + streak_score # 최대 30점
-
-        turnover_score = 5 if turnover_rate >= 3 else 0
-        v_score = 5 if vol_surge >= 100 else 0
-        r_score = 10 if 45 <= rsi_val <= 60 else 0
-        momentum_score = turnover_score + v_score + r_score # 최대 20점
-
-        if is_ma20_rising:
-            tech_score = 20 if 98 <= gap_20 <= 103 else (10 if 103 < gap_20 <= 108 else 0) # 최대 20점
-        else:
-            tech_score = -20 
-
-        fund_score = (15 if roe_val >= 15 else (10 if roe_val >= 8 else 0)) + (15 if 0 < per_val <= 15 else 0)
-        if per_val <= 0: 
-            fund_score -= 20 
-
-    return max(0, min(100, int(supply_score + momentum_score + tech_score + fund_score + zombie_penalty)))
-
-def calculate_qualitative_score(
-    sector_name, per_val, roe_val, foreign_streak, pension_streak,
-    macro_news_text, macro_recency_score=50.0, repeated_topics_text="", return_details=False
-):
-    """
-    정성 점수(0~100): 뉴스-섹터 정합성 + 펀더멘털 힌트 + 연속 순매수 안정성
-    데이터가 부족하면 기본 50점(중립)을 유지합니다.
-    """
-    score = 50.0
-    text = (macro_news_text or "").lower()
-    topic_text = (repeated_topics_text or "").lower()
-    sector = (sector_name or "분류안됨").lower()
-
-    # 시황 뉴스 반감기(최신 뉴스일수록 영향력↑, 오래된 뉴스일수록 영향력↓)
-    decay_factor = max(0.35, min(1.0, float(macro_recency_score) / 100.0))
-
-    # 시황 뉴스와 섹터의 키워드 정합성
-    sector_theme_map = {
-        "반도체": ["반도체", "ai", "hbm", "메모리"],
-        "전기": ["전력", "전기", "배터리", "2차전지", "ess"],
-        "건설": ["건설", "인프라", "플랜트", "수주"],
-        "화장품": ["화장품", "소비", "면세", "중국 소비"],
-        "제약": ["제약", "바이오", "임상", "허가"],
-        "방산": ["방산", "국방", "수출"],
-        "조선": ["조선", "선박", "해운", "lng"],
-        "기계": ["기계", "자동화", "설비투자"],
-        "증권": ["증권", "거래대금", "금리", "유동성"],
-    }
-    positive_tone_keys = ["호재", "상향", "증가", "개선", "수주", "체결", "흑자", "서프라이즈", "기대", "확대"]
-    neutral_tone_keys = ["전망", "관측", "분석", "주목", "설명", "동향", "점검", "리포트", "이슈"]
-    negative_tone_keys = ["긴축", "관세", "하락", "리스크", "소송", "악재", "부진", "감소", "충격", "약세"]
-
-    positive_hits = sum(1 for k in positive_tone_keys if k in text)
-    neutral_hits = sum(1 for k in neutral_tone_keys if k in text)
-    negative_hits = sum(1 for k in negative_tone_keys if k in text)
-
-    # 테마 매칭 점수는 "호재 톤일 때 강화 / 중립 톤일 때 약화"시켜 군집 편향을 완화
-    if positive_hits > negative_hits:
-        theme_tone_mult = 1.0
-    elif neutral_hits >= max(1, positive_hits):
-        theme_tone_mult = 0.35
-    else:
-        theme_tone_mult = 0.55
-
-    theme_boost = 0.0
-    for sector_key, keywords in sector_theme_map.items():
-        if sector_key in sector and any(k.lower() in text for k in keywords):
-            theme_boost = 8 * decay_factor * theme_tone_mult
-            break
-    # 테마 가점 상한(캡): 설명형 기사 과다 노출 시 과도한 누적 방지
-    score += min(4.5, theme_boost)
-
-    # 리스크 키워드 감점
-    if negative_hits > 0:
-        score -= 4 * decay_factor
-
-    # 반복 이슈 반영(최신 뉴스와 분리된 지속성 시그널)
-    if any(k in topic_text for k in ["실적", "수주", "정책", "수급"]):
-        score += 3 * decay_factor
-    if any(k in topic_text for k in ["리스크", "하락", "긴축", "관세"]):
-        score -= 3 * decay_factor
-
-    # 펀더멘털 보정 (정량에서 이미 반영되지만 정성 관점에서 소폭 보정)
-    if roe_val >= 15:
-        score += 5
-    elif roe_val >= 8:
-        score += 2
-    else:
-        score -= 2
-
-    if 0 < per_val <= 15:
-        score += 3
-    elif per_val <= 0:
-        score -= 5
-
-    # 연속 순매수 안정성
-    score += min(5, pension_streak * 0.8)
-    score += min(2, foreign_streak * 0.2)
-
-    final_score = max(0, min(100, score))
-    if not return_details:
-        return final_score
-    details = {
-        "theme_boost_raw": round(float(theme_boost), 3),
-        "theme_boost_applied": round(float(min(4.5, theme_boost)), 3),
-        "theme_tone_mult": round(float(theme_tone_mult), 3),
-        "positive_hits": int(positive_hits),
-        "neutral_hits": int(neutral_hits),
-        "negative_hits": int(negative_hits),
-        "decay_factor": round(float(decay_factor), 3),
-    }
-    return final_score, details
-
-def blend_quant_qual_score(quant_score, qual_score, current_vix):
-    """
-    방식 B(가감형)만 사용:
-      Final = Quant + clamp((Qual-50)*sensitivity, -limit, +limit)
-    """
-    if current_vix < 25:
-        sensitivity = 0.4
-        limit = 10
-        mode = "상승장 (보수적 반영)"
-    else:
-        sensitivity = 0.6
-        limit = 20
-        mode = "하락장 (민감 반영)"
-
-    qual_adj = (qual_score - 50) * sensitivity
-    qual_adj = max(-limit, min(limit, qual_adj))
-    final_score = max(0, min(100, quant_score + qual_adj))
-    return round(final_score, 2), round(qual_adj, 2), mode
-
-def score_disclosures_and_reports(disclosures, reports):
-    """공시/리포트 이벤트를 점수화해 정성점수(0~100)로 반환."""
-    score = 50.0
-    positive_keys = ["실적", "수주", "계약", "자기주식", "소각", "기업설명회", "가이던스", "상향", "증가"]
-    negative_keys = ["소송", "정정", "하향", "감소", "리스크", "악화", "손실"]
-
-    for text in disclosures + reports:
-        t = str(text)
-        if any(k in t for k in positive_keys):
-            score += 3.5
-        if any(k in t for k in negative_keys):
-            score -= 4.0
-
-    # 이벤트 과다 누적 방지
-    return max(20.0, min(80.0, score))
 
 def apply_enhanced_qual_for_top_candidates(df_final, current_vix, top_n=40):
     """
@@ -2075,149 +1744,6 @@ def get_target_stock_list():
             time.sleep(0.5) 
     return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
 
-def send_telegram_message(text):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    clean_text = text.replace('**', '*') 
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": clean_text[:4000]}
-    try:
-        requests.post(url, data=data, timeout=10)
-    except Exception as e:
-        print(f"[WARN] 텔레그램 전송 실패: {e}")
-
-def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated):
-    dashboard_url = "https://ge82mjcdoxngn3p6udv5sy.streamlit.app"
-    session_label = "장마감" if is_eod_updated else "장중"
-    lines = [
-        f"🔔 AlphaPulse {session_label} 액션 브리프",
-        f"🗓 {now_kst.strftime('%Y-%m-%d %H:%M')} KST",
-        f"📊 VIX {current_vix:.2f} / {regime}",
-        "",
-    ]
-
-    def _fmt_money(v):
-        try:
-            return f"{float(v):,.0f}원"
-        except Exception:
-            return "-"
-
-    def _fmt_score(v):
-        try:
-            return f"{float(v):.1f}"
-        except Exception:
-            return "-"
-
-    def _compact_name(v, limit=12):
-        name = str(v or "-").strip()
-        return name if len(name) <= limit else name[:limit - 1] + "…"
-
-    df = df_final.copy() if df_final is not None else pd.DataFrame()
-    if not df.empty:
-        for c in ["스윙우선순위", "AI수급점수", "주도주점수", "수급품질점수", "현재가"]:
-            if c in df.columns:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
-
-    open_view = pd.DataFrame()
-    try:
-        if csv_exists("swing_trades.csv"):
-            trades = read_table_prefer_db("swing_trades.csv", on_bad_lines="skip")
-            if not trades.empty and {"청산방식", "상태", "종목명", "진입일"}.issubset(trades.columns):
-                signal = trades[
-                    trades["청산방식"].astype(str).eq("시그널")
-                    & trades["상태"].astype(str).str.lower().eq("open")
-                ].copy()
-                if not signal.empty:
-                    signal["진입일_dt"] = pd.to_datetime(signal["진입일"], errors="coerce")
-                    signal = signal.sort_values(["종목명", "진입일_dt"]).drop_duplicates("종목명", keep="last")
-                    merge_cols = [
-                        c for c in ["종목명", "매수후보", "진입유형", "전략슬리브", "스윙우선순위", "매도점검", "현재가"]
-                        if c in df.columns
-                    ]
-                    open_view = pd.merge(signal, df[merge_cols], on="종목명", how="left") if merge_cols else signal
-                    for base_col in ["매수후보", "진입유형", "전략슬리브", "스윙우선순위", "매도점검", "현재가"]:
-                        x_col = f"{base_col}_x"
-                        y_col = f"{base_col}_y"
-                        if y_col in open_view.columns:
-                            open_view[base_col] = open_view[y_col].combine_first(open_view[x_col]) if x_col in open_view.columns else open_view[y_col]
-                        elif x_col in open_view.columns:
-                            open_view[base_col] = open_view[x_col]
-    except Exception as e:
-        print(f"[WARN] 텔레그램 보유 포지션 구성 실패: {e}")
-
-    risk_keywords = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
-    if not open_view.empty:
-        open_view["매도점검"] = open_view.get("매도점검", "보유/관찰").fillna("보유/관찰").astype(str)
-        sell_alerts = open_view[open_view["매도점검"].apply(lambda x: any(k in x for k in risk_keywords))].copy()
-        hold_view = open_view.drop(sell_alerts.index, errors="ignore").copy()
-
-        lines.append("🚨 매도/축소 점검")
-        if sell_alerts.empty:
-            lines.append("- 없음")
-        else:
-            for i, (_, row) in enumerate(sell_alerts.head(3).iterrows(), start=1):
-                lines.extend([
-                    f"{i}. {_compact_name(row.get('종목명'))}",
-                    f"   점검: {row.get('매도점검','-')}",
-                    f"   진입 {row.get('진입일','-')} · 현재 {_fmt_money(row.get('현재가', 0))}",
-                ])
-        lines.append("")
-
-        lines.append("✅ 보유 유지")
-        if hold_view.empty:
-            lines.append("- 없음")
-        else:
-            if "스윙우선순위" not in hold_view.columns:
-                hold_view["스윙우선순위"] = 0.0
-            hold_view["스윙우선순위"] = pd.to_numeric(hold_view["스윙우선순위"], errors="coerce").fillna(0.0)
-            hold_view = hold_view.sort_values("스윙우선순위", ascending=False)
-            for i, (_, row) in enumerate(hold_view.head(3).iterrows(), start=1):
-                lines.extend([
-                    f"{i}. {_compact_name(row.get('종목명'))}",
-                    f"   {row.get('진입유형','-')} · 스윙 {_fmt_score(row.get('스윙우선순위', 0.0))}",
-                    f"   점검: {row.get('매도점검','보유/관찰')}",
-                ])
-        lines.append("")
-    else:
-        lines.append("✅ 보유 포지션")
-        lines.append("- 진행 중인 시그널 포지션 없음")
-        lines.append("")
-
-    top_candidate = None
-    if df.empty or "매수후보" not in df.columns:
-        candidates = pd.DataFrame()
-    else:
-        candidates = df[df["매수후보"].astype(str).eq("신규후보")].copy()
-        if candidates.empty:
-            candidates = pd.DataFrame()
-        else:
-            candidates = candidates.sort_values(["스윙우선순위", "AI수급점수"], ascending=[False, False])
-            top_candidate = candidates.iloc[0]
-
-    lines.append("🎯 오늘 1순위")
-    if top_candidate is None:
-        lines.append("- 신규 매수 후보 없음")
-    else:
-        lines.extend([
-            f"1. {_compact_name(top_candidate.get('종목명'))}",
-            f"   {top_candidate.get('전략슬리브','-')} · {top_candidate.get('진입유형','-')}",
-            f"   스윙 {_fmt_score(top_candidate.get('스윙우선순위', 0.0))} · 현재 {_fmt_money(top_candidate.get('현재가', 0))}",
-        ])
-    lines.append("")
-
-    lines.append("🆕 신규 후보군")
-    if candidates.empty:
-            lines.append("- 없음")
-    else:
-        for i, (_, row) in enumerate(candidates.head(3).iterrows(), start=1):
-            lines.extend([
-                f"{i}. {_compact_name(row.get('종목명'))}",
-                f"   {row.get('전략슬리브','-')} · {row.get('진입유형','-')}",
-                f"   스윙 {_fmt_score(row.get('스윙우선순위', 0.0))} · 현재 {_fmt_money(row.get('현재가', 0))}",
-            ])
-
-    lines.extend(["", f"📊 대시보드: {dashboard_url}"])
-    return "\n".join(lines)
-
 def _request_html(url, headers, timeout=4, retries=2):
     for attempt in range(retries + 1):
         try:
@@ -2642,99 +2168,6 @@ def get_live_macro_and_news():
         repeated_topics_text = ""
     
     return macro_str, news_str, macro_recency_score, repeated_topics_text
-
-
-def _history_row_from_kis_daily(name, daily):
-    close_prc = safe_api_float(daily.get('stck_clpr'))
-    vol = safe_api_float(daily.get('acml_vol'))
-    trade_value = vol * close_prc
-    f_amt = safe_api_float(daily.get('frgn_ntby_qty')) * close_prc
-    p_amt = safe_api_float(daily.get('fund_ntby_qty')) * close_prc
-    t_amt = safe_api_float(daily.get('ivtr_ntby_qty')) * close_prc
-    pef_amt = safe_api_float(daily.get('pe_fund_ntby_vol')) * close_prc
-    return {
-        '종목명': name,
-        '일자': daily.get('stck_bsop_date', ''),
-        '종가': close_prc,
-        '외인': f_amt / 1_000_000,
-        '연기금': p_amt / 1_000_000,
-        '투신': t_amt / 1_000_000,
-        '사모': pef_amt / 1_000_000,
-        '거래량': vol,
-        '거래대금(억)': trade_value / 100_000_000,
-    }
-
-
-def _previous_kis_cursor_date(oldest_raw_date):
-    try:
-        cursor = datetime.strptime(str(oldest_raw_date), "%Y%m%d").date() - timedelta(days=1)
-    except Exception:
-        return None
-    while cursor.weekday() >= 5:
-        cursor = cursor - timedelta(days=1)
-    return cursor.strftime("%Y%m%d")
-
-
-def _collect_kis_history_backfill(name, code, url_kis, headers, input_date, cutoff, max_pages):
-    rows = []
-    seen_dates = set()
-    cursor_date = input_date
-    empty_pages = 0
-    failed_pages = 0
-
-    for page in range(1, max_pages + 1):
-        params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
-            "FID_INPUT_ISCD": code,
-            "FID_INPUT_DATE_1": cursor_date,
-            "FID_ORG_ADJ_PRC": "0",
-            "FID_ETC_CLS_CODE": "0",
-        }
-        res = requests.get(url_kis, headers=headers, params=params, timeout=8)
-        payload = res.json() if res.text else {}
-        if res.status_code != 200 or payload.get("rt_cd") != "0":
-            failed_pages += 1
-            if failed_pages <= 2:
-                print(f"[WARN] super-parse 응답 실패({name}/{code}): status={res.status_code} rt_cd={payload.get('rt_cd')} msg={payload.get('msg1')}")
-            break
-
-        daily_rows = payload.get("output2", [])
-        if not daily_rows:
-            empty_pages += 1
-            break
-
-        page_dates = []
-        added_on_page = 0
-        for daily in daily_rows:
-            raw_date = str(daily.get("stck_bsop_date", ""))
-            if not raw_date:
-                continue
-            try:
-                day = datetime.strptime(raw_date, "%Y%m%d").date()
-            except Exception:
-                continue
-            page_dates.append(raw_date)
-            if day >= cutoff and raw_date not in seen_dates:
-                rows.append(_history_row_from_kis_daily(name, daily))
-                seen_dates.add(raw_date)
-                added_on_page += 1
-
-        if not page_dates:
-            empty_pages += 1
-            break
-
-        oldest_raw_date = min(page_dates)
-        oldest_day = datetime.strptime(oldest_raw_date, "%Y%m%d").date()
-        if oldest_day <= cutoff:
-            break
-
-        next_cursor_date = _previous_kis_cursor_date(oldest_raw_date)
-        if not next_cursor_date or next_cursor_date >= cursor_date or added_on_page == 0:
-            break
-        cursor_date = next_cursor_date
-        time.sleep(0.03)
-
-    return rows, empty_pages, failed_pages, len(seen_dates)
 
 
 def run_super_parse(months=SUPER_PARSE_DEFAULT_MONTHS, years=None, max_stocks=None):

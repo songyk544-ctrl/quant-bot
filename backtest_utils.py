@@ -1,51 +1,15 @@
 import pandas as pd
 
+from services.scoring_service import (
+    ADAPTIVE_THRESHOLD_PROFILES,
+    build_market_state_features,
+    choose_adaptive_target_positions,
+    passes_relative_strength_filter,
+)
 
 PERF_COLS = ["날짜", "평가금액", "현금", "투자금액", "수익률(%)", "일간수익률", "보유종목수", "실현손익"]
 POSITION_COLS = ["종목명", "진입일", "진입가", "수량", "매수금액", "현재가", "평가금액", "평가손익", "평가수익률", "보유일수", "상태"]
 CLOSED_COLS = ["진입일", "청산일", "종목명", "보유일수", "수량", "진입가", "청산가", "매수금액", "청산금액", "실현손익", "수익률", "청산사유"]
-
-ADAPTIVE_THRESHOLD_PROFILES = {
-    "현재값": {
-        "severe_avg_ret": -1.2,
-        "severe_up_ratio": 0.32,
-        "severe_ma20_ratio": 0.38,
-        "weak_avg_ret": -0.35,
-        "weak_up_ratio": 0.43,
-        "weak_ma20_ratio": 0.46,
-        "attack_score": 65.0,
-        "attack_up_ratio": 0.52,
-        "attack_ma20_ratio": 0.52,
-        "leader_score": 58.0,
-        "leader_up_ratio": 0.48,
-    },
-    "v2 견고형": {
-        "severe_avg_ret": -1.3057,
-        "severe_up_ratio": 0.2851,
-        "severe_ma20_ratio": 0.3951,
-        "weak_avg_ret": -0.4783,
-        "weak_up_ratio": 0.4382,
-        "weak_ma20_ratio": 0.4688,
-        "attack_score": 62.406,
-        "attack_up_ratio": 0.5306,
-        "attack_ma20_ratio": 0.493,
-        "leader_score": 58.0355,
-        "leader_up_ratio": 0.4549,
-    },
-    "v3 상대강도": {
-        "severe_avg_ret": -1.3057,
-        "severe_up_ratio": 0.2851,
-        "severe_ma20_ratio": 0.3951,
-        "weak_avg_ret": -0.4783,
-        "weak_up_ratio": 0.4382,
-        "weak_ma20_ratio": 0.4688,
-        "attack_score": 62.406,
-        "attack_up_ratio": 0.5306,
-        "attack_ma20_ratio": 0.493,
-        "leader_score": 58.0355,
-        "leader_up_ratio": 0.4549,
-    },
-}
 
 
 def empty_capital_limited_result():
@@ -105,55 +69,14 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
         ascending=[True, False, True],
     )
 
-    market_frame = hist.copy()
-    market_frame["전일종가"] = market_frame.groupby("종목명")["종가"].shift(1)
-    market_frame["일간등락률"] = ((market_frame["종가"] / market_frame["전일종가"]) - 1.0) * 100.0
-    market_frame["일간등락률"] = pd.to_numeric(market_frame["일간등락률"], errors="coerce").replace([float("inf"), -float("inf")], pd.NA)
-    market_frame["5일수익률"] = market_frame.groupby("종목명")["종가"].pct_change(5) * 100.0
-    if "거래대금(억)" in market_frame.columns:
-        market_frame["거래대금_값"] = pd.to_numeric(market_frame["거래대금(억)"], errors="coerce")
-    elif "거래량" in market_frame.columns:
-        market_frame["거래대금_값"] = pd.to_numeric(market_frame["거래량"], errors="coerce")
-    else:
-        market_frame["거래대금_값"] = 0.0
-    market_frame["거래대금20"] = market_frame.groupby("종목명")["거래대금_값"].transform(lambda s: s.rolling(20, min_periods=5).mean())
-    market_frame["거래대금가속"] = (market_frame["거래대금_값"] / market_frame["거래대금20"]).replace([float("inf"), -float("inf")], pd.NA)
-    market_frame["MA20"] = market_frame.groupby("종목명")["종가"].transform(lambda s: s.rolling(20, min_periods=5).mean())
-    market_frame["MA20상회"] = market_frame["종가"] >= market_frame["MA20"]
-    market_state = (
-        market_frame.dropna(subset=["일간등락률"])
-        .groupby(market_frame["일자_dt"].dt.normalize())
-        .agg(
-            평균등락률=("일간등락률", "mean"),
-            시장5일수익률=("5일수익률", "mean"),
-            상승비율=("일간등락률", lambda s: float((s > 0).mean())),
-            MA20상회비율=("MA20상회", "mean"),
-        )
-    )
-    entry_features = market_frame.set_index(["일자_dt", "종목명"])[["5일수익률", "거래대금가속"]].sort_index()
+    _, market_state, entry_features = build_market_state_features(hist)
     relative_strength_mode = str(adaptive_profile) == "v3 상대강도"
 
     def _target_positions_for_day(cur_date, todays):
         if not adaptive_mode:
             return int(max_positions), "고정"
         state = market_state.loc[cur_date] if cur_date in market_state.index else None
-        avg_ret = float(state.get("평균등락률", 0.0)) if state is not None else 0.0
-        up_ratio = float(state.get("상승비율", 0.5)) if state is not None else 0.5
-        ma20_ratio = float(state.get("MA20상회비율", 0.5)) if state is not None else 0.5
-        max_score = float(pd.to_numeric(todays[score_col], errors="coerce").max()) if not todays.empty else 0.0
-        has_leader = False
-        if not todays.empty and "진입유형" in todays.columns:
-            has_leader = todays["진입유형"].astype(str).str.contains("주도", na=False).any()
-
-        if avg_ret <= adaptive_rules["severe_avg_ret"] or up_ratio <= adaptive_rules["severe_up_ratio"] or ma20_ratio <= adaptive_rules["severe_ma20_ratio"]:
-            return 0, "방어"
-        if avg_ret <= adaptive_rules["weak_avg_ret"] or up_ratio <= adaptive_rules["weak_up_ratio"] or ma20_ratio <= adaptive_rules["weak_ma20_ratio"]:
-            return 1, "선별"
-        if max_score >= adaptive_rules["attack_score"] and up_ratio >= adaptive_rules["attack_up_ratio"] and ma20_ratio >= adaptive_rules["attack_ma20_ratio"]:
-            return int(max_positions), "공격"
-        if has_leader and max_score >= adaptive_rules["leader_score"] and up_ratio >= adaptive_rules["leader_up_ratio"]:
-            return min(int(max_positions), 2), "공격대기"
-        return min(int(max_positions), 1), "관찰"
+        return choose_adaptive_target_positions(cur_date, todays, score_col, max_positions, adaptive_rules, market_state_row=state)
 
     cash = float(initial_cash)
     positions = []
@@ -180,35 +103,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
     def _passes_relative_strength_filter(sig, cur_date, market_mode):
         if not relative_strength_mode:
             return True
-        if market_mode == "방어":
-            return False
-        name = str(sig.get("종목명", "")).strip()
-        try:
-            feature = entry_features.loc[(cur_date, name)]
-        except Exception:
-            return False
-        stock_ret5 = float(pd.to_numeric(feature.get("5일수익률", 0.0), errors="coerce") or 0.0)
-        volume_accel = float(pd.to_numeric(feature.get("거래대금가속", 0.0), errors="coerce") or 0.0)
-        state = market_state.loc[cur_date] if cur_date in market_state.index else None
-        market_ret5 = float(state.get("시장5일수익률", 0.0)) if state is not None else 0.0
-        relative_ret5 = stock_ret5 - market_ret5
-        score_value = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
-        is_leader = "주도" in str(sig.get("진입유형", ""))
-        if stock_ret5 <= -4.0:
-            return False
-        if stock_ret5 >= 18.0 and volume_accel >= 1.25:
-            return False
-        if volume_accel >= 4.0:
-            return False
-        if relative_ret5 >= 3.0 and stock_ret5 <= 14.0:
-            return True
-        if relative_ret5 >= 1.2 and volume_accel >= 0.85 and stock_ret5 <= 12.0:
-            return True
-        if is_leader and relative_ret5 >= 0.0 and volume_accel >= 0.75 and score_value >= 58.0:
-            return True
-        if score_value >= 66.0 and relative_ret5 >= -0.5 and volume_accel >= 1.0 and stock_ret5 <= 10.0:
-            return True
-        return False
+        return passes_relative_strength_filter(sig, cur_date, market_mode, entry_features, market_state, score_col)
 
     for cur_date in dates:
         cur_date = pd.to_datetime(cur_date).normalize()

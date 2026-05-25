@@ -4,6 +4,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from services.portfolio_advisor_service import (
+    build_replacement_pool,
+    enrich_portfolio_holdings,
+    portfolio_assistant_verdict,
+)
+
 
 def render_portfolio_assistant_tab(
     df_summary,
@@ -31,48 +37,19 @@ def render_portfolio_assistant_tab(
     if df_port_saved.empty:
         render_empty_state("포트폴리오 비어 있음", "상단 에디터에서 보유 종목을 추가해 주세요.")
     else:
-        join_cols = [
-            "종목명", "현재가", "등락률", "스윙우선순위", "현재_순위", "AI수급점수", "AI순위",
-            "매수후보", "진입유형", "매도점검", "신호등급", "신호신뢰도", "외인강도(%)", "연기금강도(%)"
-        ]
-        df_joined = pd.merge(
+        df_joined, portfolio_summary = enrich_portfolio_holdings(
             df_port_saved,
-            df_summary[join_cols].copy(),
-            on="종목명",
-            how="left",
+            df_summary,
+            swing_warn_threshold=swing_warn_threshold,
+            ai_critical_threshold=ai_critical_threshold,
         )
-
-        f_strength = pd.to_numeric(df_joined["외인강도(%)"], errors="coerce").fillna(0.0)
-        p_strength = pd.to_numeric(df_joined["연기금강도(%)"], errors="coerce").fillna(0.0)
-        ai_score = pd.to_numeric(df_joined["AI수급점수"], errors="coerce").fillna(0.0)
-        swing_score = pd.to_numeric(df_joined["스윙우선순위"], errors="coerce").fillna(0.0)
         qty_num = pd.to_numeric(df_joined["수량"], errors="coerce").fillna(0.0)
         buy_num = pd.to_numeric(df_joined["매수가"], errors="coerce").fillna(0.0)
         cur_num = pd.to_numeric(df_joined["현재가"], errors="coerce").fillna(0.0)
-        flow_break = (f_strength < 0) & (p_strength < 0)
-        swing_weak = swing_score < float(swing_warn_threshold)
-        ai_break = ai_score < float(ai_critical_threshold)
-        df_joined["수급동반약화"] = flow_break
-        df_joined["스윙약화"] = swing_weak
-        df_joined["AI급락"] = ai_break
-        df_joined["수급이탈위험"] = (flow_break & swing_weak) | ai_break
-
-        def _risk_reason(row):
-            reasons = []
-            if bool(row.get("AI급락", False)):
-                reasons.append("AI수급 급락")
-            if bool(row.get("수급동반약화", False)) and bool(row.get("스윙약화", False)):
-                reasons.append("수급동반약화+스윙약화")
-            if not reasons:
-                return "-"
-            return " / ".join(reasons)
-
-        df_joined["리스크사유"] = df_joined.apply(_risk_reason, axis=1)
-
-        total_buy_amount = float((qty_num * buy_num).sum())
-        total_eval_amount = float((qty_num * cur_num).sum())
-        total_profit_amount = total_eval_amount - total_buy_amount
-        total_profit_pct = (total_profit_amount / total_buy_amount * 100.0) if total_buy_amount > 0 else 0.0
+        total_buy_amount = float(portfolio_summary["total_buy_amount"])
+        total_eval_amount = float(portfolio_summary["total_eval_amount"])
+        total_profit_amount = float(portfolio_summary["total_profit_amount"])
+        total_profit_pct = float(portfolio_summary["total_profit_pct"])
         st.markdown("#### 실전 계좌 방어 모드")
         guard_col1, guard_col2 = st.columns(2)
         with guard_col1:
@@ -195,57 +172,28 @@ def render_portfolio_assistant_tab(
                     unsafe_allow_html=True,
                 )
 
-        sell_words = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
-        sell_check_text = df_joined["매도점검"].fillna("").astype(str)
-        sell_watch_mask = sell_check_text.apply(lambda x: any(w in x for w in sell_words))
-        df_joined["매도점검위험"] = sell_watch_mask
-        df_joined.loc[sell_watch_mask & df_joined["리스크사유"].eq("-"), "리스크사유"] = "매도점검"
-        df_joined.loc[sell_watch_mask & ~df_joined["리스크사유"].eq("매도점검"), "리스크사유"] = (
-            df_joined.loc[sell_watch_mask & ~df_joined["리스크사유"].eq("매도점검"), "리스크사유"] + " / 매도점검"
-        )
+        sell_watch_mask = df_joined["매도점검위험"].fillna(False).astype(bool)
         risk_rows = df_joined[df_joined["수급이탈위험"] | sell_watch_mask].copy()
         hold_rows = df_joined[~df_joined.index.isin(risk_rows.index)].copy()
         held_names = set(df_joined["종목명"].fillna("").astype(str))
-        replacement_pool = df_summary[~df_summary["종목명"].astype(str).isin(held_names)].copy()
-        if "매수후보" in replacement_pool.columns:
-            replacement_pool = replacement_pool[replacement_pool["매수후보"].astype(str).eq("신규후보")].copy()
-        if "스윙우선순위" in replacement_pool.columns:
-            replacement_pool["스윙우선순위"] = pd.to_numeric(replacement_pool["스윙우선순위"], errors="coerce").fillna(0.0)
-            weakest_risk_score = 0.0
-            if not risk_rows.empty and "스윙우선순위" in risk_rows.columns:
-                weakest_risk_score = float(pd.to_numeric(risk_rows["스윙우선순위"], errors="coerce").fillna(0.0).min())
-            if capital_guard_active:
-                replacement_pool = replacement_pool.iloc[0:0].copy()
-            elif not risk_rows.empty:
-                replacement_pool = replacement_pool[replacement_pool["스윙우선순위"] >= weakest_risk_score + 5.0].copy()
-            else:
-                replacement_pool = replacement_pool.iloc[0:0].copy()
-            replacement_pool = replacement_pool.sort_values("스윙우선순위", ascending=False).head(3)
-        else:
-            replacement_pool = replacement_pool.iloc[0:0].copy()
+        replacement_pool = build_replacement_pool(
+            df_summary,
+            held_names,
+            risk_rows,
+            capital_guard_active=capital_guard_active,
+        )
         risk_names = ", ".join(risk_rows["종목명"].dropna().astype(str).head(3).tolist()) if not risk_rows.empty else "없음"
         hold_names = ", ".join(hold_rows["종목명"].dropna().astype(str).head(3).tolist()) if not hold_rows.empty else "없음"
         replacement_names = ", ".join(replacement_pool["종목명"].dropna().astype(str).head(3).tolist()) if not replacement_pool.empty else "없음"
-        if capital_emergency_active:
-            assistant_verdict = "신규매수 중지"
-            assistant_meta = "계좌 낙폭이 비상 구간입니다. 새 후보보다 손실 확대 차단과 현금 비중 회복이 우선입니다."
-            verdict_color = "#FCA5A5"
-        elif capital_guard_active:
-            assistant_verdict = "방어 운용"
-            assistant_meta = "계좌 낙폭이 방어 구간입니다. 신규매수는 막고 보유 종목 리스크만 점검합니다."
-            verdict_color = "#FCD34D"
-        elif risk_rows.empty:
-            assistant_verdict = "보유 유지"
-            assistant_meta = "현재 보유 종목에서 명확한 매도 점검 신호는 없습니다."
-            verdict_color = "#86EFAC"
-        elif not replacement_pool.empty:
-            assistant_verdict = "교체 점검"
-            assistant_meta = "약해진 보유 종목과 더 강한 신규 후보를 비교하세요."
-            verdict_color = "#FCD34D"
-        else:
-            assistant_verdict = "비중 축소 점검"
-            assistant_meta = "새 후보보다 기존 리스크 관리가 우선입니다."
-            verdict_color = "#FCA5A5"
+        verdict = portfolio_assistant_verdict(
+            risk_rows,
+            replacement_pool,
+            capital_guard_active=capital_guard_active,
+            capital_emergency_active=capital_emergency_active,
+        )
+        assistant_verdict = verdict["verdict"]
+        assistant_meta = verdict["meta"]
+        verdict_color = verdict["color"]
         risk_strength = "없음" if risk_rows.empty else ("강함" if len(risk_rows) >= 2 else "점검")
 
         st.markdown("#### 오늘의 포트폴리오 결론")

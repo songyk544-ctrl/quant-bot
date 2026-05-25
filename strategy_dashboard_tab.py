@@ -119,50 +119,15 @@ def render_strategy_dashboard_tab(
                 key="strategy_backtest_start_date",
                 on_change=_mark_strategy_date_manual,
             )
-            st.markdown(
-                """
-                <style>
-                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) {
-                    display: flex !important;
-                    flex-direction: row !important;
-                    flex-wrap: nowrap !important;
-                    gap: 0.5rem !important;
-                    align-items: flex-start !important;
-                }
-                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) > div[data-testid="column"]:first-child {
-                    flex: 1 1 auto !important;
-                    width: auto !important;
-                    min-width: 0 !important;
-                }
-                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) > div[data-testid="column"]:nth-child(2) {
-                    flex: 0 0 5.2rem !important;
-                    width: 5.2rem !important;
-                    min-width: 5.2rem !important;
-                }
-                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) div[data-testid="stButton"] > button {
-                    min-height: 3.05rem !important;
-                    white-space: nowrap !important;
-                    padding-left: 0.6rem !important;
-                    padding-right: 0.6rem !important;
-                }
-                div[data-testid="stHorizontalBlock"]:has(#strategy-cash-row-anchor) div[data-testid="stTextInput"] input {
-                    min-height: 3.05rem !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            bt_col1, bt_col_save = st.columns([5, 1.2])
+            st.markdown("**초기 투자금**")
+            bt_col1, bt_col_save = st.columns([4, 1], gap="small")
             with bt_col1:
-                st.markdown('<span id="strategy-cash-row-anchor"></span>', unsafe_allow_html=True)
                 if "strategy_initial_cash_text" not in st.session_state:
                     st.session_state["strategy_initial_cash_text"] = f"{saved_initial_cash:,}"
-                cash_text = st.text_input("초기 투자금", key="strategy_initial_cash_text")
+                cash_text = st.text_input("초기 투자금", key="strategy_initial_cash_text", label_visibility="collapsed")
                 backtest_initial_cash = _parse_cash_amount(cash_text, saved_initial_cash)
                 backtest_initial_cash = max(1_000_000, min(100_000_000, backtest_initial_cash))
-                st.caption(f"적용 금액: {backtest_initial_cash:,}원")
             with bt_col_save:
-                st.markdown("<div style='height: 1.65rem;'></div>", unsafe_allow_html=True)
                 if st.button("저장", key="save_strategy_initial_cash", use_container_width=True):
                     settings = _load_strategy_settings()
                     settings["initial_cash"] = int(backtest_initial_cash)
@@ -170,6 +135,7 @@ def render_strategy_dashboard_tab(
                         st.toast("초기 투자금을 저장했습니다.")
                     else:
                         st.warning("저장 실패")
+            st.caption(f"적용 금액: {backtest_initial_cash:,}원")
             backtest_max_positions = st.number_input(
                 "최대 보유 종목수",
                 min_value=1,
