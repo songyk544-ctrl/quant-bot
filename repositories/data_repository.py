@@ -50,7 +50,7 @@ def load_score_trend_safe():
     if not set(base_cols).issubset(df.columns):
         return pd.DataFrame(columns=base_cols)
 
-    marker_pat = r"^(<<<<<<<|=======|>>>>>>>)"
+    marker_pat = r"^(?:<<<<<<<|=======|>>>>>>>)"
     df = df[~df["날짜"].astype(str).str.contains(marker_pat, regex=True, na=False)]
     df = df[~df["종목명"].astype(str).str.contains(marker_pat, regex=True, na=False)]
     df["날짜"] = df["날짜"].astype(str).str.strip()
@@ -75,7 +75,7 @@ def load_performance_trend_safe():
     if not set(base_cols).issubset(df.columns):
         return pd.DataFrame(columns=base_cols)
 
-    marker_pat = r"^(<<<<<<<|=======|>>>>>>>)"
+    marker_pat = r"^(?:<<<<<<<|=======|>>>>>>>)"
     df = df[~df["날짜"].astype(str).str.contains(marker_pat, regex=True, na=False)]
     for c in ["일간수익률", "누적수익률"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
