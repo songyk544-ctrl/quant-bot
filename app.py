@@ -3062,9 +3062,15 @@ else:
             if not df_history.empty:
                 target_hist = df_history[df_history['종목명'] == target_stock].copy()
                 if not target_hist.empty:
-                    target_hist['일자'] = pd.to_datetime(target_hist['일자'].astype(str))
-                    target_hist = target_hist.sort_values('일자')
+                    original_target_dates = target_hist['일자'].copy()
+                    raw_target_dates = original_target_dates.astype(str).str.replace("-", "", regex=False).str.strip()
+                    target_hist['일자'] = pd.to_datetime(raw_target_dates, format="%Y%m%d", errors="coerce")
+                    if target_hist['일자'].notna().sum() == 0:
+                        target_hist['일자'] = pd.to_datetime(original_target_dates, errors="coerce")
+                    target_hist = target_hist.dropna(subset=['일자']).sort_values('일자')
+                    target_hist_20 = target_hist.tail(20).copy()
                     target_hist['일자_표시'] = target_hist['일자'].dt.strftime('%m/%d')
+                    target_hist_20['일자_표시'] = target_hist_20['일자'].dt.strftime('%m/%d')
 
                     # 주체별 최근 1주/1개월 순매입 금액(백만 원) 및 시총 대비 비중
                     wk_slice = target_hist.tail(5)
@@ -3128,9 +3134,13 @@ else:
                         st.markdown("##### 20일 종가 추이")
                         st.altair_chart(
                             apply_altair_theme(
-                                alt.Chart(target_hist).mark_line(color='#36C06A', point=True).encode(
+                                alt.Chart(target_hist_20).mark_line(color='#36C06A', point=True).encode(
                                     x=alt.X('일자_표시:O', sort=None, axis=alt.Axis(title=None, labelAngle=-45)),
-                                    y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None)
+                                    y=alt.Y('종가:Q', scale=alt.Scale(zero=False), title=None),
+                                    tooltip=[
+                                        alt.Tooltip('일자:T', title='날짜'),
+                                        alt.Tooltip('종가:Q', title='종가', format=',.0f'),
+                                    ],
                                 ).properties(height=280)
                             ),
                             width='stretch'
