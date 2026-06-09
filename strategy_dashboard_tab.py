@@ -15,6 +15,7 @@ from backtest_utils import (
 
 
 STRATEGY_SETTINGS_PATH = Path("data") / "strategy_settings.json"
+DEFAULT_BENCHMARK_START_DATE = pd.Timestamp("2026-04-27").date()
 
 
 def _load_strategy_settings():
@@ -68,6 +69,11 @@ def render_strategy_dashboard_tab(
     else:
         strategy_settings = _load_strategy_settings()
         saved_initial_cash = _parse_cash_amount(strategy_settings.get("initial_cash", 5_000_000))
+        saved_start_date = pd.to_datetime(
+            strategy_settings.get("benchmark_start_date", DEFAULT_BENCHMARK_START_DATE),
+            errors="coerce",
+        )
+        saved_start_date = saved_start_date.date() if not pd.isna(saved_start_date) else DEFAULT_BENCHMARK_START_DATE
         df_swing_perf = load_swing_performance_safe()
         df_swing_trades = load_swing_trades_safe()
         available_dates = pd.to_datetime(df_swing_trades.get("진입일_dt", pd.Series(dtype="datetime64[ns]")), errors="coerce").dropna()
@@ -77,7 +83,7 @@ def render_strategy_dashboard_tab(
             min_date = available_dates.min().date()
             hist_dates = pd.to_datetime(df_history.get("일자", pd.Series(dtype=str)).astype(str).str.replace("-", "", regex=False), format="%Y%m%d", errors="coerce").dropna()
             max_date = hist_dates.max().date() if not hist_dates.empty else available_dates.max().date()
-            default_start_date = max(min_date, min(max_date, (pd.Timestamp(max_date) - pd.Timedelta(days=31)).date()))
+            default_start_date = max(min_date, min(max_date, saved_start_date))
             if "strategy_backtest_start_date" not in st.session_state:
                 st.session_state["strategy_backtest_start_date"] = default_start_date
             current_start = pd.to_datetime(st.session_state.get("strategy_backtest_start_date", min_date), errors="coerce")
@@ -131,8 +137,9 @@ def render_strategy_dashboard_tab(
                 if st.button("저장", key="save_strategy_initial_cash", use_container_width=True):
                     settings = _load_strategy_settings()
                     settings["initial_cash"] = int(backtest_initial_cash)
+                    settings["benchmark_start_date"] = selected_start_date.strftime("%Y-%m-%d")
                     if _save_strategy_settings(settings):
-                        st.toast("초기 투자금을 저장했습니다.")
+                        st.toast("기준일과 초기 투자금을 저장했습니다.")
                     else:
                         st.warning("저장 실패")
             st.caption(f"적용 금액: {backtest_initial_cash:,}원")
@@ -167,11 +174,13 @@ def render_strategy_dashboard_tab(
             adaptive_profile = "현재값"
             if score_mode == "adaptive":
                 profile_options = ["v1 기존", "v2 견고형", "v3 상대강도"]
+                if "strategy_adaptive_profile" not in st.session_state:
+                    st.session_state["strategy_adaptive_profile"] = "v1 기존"
                 if hasattr(st, "segmented_control"):
                     adaptive_profile_label = st.segmented_control(
                         "공격/방어 프로필",
                         profile_options,
-                        default="v2 견고형",
+                        default="v1 기존",
                         key="strategy_adaptive_profile",
                         help="v1은 기존 임계값, v2는 1년 데이터에서 시작일별 최저 수익률과 MDD를 함께 본 견고형 후보입니다.",
                     )
@@ -180,7 +189,7 @@ def render_strategy_dashboard_tab(
                         "공격/방어 프로필",
                         profile_options,
                         horizontal=True,
-                        index=1,
+                        index=0,
                         key="strategy_adaptive_profile",
                         help="v1은 기존 임계값, v2는 1년 데이터에서 시작일별 최저 수익률과 MDD를 함께 본 견고형 후보입니다.",
                     )
