@@ -16,6 +16,7 @@ from services.portfolio_simulator_service import build_capital_limited_swing_sim
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 STRATEGY_SETTINGS_PATH = Path("data") / "strategy_settings.json"
+USER_STATE_PATH = Path("user_state_admin.json")
 CORE_BOOK_START_DATE = "2026-04-27"
 CORE_BOOK_PROFILE = "현재값"
 
@@ -36,13 +37,21 @@ def send_telegram_message(text):
 
 
 def _load_strategy_settings():
+    merged = {}
     try:
         if STRATEGY_SETTINGS_PATH.exists():
             with STRATEGY_SETTINGS_PATH.open("r", encoding="utf-8") as f:
-                return json.load(f) or {}
+                merged.update(json.load(f) or {})
     except Exception:
         pass
-    return {}
+    try:
+        if USER_STATE_PATH.exists():
+            with USER_STATE_PATH.open("r", encoding="utf-8") as f:
+                user_state = json.load(f) or {}
+            merged.update(user_state.get("strategy_settings", {}) or {})
+    except Exception:
+        pass
+    return merged
 
 
 def build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated):

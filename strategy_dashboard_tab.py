@@ -15,27 +15,49 @@ from backtest_utils import (
 
 
 STRATEGY_SETTINGS_PATH = Path("data") / "strategy_settings.json"
+USER_STATE_PATH = Path("user_state_admin.json")
 DEFAULT_BENCHMARK_START_DATE = pd.Timestamp("2026-04-27").date()
 
 
 def _load_strategy_settings():
+    merged = {}
     try:
         if STRATEGY_SETTINGS_PATH.exists():
             with STRATEGY_SETTINGS_PATH.open("r", encoding="utf-8") as f:
-                return json.load(f) or {}
+                merged.update(json.load(f) or {})
     except Exception:
         pass
-    return {}
+    try:
+        if USER_STATE_PATH.exists():
+            with USER_STATE_PATH.open("r", encoding="utf-8") as f:
+                user_state = json.load(f) or {}
+            merged.update(user_state.get("strategy_settings", {}) or {})
+    except Exception:
+        pass
+    return merged
 
 
 def _save_strategy_settings(settings):
+    saved = False
     try:
         STRATEGY_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         with STRATEGY_SETTINGS_PATH.open("w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
-        return True
+        saved = True
     except Exception:
-        return False
+        pass
+    try:
+        user_state = {}
+        if USER_STATE_PATH.exists():
+            with USER_STATE_PATH.open("r", encoding="utf-8") as f:
+                user_state = json.load(f) or {}
+        user_state["strategy_settings"] = settings
+        with USER_STATE_PATH.open("w", encoding="utf-8") as f:
+            json.dump(user_state, f, ensure_ascii=False, indent=2)
+        saved = True
+    except Exception:
+        pass
+    return saved
 
 
 def _parse_cash_amount(value, default=5_000_000):
