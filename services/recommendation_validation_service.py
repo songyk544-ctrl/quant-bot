@@ -1,6 +1,13 @@
 import pandas as pd
 
 from db_utils import read_table
+from services.scoring_service import (
+    ADAPTIVE_THRESHOLD_PROFILES,
+    build_market_state_features,
+    choose_adaptive_target_positions,
+    passes_confirmed_pullback_filter,
+    passes_relative_strength_filter,
+)
 
 
 RISK_WORDS = ["매도", "제외", "훼손", "축소", "주의", "청산", "이탈"]
@@ -62,7 +69,14 @@ def build_market_state(hist):
     return daily[["추천일", "시장상태", "시장평균등락", "상승비율"]]
 
 
-def build_recommendation_validation(score_trend=None, swing_trades=None, history=None, score_mode="swing", max_positions=3):
+def build_recommendation_validation(
+    score_trend=None,
+    swing_trades=None,
+    history=None,
+    score_mode="swing",
+    max_positions=3,
+    adaptive_profile="현재값",
+):
     score_trend = score_trend if score_trend is not None else _load_csv("score_trend.csv")
     swing_trades = swing_trades if swing_trades is not None else _load_csv("swing_trades.csv")
     history = history if history is not None else _load_csv("history.csv")
@@ -88,6 +102,7 @@ def build_recommendation_validation(score_trend=None, swing_trades=None, history
     hist = hist.dropna(subset=["종목명", "일자_dt", "종가"]).sort_values(["종목명", "일자_dt"])
     price_map = {str(name): grp.copy() for name, grp in hist.groupby("종목명")}
     market_state = build_market_state(hist)
+    _, adaptive_market_state, entry_features = build_market_state_features(hist)
 
     signal = trades[trades.get("청산방식", "").astype(str).eq("시그널")].copy()
     if signal.empty:
@@ -102,23 +117,45 @@ def build_recommendation_validation(score_trend=None, swing_trades=None, history
     signal[score_col] = pd.to_numeric(signal[score_col], errors="coerce").fillna(0.0)
     signal = signal.dropna(subset=["진입일_dt"]).sort_values(["진입일_dt", score_col, "진입순위"], ascending=[True, False, True])
 
+    adaptive_rules = ADAPTIVE_THRESHOLD_PROFILES.get(
+        str(adaptive_profile), ADAPTIVE_THRESHOLD_PROFILES["현재값"]
+    )
+    relative_strength_mode = str(adaptive_profile) == "v3 상대강도"
+    confirmed_pullback_mode = str(adaptive_profile) == "v4 수급확인"
+
     def _target_for_day(day_text, day_df):
         if score_mode_key not in {"adaptive", "attack_defense", "dynamic"}:
             return int(max_positions), "고정"
-        state_row = market_state[market_state["추천일"].astype(str).eq(str(day_text))]
-        avg_ret = float(state_row["시장평균등락"].iloc[0]) if not state_row.empty else 0.0
-        up_ratio = float(state_row["상승비율"].iloc[0]) if not state_row.empty else 50.0
-        max_score = float(pd.to_numeric(day_df[score_col], errors="coerce").max()) if not day_df.empty else 0.0
-        has_leader = day_df.get("진입유형", pd.Series(dtype=str)).astype(str).str.contains("주도", na=False).any() if not day_df.empty else False
-        if avg_ret <= -1.2 or up_ratio <= 32:
-            return 0, "방어"
-        if avg_ret <= -0.35 or up_ratio <= 43:
-            return 1, "선별"
-        if max_score >= 65 and up_ratio >= 52:
-            return int(max_positions), "공격"
-        if has_leader and max_score >= 58 and up_ratio >= 48:
-            return min(int(max_positions), 2), "공격대기"
-        return min(int(max_positions), 1), "관찰"
+        day = pd.to_datetime(day_text).normalize()
+        state = adaptive_market_state.loc[day] if day in adaptive_market_state.index else None
+        return choose_adaptive_target_positions(
+            day,
+            day_df,
+            score_col,
+            max_positions,
+            adaptive_rules,
+            market_state_row=state,
+        )
+
+    def _passes_profile_filter(row, day, mode_label):
+        if relative_strength_mode:
+            return passes_relative_strength_filter(
+                row,
+                day,
+                mode_label,
+                entry_features,
+                adaptive_market_state,
+                score_col,
+            )
+        if confirmed_pullback_mode:
+            return passes_confirmed_pullback_filter(
+                row,
+                day,
+                mode_label,
+                entry_features,
+                score_col,
+            )
+        return True
 
     filtered = []
     for day, day_df in signal.groupby(signal["진입일_dt"].dt.strftime("%Y-%m-%d"), sort=True):
@@ -126,7 +163,14 @@ def build_recommendation_validation(score_trend=None, swing_trades=None, history
         target_count, mode_label = _target_for_day(day, day_df)
         day_df["검증모드"] = mode_label
         if target_count > 0:
-            filtered.append(day_df.head(int(target_count)))
+            day_dt = pd.to_datetime(day).normalize()
+            eligible = day_df[
+                day_df.apply(
+                    lambda row: _passes_profile_filter(row, day_dt, mode_label),
+                    axis=1,
+                )
+            ]
+            filtered.append(eligible.head(int(target_count)))
     signal = pd.concat(filtered, ignore_index=True) if filtered else signal.iloc[0:0].copy()
 
     detail_rows = []

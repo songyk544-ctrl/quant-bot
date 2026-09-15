@@ -19,11 +19,12 @@ DEFAULT_STRATEGY_MODES = [
     StrategyMode("공격/방어 v1", "adaptive", "현재값"),
     StrategyMode("공격/방어 v2", "adaptive", "v2 견고형"),
     StrategyMode("공격/방어 v3", "adaptive", "v3 상대강도"),
+    StrategyMode("공격/방어 v4", "adaptive", "v4 수급확인"),
     StrategyMode("스윙점수", "swing", "현재값"),
     StrategyMode("AI점수", "ai", "현재값"),
 ]
 
-DEFAULT_ADAPTIVE_PROFILES = ["현재값", "v2 견고형", "v3 상대강도"]
+DEFAULT_ADAPTIVE_PROFILES = ["현재값", "v2 견고형", "v3 상대강도", "v4 수급확인"]
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:

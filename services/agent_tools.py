@@ -332,7 +332,12 @@ def get_strategy_health_report_tool(
         return _fail(exc)
 
 
-def get_recommendation_validation_tool(score_mode="adaptive", max_positions=DEFAULT_MAX_POSITIONS, row_limit=20):
+def get_recommendation_validation_tool(
+    score_mode="adaptive",
+    max_positions=DEFAULT_MAX_POSITIONS,
+    row_limit=20,
+    adaptive_profile=DEFAULT_ADAPTIVE_PROFILE,
+):
     """Validate recommendation quality by recommendation date and market regime."""
     try:
         df_summary, df_history, df_trades, df_score = _load_core_frames()
@@ -342,10 +347,12 @@ def get_recommendation_validation_tool(score_mode="adaptive", max_positions=DEFA
             history=df_history,
             score_mode=score_mode,
             max_positions=max_positions,
+            adaptive_profile=adaptive_profile,
         )
         return _ok(
             summary={
                 "score_mode": score_mode,
+                "adaptive_profile": adaptive_profile,
                 "daily_rows": int(len(daily)),
                 "detail_rows": int(len(detail)),
                 "regime_rows": int(len(regime)),

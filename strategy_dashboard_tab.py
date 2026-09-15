@@ -195,7 +195,7 @@ def render_strategy_dashboard_tab(
             adaptive_profile_label = "v1 기존"
             adaptive_profile = "현재값"
             if score_mode == "adaptive":
-                profile_options = ["v1 기존", "v2 견고형", "v3 상대강도"]
+                profile_options = ["v1 기존", "v2 견고형", "v3 상대강도", "v4 수급확인"]
                 if "strategy_adaptive_profile" not in st.session_state:
                     st.session_state["strategy_adaptive_profile"] = "v1 기존"
                 if hasattr(st, "segmented_control"):
@@ -204,7 +204,7 @@ def render_strategy_dashboard_tab(
                         profile_options,
                         default="v1 기존",
                         key="strategy_adaptive_profile",
-                        help="v1은 기존 임계값, v2는 1년 데이터에서 시작일별 최저 수익률과 MDD를 함께 본 견고형 후보입니다.",
+                        help="v4는 상승추세의 주도눌림과 핵심 기관 수급을 함께 확인하는 선별형입니다.",
                     )
                 else:
                     adaptive_profile_label = st.radio(
@@ -213,16 +213,17 @@ def render_strategy_dashboard_tab(
                         horizontal=True,
                         index=0,
                         key="strategy_adaptive_profile",
-                        help="v1은 기존 임계값, v2는 1년 데이터에서 시작일별 최저 수익률과 MDD를 함께 본 견고형 후보입니다.",
+                        help="v4는 상승추세의 주도눌림과 핵심 기관 수급을 함께 확인하는 선별형입니다.",
                     )
                 adaptive_profile = "현재값" if adaptive_profile_label == "v1 기존" else adaptive_profile_label
-                with st.expander("v1/v2 변경 기준", expanded=False):
+                with st.expander("프로필별 진입 기준", expanded=False):
                     st.markdown(
                         """
                         <div style="font-size:0.82rem; line-height:1.55; color:#AAB2C5;">
                         <b>v1 기존</b>: 최근 구간 수익률은 좋았지만 일부 과거 시작일에서 크게 깨진 기존 임계값입니다.<br>
                         <b>v2 견고형</b>: 1년 데이터에서 시작일별 최저 수익률 방어를 더 중시한 개별주 중심 후보입니다.<br>
                         <b>v3 상대강도</b>: v2 후보 중 최근 5일 시장 대비 강하고 거래대금이 붙은 종목만 진입하는 필터형입니다.
+                        <br><b>v4 수급확인</b>: 상승추세의 주도주가 고점 대비 2~10% 눌리고, 거래대금 과열 없이 연기금 또는 투신·사모 수급이 유지될 때만 진입합니다.
                         </div>
                         """
                         ,
@@ -539,7 +540,7 @@ def render_strategy_dashboard_tab(
                             st.warning(f"시작일 안정성 분석 중 오류가 발생했습니다: {e}")
 
                 with st.expander("공격/방어 민감도 점검", expanded=False):
-                    st.caption("v1, v2, v3를 같은 시작일 묶음으로 비교해 성과 편차와 과최적화 가능성을 확인합니다. 버튼을 눌렀을 때만 계산합니다.")
+                    st.caption("v1~v4를 같은 시작일 묶음으로 비교해 성과 편차와 과최적화 가능성을 확인합니다. 버튼을 눌렀을 때만 계산합니다.")
                     if st.button("공격/방어 임계값 민감도 분석 실행", use_container_width=True):
                         try:
                             sensitivity_summary, sensitivity_detail = build_adaptive_threshold_sensitivity(

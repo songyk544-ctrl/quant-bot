@@ -4,6 +4,7 @@ from services.scoring_service import (
     ADAPTIVE_THRESHOLD_PROFILES,
     build_market_state_features,
     choose_adaptive_target_positions,
+    passes_confirmed_pullback_filter,
     passes_relative_strength_filter,
 )
 
@@ -71,6 +72,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
 
     _, market_state, entry_features = build_market_state_features(hist)
     relative_strength_mode = str(adaptive_profile) == "v3 상대강도"
+    confirmed_pullback_mode = str(adaptive_profile) == "v4 수급확인"
 
     def _target_positions_for_day(cur_date, todays):
         if not adaptive_mode:
@@ -100,10 +102,16 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             total += mark_price * pos["수량"]
         return total
 
-    def _passes_relative_strength_filter(sig, cur_date, market_mode):
-        if not relative_strength_mode:
-            return True
-        return passes_relative_strength_filter(sig, cur_date, market_mode, entry_features, market_state, score_col)
+    def _passes_entry_filter(sig, cur_date, market_mode):
+        if relative_strength_mode:
+            return passes_relative_strength_filter(
+                sig, cur_date, market_mode, entry_features, market_state, score_col
+            )
+        if confirmed_pullback_mode:
+            return passes_confirmed_pullback_filter(
+                sig, cur_date, market_mode, entry_features, score_col
+            )
+        return True
 
     for cur_date in dates:
         cur_date = pd.to_datetime(cur_date).normalize()
@@ -153,7 +161,7 @@ def build_capital_limited_swing_sim(df_trades, df_history, initial_cash=5_000_00
             entry_price = float(pd.to_numeric(sig.get("진입가"), errors="coerce") or 0.0)
             if entry_price <= 0:
                 continue
-            if not _passes_relative_strength_filter(sig, cur_date, market_mode):
+            if not _passes_entry_filter(sig, cur_date, market_mode):
                 continue
             new_score = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
             swing_score = float(pd.to_numeric(sig.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
@@ -417,7 +425,7 @@ def build_adaptive_threshold_sensitivity(df_trades, df_history, available_dates,
         start_candidates = [start_candidates[i] for i in positions[: int(limit)]]
 
     detail_rows = []
-    profile_names = ["현재값", "v2 견고형", "v3 상대강도"]
+    profile_names = ["현재값", "v2 견고형", "v3 상대강도", "v4 수급확인"]
     for profile_name in profile_names:
         for start_d in start_candidates:
             sim_perf, _, sim_closed = build_capital_limited_swing_sim(

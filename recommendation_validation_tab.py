@@ -27,8 +27,30 @@ def render_recommendation_validation_tab(render_section_header, apply_altair_the
             help="공격/방어는 시장 상태에 따라 검증 대상 추천 수를 0~3개로 조절합니다.",
         )
     score_mode = "adaptive" if score_mode_label == "공격/방어" else ("ai" if score_mode_label == "AI점수" else "swing")
+    adaptive_profile = "현재값"
+    if score_mode == "adaptive":
+        profile_options = ["v1 기존", "v2 견고형", "v3 상대강도", "v4 수급확인"]
+        if hasattr(st, "segmented_control"):
+            profile_label = st.segmented_control(
+                "공격/방어 프로필",
+                profile_options,
+                default="v1 기존",
+                key="validation_adaptive_profile",
+            )
+        else:
+            profile_label = st.radio(
+                "공격/방어 프로필",
+                profile_options,
+                horizontal=True,
+                index=0,
+                key="validation_adaptive_profile",
+            )
+        adaptive_profile = "현재값" if profile_label == "v1 기존" else profile_label
 
-    summary, detail, regime_summary = build_recommendation_validation(score_mode=score_mode)
+    summary, detail, regime_summary = build_recommendation_validation(
+        score_mode=score_mode,
+        adaptive_profile=adaptive_profile,
+    )
     if summary.empty:
         render_empty_state("검증 데이터 없음", "swing_trades.csv와 history.csv가 충분히 쌓인 뒤 추천 검증을 표시할 수 있습니다.")
         return

@@ -41,6 +41,19 @@ ADAPTIVE_THRESHOLD_PROFILES = {
         "leader_score": 58.0355,
         "leader_up_ratio": 0.4549,
     },
+    "v4 수급확인": {
+        "severe_avg_ret": -1.3057,
+        "severe_up_ratio": 0.2851,
+        "severe_ma20_ratio": 0.3951,
+        "weak_avg_ret": -0.4783,
+        "weak_up_ratio": 0.4382,
+        "weak_ma20_ratio": 0.4688,
+        "attack_score": 62.406,
+        "attack_up_ratio": 0.5306,
+        "attack_ma20_ratio": 0.493,
+        "leader_score": 58.0355,
+        "leader_up_ratio": 0.4549,
+    },
 }
 
 
@@ -333,6 +346,7 @@ def build_market_state_features(hist):
     market_frame["일간등락률"] = ((market_frame["종가"] / market_frame["전일종가"]) - 1.0) * 100.0
     market_frame["일간등락률"] = pd.to_numeric(market_frame["일간등락률"], errors="coerce").replace([float("inf"), -float("inf")], pd.NA)
     market_frame["5일수익률"] = market_frame.groupby("종목명")["종가"].pct_change(5) * 100.0
+    market_frame["20일수익률"] = market_frame.groupby("종목명")["종가"].pct_change(20) * 100.0
     if "거래대금(억)" in market_frame.columns:
         market_frame["거래대금_값"] = pd.to_numeric(market_frame["거래대금(억)"], errors="coerce")
     elif "거래량" in market_frame.columns:
@@ -343,6 +357,20 @@ def build_market_state_features(hist):
     market_frame["거래대금가속"] = (market_frame["거래대금_값"] / market_frame["거래대금20"]).replace([float("inf"), -float("inf")], pd.NA)
     market_frame["MA20"] = market_frame.groupby("종목명")["종가"].transform(lambda s: s.rolling(20, min_periods=5).mean())
     market_frame["MA20상회"] = market_frame["종가"] >= market_frame["MA20"]
+    market_frame["MA20_5일전"] = market_frame.groupby("종목명")["MA20"].shift(5)
+    market_frame["MA20상승"] = market_frame["MA20"] >= market_frame["MA20_5일전"]
+    market_frame["20일고가"] = market_frame.groupby("종목명")["종가"].transform(
+        lambda s: s.rolling(20, min_periods=15).max()
+    )
+    market_frame["MA20이격률"] = ((market_frame["종가"] / market_frame["MA20"]) - 1.0) * 100.0
+    market_frame["20일고점낙폭"] = ((market_frame["종가"] / market_frame["20일고가"]) - 1.0) * 100.0
+    for col in ["연기금", "투신", "사모"]:
+        if col not in market_frame.columns:
+            market_frame[col] = 0.0
+        market_frame[col] = pd.to_numeric(market_frame[col], errors="coerce").fillna(0.0)
+        market_frame[f"{col}5일누적"] = market_frame.groupby("종목명")[col].transform(
+            lambda s: s.rolling(5, min_periods=3).sum()
+        )
     market_state = (
         market_frame.dropna(subset=["일간등락률"])
         .groupby(market_frame["일자_dt"].dt.normalize())
@@ -353,7 +381,19 @@ def build_market_state_features(hist):
             MA20상회비율=("MA20상회", "mean"),
         )
     )
-    entry_features = market_frame.set_index(["일자_dt", "종목명"])[["5일수익률", "거래대금가속"]].sort_index()
+    entry_features = market_frame.set_index(["일자_dt", "종목명"])[
+        [
+            "5일수익률",
+            "20일수익률",
+            "거래대금가속",
+            "MA20이격률",
+            "20일고점낙폭",
+            "MA20상승",
+            "연기금5일누적",
+            "투신5일누적",
+            "사모5일누적",
+        ]
+    ].sort_index()
     return market_frame, market_state, entry_features
 
 
@@ -437,3 +477,69 @@ def passes_relative_strength_filter(sig, cur_date, market_mode, entry_features, 
         "volume_accel": round(volume_accel, 4),
         "score": round(score_value, 2),
     }
+
+
+def passes_confirmed_pullback_filter(
+    sig,
+    cur_date,
+    market_mode,
+    entry_features,
+    score_col,
+    return_explanation=False,
+):
+    """주도주가 건전하게 눌리고 핵심 기관 수급이 유지된 경우만 통과시킨다."""
+    if market_mode == "방어":
+        result = {"passed": False, "reason": "방어 모드"}
+        return result if return_explanation else False
+
+    name = str(sig.get("종목명", "")).strip()
+    entry_type = str(sig.get("진입유형", ""))
+    try:
+        feature = entry_features.loc[(cur_date, name)]
+        if isinstance(feature, pd.DataFrame):
+            feature = feature.iloc[-1]
+    except Exception:
+        result = {"passed": False, "reason": "눌림/수급 확인 데이터 없음"}
+        return result if return_explanation else False
+
+    def _value(key, default=0.0):
+        value = pd.to_numeric(feature.get(key, default), errors="coerce")
+        return float(value) if pd.notna(value) else float(default)
+
+    stock_ret5 = _value("5일수익률")
+    stock_ret20 = _value("20일수익률")
+    volume_accel = _value("거래대금가속")
+    ma20_gap = _value("MA20이격률")
+    drawdown20 = _value("20일고점낙폭")
+    ma20_rising_raw = feature.get("MA20상승", False)
+    ma20_rising = bool(ma20_rising_raw) if pd.notna(ma20_rising_raw) else False
+    pension5 = _value("연기금5일누적")
+    trust5 = _value("투신5일누적")
+    private5 = _value("사모5일누적")
+    score_value = float(pd.to_numeric(sig.get(score_col, 0.0), errors="coerce") or 0.0)
+
+    checks = [
+        ("주도눌림" in entry_type, "주도눌림 후보 아님"),
+        (stock_ret20 > 0.0 and ma20_rising, "20일 상승추세 미확인"),
+        (0.0 <= ma20_gap <= 6.0, "MA20 지지 구간 이탈"),
+        (-10.0 <= drawdown20 <= -2.0, "고점 대비 눌림 폭 부적합"),
+        (-5.0 <= stock_ret5 <= 6.0, "단기 낙폭 또는 반등 과도"),
+        (0.65 <= volume_accel <= 2.0, "거래대금 부족 또는 과열"),
+        (pension5 > 0.0 or (trust5 + private5) > 0.0, "핵심 기관 5일 수급 미확인"),
+    ]
+    failed_reason = next((reason for passed, reason in checks if not passed), "")
+    passed = not failed_reason
+    result = {
+        "passed": passed,
+        "reason": "주도주 눌림과 핵심 기관 수급 확인" if passed else failed_reason,
+        "stock_ret5": round(stock_ret5, 4),
+        "stock_ret20": round(stock_ret20, 4),
+        "ma20_gap": round(ma20_gap, 4),
+        "drawdown20": round(drawdown20, 4),
+        "volume_accel": round(volume_accel, 4),
+        "ma20_rising": ma20_rising,
+        "pension5": round(pension5, 4),
+        "trust_private5": round(trust5 + private5, 4),
+        "score": round(score_value, 2),
+    }
+    return result if return_explanation else passed
