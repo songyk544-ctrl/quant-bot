@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
@@ -43,3 +43,6 @@ jobs:
           
           git commit -m "🤖 수급 데이터 갱신, AI 리포트 및 포트폴리오 성적 업데이트 완료" || exit 0
           git push
+
+      - name: Enforce Stock Universe Health
+        run: python -m services.source_health_service --fail-on-blocked

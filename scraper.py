@@ -40,6 +40,11 @@ from services.scoring_service import (
     score_disclosures_and_reports,
 )
 from services.telegram_service import build_telegram_action_message, send_telegram_message
+from services.source_health_service import record_source_health
+from services.stock_universe_service import (
+    TARGET_STOCK_COLUMNS,
+    fetch_kis_master_universe,
+)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -1711,38 +1716,78 @@ def write_daily_swing_candidates(df_final, today_date):
     write_table_dual(out[cols], "daily_candidates.csv", index=False, encoding="utf-8-sig")
 
 
-def get_target_stock_list():
-    target_list = []
-    noise_keywords = ['KODEX', 'TIGER', 'RISE', 'ACE', 'KBSTAR', 'HANARO', 'KOSEF', 'SOL', 'PLUS', 'ARIRANG', 'ETN', '스팩', '인버스', '레버리지', 'CD금리', 'KOFR']
-    custom_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
+def _load_cached_target_stock_list():
+    """외부 종목 목록 수집 장애 시 마지막 정상 universe를 복구한다."""
+    if not csv_exists("data.csv"):
+        return pd.DataFrame(columns=TARGET_STOCK_COLUMNS)
+
+    try:
+        cached = read_table_prefer_db("data.csv")
+    except Exception as e:
+        print(f"[WARN] 캐시 종목 목록 로드 실패: {e}")
+        return pd.DataFrame(columns=TARGET_STOCK_COLUMNS)
+
+    if cached is None or cached.empty:
+        return pd.DataFrame(columns=TARGET_STOCK_COLUMNS)
+
+    cached = cached.copy()
+    for col in TARGET_STOCK_COLUMNS:
+        if col not in cached.columns:
+            cached[col] = 0 if col in {'현재가', '등락률', '시가총액', 'PER', 'ROE'} else ''
+    cached['종목코드'] = cached['종목코드'].astype(str).str.replace(r'\.0$', '', regex=True).str.zfill(6)
+    cached['시가총액'] = pd.to_numeric(cached['시가총액'], errors='coerce').fillna(0)
+    cached = cached[cached['시가총액'] > 0]
+    cached = cached.drop_duplicates(subset=['종목코드'], keep='first')
+    return cached[TARGET_STOCK_COLUMNS].sort_values('시가총액', ascending=False).reset_index(drop=True)
+
+
+def get_target_stock_list(checked_at=None, trade_date=None):
+    cached = _load_cached_target_stock_list()
+    target, source_result = fetch_kis_master_universe(
+        requests.get,
+        cached=cached,
+        min_market_cap=8_000,
+    )
+    primary_ok = bool(source_result.get("ok")) and not target.empty
+    if primary_ok:
+        print(f"[INFO] {source_result.get('message')}")
+    elif not cached.empty:
+        target = cached
+        print(
+            "::error title=Stock universe fallback::"
+            f"KIS 공식 종목 마스터 수집 실패. 캐시 종목군 {len(cached):,}개를 사용합니다. "
+            f"원인: {source_result.get('message', '-')}"
+        )
+    else:
+        raise RuntimeError(
+            "KIS 공식 종목 마스터 수집과 캐시 복구가 모두 실패했습니다. "
+            f"원인: {source_result.get('message', '-')}"
+        )
+
+    health = {
+        "상태": "ok" if primary_ok else "fallback_once",
+        "소스": source_result.get("source", "KIS_MASTER") if primary_ok else "CACHE",
+        "fallback사용": not primary_ok,
+        "연속실패거래일": 0 if primary_ok else 1,
+        "종목수": len(target),
+        "메시지": source_result.get("message", ""),
     }
-    for sosok, market_name in [(0, 'KOSPI'), (1, 'KOSDAQ')]:
-        for page in range(1, 7): 
-            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
-            try:
-                res = requests.get(url, headers=custom_headers, timeout=10)
-                soup = BeautifulSoup(res.text, 'html.parser')
-                for tr in soup.select('table.type_2 tbody tr'):
-                    tds = tr.select('td')
-                    if len(tds) > 11:
-                        name_tag = tr.select_one('a.tltle')
-                        if name_tag:
-                            stock_name = name_tag.text
-                            if any(keyword in stock_name for keyword in noise_keywords): continue
-                            marcap = safe_float(tds[6].text)
-                            if marcap >= 8000:
-                                target_list.append({
-                                    '종목명': stock_name, '종목코드': name_tag['href'].split('code=')[-1], 
-                                    '소속': market_name, '현재가': int(safe_float(tds[2].text)),
-                                    '등락률': safe_float(tds[4].text), '시가총액': int(marcap),
-                                    'PER': safe_float(tds[10].text), 'ROE': safe_float(tds[11].text)
-                                })
-            except Exception as e:
-                print(f"[WARN] 시가총액 페이지 수집 실패: {e}")
-            time.sleep(0.5) 
-    return pd.DataFrame(target_list).sort_values('시가총액', ascending=False)
+    if checked_at is not None and trade_date is not None:
+        health = record_source_health(
+            checked_at=checked_at,
+            trade_date=trade_date,
+            source=health["소스"],
+            primary_ok=primary_ok,
+            stock_count=len(target),
+            message=health["메시지"],
+        )
+        if health["상태"] == "fallback_blocked":
+            print(
+                "::error title=Stock universe source blocked::"
+                f"공식 종목 마스터 수집이 {health['연속실패거래일']}거래일 연속 실패했습니다."
+            )
+    target.attrs["source_health"] = health
+    return target
 
 def _request_html(url, headers, timeout=4, retries=2):
     for attempt in range(retries + 1):
@@ -2287,6 +2332,7 @@ def run_scraper(manual_full_parse=False):
     target_kis_date = ref_date.strftime("%Y%m%d")
     # 성과/트렌드 기록일은 실제 거래 기준일(ref_date)로 고정해 주말 실행 시 날짜 왜곡을 방지
     today_date = ref_date.strftime("%Y-%m-%d")
+    target_source_health = {}
 
     already_fetched_kis = False
     if csv_exists("history.csv"):
@@ -2320,13 +2366,16 @@ def run_scraper(manual_full_parse=False):
         is_test_mode = True # KIS API를 스킵하는 테스트 워크플로우임을 확정
         print(f"⚡ [슈퍼 캐시 모드] 기준일({target_kis_date}) 수급 데이터 존재 확인. KIS API를 스킵합니다.")
         
-        df_target = get_target_stock_list()
+        df_target = get_target_stock_list(checked_at=now_kst, trade_date=today_date)
+        target_source_health = df_target.attrs.get("source_health", {})
         df_final = read_table_prefer_db("data.csv")
         
         updated_rows = []
         for idx, row in df_final.iterrows():
             row_dict = row.to_dict()
-            live_info = df_target[df_target['종목명'] == row_dict['종목명']]
+            # KIS 종목 마스터의 기준가는 실시간 현재가가 아니다.
+            # 같은 거래일 재실행에서는 이미 저장된 최신 KIS 종가를 유지한다.
+            live_info = pd.DataFrame()
             
             old_price = row_dict.get('현재가', 1)
             old_gap = row_dict.get('이격도(%)', 100)
@@ -2391,7 +2440,8 @@ def run_scraper(manual_full_parse=False):
     # ==========================================
     else:
         print("📥 [풀 파싱 모드] 새로운 수급 데이터 및 추세 정보를 KIS API로부터 수집합니다.")
-        df_target = get_target_stock_list()
+        df_target = get_target_stock_list(checked_at=now_kst, trade_date=today_date)
+        target_source_health = df_target.attrs.get("source_health", {})
         token = get_kis_access_token()
         kis_app_key, kis_app_secret = resolve_kis_credentials()
         if not token or not kis_app_key or not kis_app_secret:
@@ -2404,6 +2454,8 @@ def run_scraper(manual_full_parse=False):
 
         for i, row in enumerate(df_target.itertuples()):
             code, name, prpr, marcap = row.종목코드, row.종목명, row.현재가, row.시가총액
+            reference_price = prpr
+            daily_return = row.등락률
             sector_name = "분류안됨"
             try:
                 res_nv = requests.get(f"https://finance.naver.com/item/main.naver?code={code}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
@@ -2447,6 +2499,13 @@ def run_scraper(manual_full_parse=False):
                                 '투신': t_amt / 1_000_000, '사모': pef_amt / 1_000_000,
                                 '거래량': vol, '거래대금(억)': trade_value / 100_000_000
                             })
+
+                        if closes and closes[0] > 0:
+                            prpr = closes[0]
+                            if reference_price > 0 and marcap > 0:
+                                marcap = marcap * (prpr / reference_price)
+                        if len(closes) >= 2 and closes[1] > 0:
+                            daily_return = ((closes[0] / closes[1]) - 1.0) * 100.0
 
                         for daily in daily_list:
                             f_qty, p_qty = safe_api_float(daily.get('frgn_ntby_qty')), safe_api_float(daily.get('fund_ntby_qty'))
@@ -2517,7 +2576,7 @@ def run_scraper(manual_full_parse=False):
                 data_list.append({
                     '종목명': name, '종목코드': code, '소속': row.소속, '섹터': sector_name, '테마': theme_name, 'AI수급점수': final_score,
                     'Quant점수': int(round(quant_score)), '정성점수': round(qual_score, 2), '정성보정치': qual_adj, '점수모드': score_mode,
-                    '현재가': prpr, '등락률': row.등락률, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
+                    '현재가': prpr, '등락률': daily_return, '외인강도(%)': f_str, '연기금강도(%)': p_str, '투신강도(%)': t_str, '사모강도(%)': pef_str,
                     '외인연속': foreign_streak, '연기금연속': pension_streak, '이격도(%)': round(gap_20, 1), '손바뀜(%)': round(turnover_rate, 1),
                     'RSI': round(rsi_val, 1), '거래급증(%)': round(vol_surge, 1),
                     '거래대금(억)': round(today_value, 1),
@@ -2759,7 +2818,10 @@ def run_scraper(manual_full_parse=False):
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(f"## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})\n\n{response.text}")
 
-            send_telegram_message(build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated))
+            send_telegram_message(build_telegram_action_message(
+                df_final, now_kst, current_vix, regime, is_eod_updated,
+                source_health=target_source_health,
+            ))
         except Exception as e:
             print(f"⚠️ AI 리포트 생성 실패: {e}")
             fallback_report = f"""## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
@@ -2789,7 +2851,10 @@ AI 리포트 생성에 실패하여 자동 요약본으로 대체합니다.
 """
             with open("report.md", "w", encoding="utf-8") as f:
                 f.write(fallback_report)
-            send_telegram_message(build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated))
+            send_telegram_message(build_telegram_action_message(
+                df_final, now_kst, current_vix, regime, is_eod_updated,
+                source_health=target_source_health,
+            ))
     else:
         # API 키가 없더라도 report.md는 매 실행 최신화
         fallback_report = f"""## 🌐 AlphaPulse 데일리 퀀트 리포트 ({now_kst.strftime('%Y-%m-%d %H:%M')})
@@ -2819,7 +2884,10 @@ Gemini API 키가 없어 자동 요약본으로 생성했습니다.
 """
         with open("report.md", "w", encoding="utf-8") as f:
             f.write(fallback_report)
-        send_telegram_message(build_telegram_action_message(df_final, now_kst, current_vix, regime, is_eod_updated))
+        send_telegram_message(build_telegram_action_message(
+            df_final, now_kst, current_vix, regime, is_eod_updated,
+            source_health=target_source_health,
+        ))
 
     # 주간 1회 용량 리포트 누적 + 매 실행 콘솔 요약
     emit_weekly_storage_report()
