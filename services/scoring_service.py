@@ -57,6 +57,197 @@ ADAPTIVE_THRESHOLD_PROFILES = {
 }
 
 
+V5_FLOW_WEIGHTS = {
+    "대형": {"외국인": 0.45, "연기금": 0.25, "투신사모": 0.15, "지속성": 0.15},
+    "중형": {"외국인": 0.25, "연기금": 0.40, "투신사모": 0.20, "지속성": 0.15},
+    "소형": {"외국인": 0.10, "연기금": 0.50, "투신사모": 0.25, "지속성": 0.15},
+}
+
+
+def classify_stock_tier(market_cap_100m, avg_trading_value_20d_100m):
+    """시가총액과 20일 평균 거래대금으로 수급 해석에 사용할 체급을 정한다."""
+    market_cap_value = pd.to_numeric(market_cap_100m, errors="coerce")
+    trading_value_value = pd.to_numeric(avg_trading_value_20d_100m, errors="coerce")
+    market_cap = float(market_cap_value) if pd.notna(market_cap_value) else 0.0
+    trading_value = float(trading_value_value) if pd.notna(trading_value_value) else 0.0
+    if market_cap >= 100_000 or trading_value >= 1_000:
+        return "대형"
+    if market_cap >= 10_000 or trading_value >= 200:
+        return "중형"
+    return "소형"
+
+
+def calculate_size_aware_flow_score(
+    stock_tier,
+    foreign_rank,
+    pension_rank,
+    trust_private_rank,
+    persistence_ratio,
+    foreign_positive=True,
+    pension_positive=True,
+    trust_private_positive=True,
+    liquidity_ok=True,
+    return_details=False,
+):
+    """체급별 핵심 매수 주체의 상대순위와 지속성을 0~100점으로 환산한다."""
+    tier = stock_tier if stock_tier in V5_FLOW_WEIGHTS else "소형"
+    weights = V5_FLOW_WEIGHTS[tier]
+
+    def _pct(value):
+        parsed = pd.to_numeric(value, errors="coerce")
+        return max(0.0, min(1.0, float(parsed))) if pd.notna(parsed) else 0.0
+
+    components = {
+        "외국인": _pct(foreign_rank) * 100.0 if foreign_positive else 0.0,
+        "연기금": _pct(pension_rank) * 100.0 if pension_positive else 0.0,
+        "투신사모": _pct(trust_private_rank) * 100.0 if trust_private_positive else 0.0,
+        "지속성": _pct(persistence_ratio) * 100.0,
+    }
+    raw_score = sum(components[key] * weights[key] for key in weights)
+    core_actor = "외국인" if tier == "대형" else "연기금"
+    core_positive = foreign_positive if core_actor == "외국인" else pension_positive
+    penalty = 0.0
+    warnings = []
+    if not core_positive:
+        penalty += 25.0
+        warnings.append(f"핵심 주체 {core_actor} 순매수 미확인")
+    if not liquidity_ok:
+        penalty += 30.0
+        warnings.append("거래대금 기준 미달")
+    score = max(0.0, min(100.0, raw_score - penalty))
+    reason = (
+        f"{tier}주 핵심 {core_actor}, 외국인 {components['외국인']:.0f}, "
+        f"연기금 {components['연기금']:.0f}, 투신·사모 {components['투신사모']:.0f}, "
+        f"지속성 {components['지속성']:.0f}"
+    )
+    result = {
+        "score": round(score, 2),
+        "stock_tier": tier,
+        "core_actor": core_actor,
+        "core_flow_positive": bool(core_positive),
+        "liquidity_ok": bool(liquidity_ok),
+        "components": {key: round(value, 2) for key, value in components.items()},
+        "warnings": warnings,
+        "reason": reason,
+    }
+    return result if return_details else result["score"]
+
+
+def calculate_market_leadership_score(
+    relative_return_5d,
+    relative_return_20d,
+    trading_value_rank,
+    trend_quality,
+    drawdown_from_20d_high,
+    return_details=False,
+):
+    """시총 대신 시장 대비 성과, 유동성, 추세 지속성으로 주도성을 평가한다."""
+
+    def _value(value, default=0.0):
+        parsed = pd.to_numeric(value, errors="coerce")
+        return float(parsed) if pd.notna(parsed) else float(default)
+
+    rel5 = _value(relative_return_5d)
+    rel20 = _value(relative_return_20d)
+    liquidity_rank = max(0.0, min(1.0, _value(trading_value_rank)))
+    trend = max(0.0, min(100.0, _value(trend_quality)))
+    drawdown = _value(drawdown_from_20d_high)
+
+    rel5_score = max(0.0, min(25.0, (rel5 + 2.0) / 10.0 * 25.0))
+    rel20_score = max(0.0, min(30.0, (rel20 + 3.0) / 18.0 * 30.0))
+    liquidity_score = liquidity_rank * 20.0
+    trend_score = trend / 100.0 * 20.0
+    high_score = 5.0 if -10.0 <= drawdown <= 0.5 else (2.0 if -15.0 <= drawdown < -10.0 else 0.0)
+    penalty = 15.0 if rel5 < -4.0 else 0.0
+    score = max(0.0, min(100.0, rel5_score + rel20_score + liquidity_score + trend_score + high_score - penalty))
+    result = {
+        "score": round(score, 2),
+        "relative_return_5d": round(rel5, 4),
+        "relative_return_20d": round(rel20, 4),
+        "trading_value_rank": round(liquidity_rank, 4),
+        "trend_quality": round(trend, 2),
+        "drawdown_from_20d_high": round(drawdown, 4),
+        "reason": (
+            f"시장대비 5일 {rel5:+.1f}%p·20일 {rel20:+.1f}%p, "
+            f"거래대금 상위 {liquidity_rank * 100:.0f}%, 추세 {trend:.0f}"
+        ),
+    }
+    return result if return_details else result["score"]
+
+
+def evaluate_v5_entry_setup(
+    return_20d,
+    ma20_gap,
+    drawdown_from_20d_high,
+    breakout_from_prior_20d_high,
+    trading_value_vitality,
+    rsi,
+    trend_rising,
+    flow_score,
+    return_details=False,
+):
+    """눌림목과 실제 전고점 돌파를 별도 관문으로 판정한다."""
+
+    def _value(value, default=0.0):
+        parsed = pd.to_numeric(value, errors="coerce")
+        return float(parsed) if pd.notna(parsed) else float(default)
+
+    ret20 = _value(return_20d)
+    gap = _value(ma20_gap)
+    drawdown = _value(drawdown_from_20d_high)
+    breakout = _value(breakout_from_prior_20d_high)
+    vitality = _value(trading_value_vitality)
+    rsi_value = _value(rsi, 50.0)
+    flow = _value(flow_score)
+
+    pullback_checks = {
+        "prior_uptrend": ret20 >= 3.0 and bool(trend_rising),
+        "healthy_drawdown": -10.0 <= drawdown <= -2.0,
+        "ma20_support": -2.0 <= gap <= 6.0,
+        "volume_control": 0.55 <= vitality <= 1.6,
+        "rsi_ok": 42.0 <= rsi_value <= 72.0,
+        "flow_ok": flow >= 55.0,
+    }
+    breakout_checks = {
+        "prior_uptrend": ret20 >= 3.0 and bool(trend_rising),
+        "actual_breakout": breakout >= 0.0,
+        "volume_confirmation": vitality >= 1.15,
+        "not_extended": gap <= 12.0 and rsi_value <= 82.0,
+        "flow_ok": flow >= 55.0,
+    }
+    pullback_passed = all(pullback_checks.values())
+    breakout_passed = all(breakout_checks.values())
+    if pullback_passed:
+        setup, passed, quality = "눌림확인", True, 100.0
+    elif breakout_passed:
+        setup, passed, quality = "돌파확인", True, 95.0
+    elif ret20 >= 3.0 and -12.0 <= drawdown <= -1.0:
+        setup, passed = "눌림대기", False
+        quality = sum(pullback_checks.values()) / len(pullback_checks) * 100.0
+    elif ret20 >= 3.0 and breakout >= -3.0:
+        setup, passed = "돌파대기", False
+        quality = sum(breakout_checks.values()) / len(breakout_checks) * 100.0
+    else:
+        setup, passed, quality = "조건미충족", False, 0.0
+
+    failed = []
+    selected_checks = pullback_checks if setup.startswith("눌림") else breakout_checks
+    for key, value in selected_checks.items():
+        if not value:
+            failed.append(key)
+    result = {
+        "passed": bool(passed),
+        "setup": setup,
+        "quality_score": round(float(quality), 2),
+        "failed_checks": failed,
+        "reason": (
+            f"{setup}: 20일 {ret20:+.1f}%, 고점대비 {drawdown:+.1f}%, "
+            f"MA20 이격 {gap:+.1f}%, 거래대금 {vitality:.2f}배"
+        ),
+    }
+    return result if return_details else result["passed"]
+
+
 def calculate_rsi(prices, period=14):
     if len(prices) < period + 1:
         return 50.0

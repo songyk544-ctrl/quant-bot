@@ -33,10 +33,13 @@ from services.kis_client import (
 from services.backtest_generation_service import build_backtest_candidate_scores
 from services.scoring_service import (
     blend_quant_qual_score,
+    calculate_market_leadership_score,
+    calculate_size_aware_flow_score,
     calculate_dynamic_score,
     calculate_qualitative_score,
     calculate_rsi,
     calculate_trend_quality,
+    evaluate_v5_entry_setup,
     score_disclosures_and_reports,
 )
 from services.telegram_service import build_telegram_action_message, send_telegram_message
@@ -244,6 +247,10 @@ def build_replay_score_trend(top_n=3, min_lookback=10):
         "종목명", "종목코드", "AI수급점수", "매수후보", "진입유형", "스윙우선순위",
         "기관동행점수", "수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "종목체급", "전략슬리브",
         "거래대금활력", "20일평균거래대금(억)", "진입코멘트", "매도점검", "테마",
+        "체급별수급점수", "핵심수급주체", "핵심수급상태", "체급별수급사유",
+        "외인5일강도(%)", "외인10일강도(%)", "투신5일강도(%)", "사모5일강도(%)", "외인5일매수일수", "연기금5일매수일수",
+        "시장대비5일(%p)", "시장대비20일(%p)", "V5주도성점수", "V5주도성사유",
+        "V5진입상태", "V5진입확인", "V5진입품질", "V5진입사유", "V5종합점수", "V5추천상태", "V5추천사유",
         "정배열", "추세품질점수", "MA5", "MA10", "MA20", "순위", "날짜"
     ]
     existing = pd.DataFrame(columns=replay_cols)
@@ -1398,18 +1405,40 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
                 marcap_map = dict(zip(out["종목명"].astype(str), _num("시가총액").replace(0, pd.NA)))
                 avg_value_map = dict(zip(out["종목명"].astype(str), avg_value_20d.replace(0, pd.NA)))
                 p5_map, p10_map, inst10_map, absorb_map, days_map = {}, {}, {}, {}, {}
+                f5_map, f10_map, t5_map, pef5_map = {}, {}, {}, {}
+                foreign_days_map, pension_days_map = {}, {}
+                ret5_map, ret20_map, drawdown20_map, breakout20_map = {}, {}, {}, {}
                 for name, grp in raw_hist.groupby("종목명"):
+                    g = grp.tail(21).copy()
+                    closes = pd.to_numeric(g["종가"], errors="coerce").dropna()
+                    if not closes.empty:
+                        current_close = float(closes.iloc[-1])
+                        if len(closes) >= 6 and float(closes.iloc[-6]) > 0:
+                            ret5_map[str(name)] = (current_close / float(closes.iloc[-6]) - 1.0) * 100.0
+                        if len(closes) >= 21 and float(closes.iloc[-21]) > 0:
+                            ret20_map[str(name)] = (current_close / float(closes.iloc[-21]) - 1.0) * 100.0
+                        recent20 = closes.tail(20)
+                        high20 = float(recent20.max()) if not recent20.empty else current_close
+                        drawdown20_map[str(name)] = (current_close / high20 - 1.0) * 100.0 if high20 > 0 else 0.0
+                        prior20 = closes.iloc[:-1].tail(20)
+                        prior_high = float(prior20.max()) if not prior20.empty else current_close
+                        breakout20_map[str(name)] = (current_close / prior_high - 1.0) * 100.0 if prior_high > 0 else 0.0
+
                     denom = marcap_map.get(str(name), None)
                     if denom is None or pd.isna(denom) or float(denom) <= 0:
                         continue
-                    g = grp.tail(10)
-                    g5 = g.tail(5).copy()
+                    flow10 = grp.tail(10)
+                    g5 = flow10.tail(5).copy()
                     p5 = pd.to_numeric(g5["연기금"], errors="coerce").fillna(0.0).sum()
-                    p10 = pd.to_numeric(g["연기금"], errors="coerce").fillna(0.0).sum()
+                    p10 = pd.to_numeric(flow10["연기금"], errors="coerce").fillna(0.0).sum()
+                    f5 = pd.to_numeric(g5["외인"], errors="coerce").fillna(0.0).sum()
+                    f10 = pd.to_numeric(flow10["외인"], errors="coerce").fillna(0.0).sum()
+                    t5 = pd.to_numeric(g5["투신"], errors="coerce").fillna(0.0).sum()
+                    pef5 = pd.to_numeric(g5["사모"], errors="coerce").fillna(0.0).sum()
                     inst10 = (
-                        pd.to_numeric(g["연기금"], errors="coerce").fillna(0.0).sum()
-                        + pd.to_numeric(g["투신"], errors="coerce").fillna(0.0).sum()
-                        + pd.to_numeric(g["사모"], errors="coerce").fillna(0.0).sum()
+                        pd.to_numeric(flow10["연기금"], errors="coerce").fillna(0.0).sum()
+                        + pd.to_numeric(flow10["투신"], errors="coerce").fillna(0.0).sum()
+                        + pd.to_numeric(flow10["사모"], errors="coerce").fillna(0.0).sum()
                     )
                     smart5 = (
                         pd.to_numeric(g5["연기금"], errors="coerce").fillna(0.0)
@@ -1423,13 +1452,29 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
                     days_map[str(name)] = int((smart5 > 0).sum())
                     p5_map[str(name)] = round(float(p5) / float(denom), 4)
                     p10_map[str(name)] = round(float(p10) / float(denom), 4)
+                    f5_map[str(name)] = round(float(f5) / float(denom), 4)
+                    f10_map[str(name)] = round(float(f10) / float(denom), 4)
+                    t5_map[str(name)] = round(float(t5) / float(denom), 4)
+                    pef5_map[str(name)] = round(float(pef5) / float(denom), 4)
+                    foreign_days_map[str(name)] = int((pd.to_numeric(g5["외인"], errors="coerce").fillna(0.0) > 0).sum())
+                    pension_days_map[str(name)] = int((pd.to_numeric(g5["연기금"], errors="coerce").fillna(0.0) > 0).sum())
                     inst10_map[str(name)] = round(float(inst10) / float(denom), 4)
                 names = out["종목명"].astype(str)
                 out["연기금5일강도(%)"] = names.map(p5_map).fillna(0.0)
                 out["연기금10일강도(%)"] = names.map(p10_map).fillna(0.0)
+                out["외인5일강도(%)"] = names.map(f5_map).fillna(0.0)
+                out["외인10일강도(%)"] = names.map(f10_map).fillna(0.0)
+                out["투신5일강도(%)"] = names.map(t5_map).fillna(0.0)
+                out["사모5일강도(%)"] = names.map(pef5_map).fillna(0.0)
+                out["외인5일매수일수"] = names.map(foreign_days_map).fillna(0).astype(int)
+                out["연기금5일매수일수"] = names.map(pension_days_map).fillna(0).astype(int)
                 out["기관10일동행강도(%)"] = names.map(inst10_map).fillna(0.0)
                 out["수급흡수율"] = names.map(absorb_map).fillna(0.0)
                 out["수급지속일수"] = names.map(days_map).fillna(0).astype(int)
+                out["5일수익률"] = names.map(ret5_map)
+                out["20일수익률"] = names.map(ret20_map)
+                out["20일고점낙폭"] = names.map(drawdown20_map)
+                out["20일전고점돌파율"] = names.map(breakout20_map)
     except Exception as e:
         print(f"[WARN] 최근 기관 수급 지표 계산 실패: {e}")
 
@@ -1492,6 +1537,92 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
         + (inst10.clip(lower=0) * 2.0)
         + (out["수급품질점수"] * 0.22)
     ).clip(0, 35).round(2)
+
+    # v5는 기존 추천을 바꾸지 않고 체급별 핵심 수급과 시장 대비 주도성을 병렬 산출합니다.
+    for col in ["5일수익률", "20일수익률", "20일고점낙폭", "20일전고점돌파율"]:
+        if col not in out.columns:
+            out[col] = 0.0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
+    foreign_v5 = _num("외인5일강도(%)") + _num("외인10일강도(%)") * 0.5
+    pension_v5 = p5 + p10 * 0.5
+    trust_private = _num("투신5일강도(%)") + _num("사모5일강도(%)")
+    foreign_positive = foreign_v5 > 0
+    pension_positive = pension_v5 > 0
+    trust_private_positive = trust_private > 0
+    foreign_rank = foreign_v5.where(foreign_positive).rank(pct=True).fillna(0.0)
+    pension_rank = pension_v5.where(pension_positive).rank(pct=True).fillna(0.0)
+    trust_private_rank = trust_private.where(trust_private_positive).rank(pct=True).fillna(0.0)
+    foreign_persistence = (_num("외인5일매수일수") / 5.0).clip(0.0, 1.0)
+    pension_persistence = (_num("연기금5일매수일수") / 5.0).clip(0.0, 1.0)
+    persistence_ratio = pd.Series(
+        np.where(out["종목체급"].astype(str).eq("대형"), foreign_persistence, pension_persistence),
+        index=out.index,
+        dtype=float,
+    )
+    liquidity_ok_v5 = (avg_value_20d >= 100.0) & (value_vitality >= 0.65)
+
+    flow_results = []
+    for idx in out.index:
+        flow_results.append(calculate_size_aware_flow_score(
+            out.at[idx, "종목체급"],
+            foreign_rank.at[idx],
+            pension_rank.at[idx],
+            trust_private_rank.at[idx],
+            persistence_ratio.at[idx],
+            foreign_positive=bool(foreign_positive.at[idx]),
+            pension_positive=bool(pension_positive.at[idx]),
+            trust_private_positive=bool(trust_private_positive.at[idx]),
+            liquidity_ok=bool(liquidity_ok_v5.at[idx]),
+            return_details=True,
+        ))
+    out["체급별수급점수"] = [item["score"] for item in flow_results]
+    out["핵심수급주체"] = [item["core_actor"] for item in flow_results]
+    out["핵심수급상태"] = ["유지" if item["core_flow_positive"] else "미확인" for item in flow_results]
+    out["체급별수급사유"] = [item["reason"] for item in flow_results]
+
+    market_return_5d = float(out["5일수익률"].median()) if not out.empty else 0.0
+    market_return_20d = float(out["20일수익률"].median()) if not out.empty else 0.0
+    out["시장대비5일(%p)"] = (out["5일수익률"] - market_return_5d).round(2)
+    out["시장대비20일(%p)"] = (out["20일수익률"] - market_return_20d).round(2)
+    trading_value_rank = avg_value_20d.rank(pct=True).fillna(0.0)
+    leadership_results = []
+    for idx in out.index:
+        leadership_results.append(calculate_market_leadership_score(
+            out.at[idx, "시장대비5일(%p)"],
+            out.at[idx, "시장대비20일(%p)"],
+            trading_value_rank.at[idx],
+            trend_quality.at[idx],
+            out.at[idx, "20일고점낙폭"],
+            return_details=True,
+        ))
+    out["V5주도성점수"] = [item["score"] for item in leadership_results]
+    out["V5주도성사유"] = [item["reason"] for item in leadership_results]
+
+    entry_results = []
+    for idx in out.index:
+        entry_results.append(evaluate_v5_entry_setup(
+            out.at[idx, "20일수익률"],
+            gap.at[idx] - 100.0,
+            out.at[idx, "20일고점낙폭"],
+            out.at[idx, "20일전고점돌파율"],
+            value_vitality.at[idx],
+            rsi.at[idx],
+            bool(trend_up.at[idx]),
+            out.at[idx, "체급별수급점수"],
+            return_details=True,
+        ))
+    out["V5진입상태"] = [item["setup"] for item in entry_results]
+    out["V5진입확인"] = [item["passed"] for item in entry_results]
+    out["V5진입품질"] = [item["quality_score"] for item in entry_results]
+    out["V5진입사유"] = [item["reason"] for item in entry_results]
+    qualitative = _num("정성점수", 50.0)
+    qualitative_adjustment = ((qualitative - 50.0) * 0.1).clip(-5.0, 5.0)
+    out["V5종합점수"] = (
+        out["체급별수급점수"] * 0.45
+        + out["V5주도성점수"] * 0.35
+        + out["V5진입품질"] * 0.15
+        + qualitative_adjustment
+    ).clip(0.0, 100.0).round(2)
 
     risk_label = "RiskOff" if current_vix >= 28 else ("Neutral" if current_vix >= 22 else "RiskOn")
     out["시장위험레버"] = risk_label
@@ -1635,6 +1766,42 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
             sell_checks.append("보유/관찰")
     out["진입코멘트"] = comments
     out["매도점검"] = sell_checks
+
+    out["V5추천상태"] = "관찰"
+    v5_risk = out["매도점검"].astype(str).str.contains("매도|제외|훼손|축소|주의|청산|이탈", regex=True, na=False)
+    v5_eligible = (
+        out["V5진입확인"].astype(bool)
+        & (out["체급별수급점수"] >= 55.0)
+        & (out["V5주도성점수"] >= 55.0)
+        & liquidity_ok_v5
+        & ~v5_risk
+        & (risk_label != "RiskOff")
+    )
+    out.loc[v5_risk | (~liquidity_ok_v5), "V5추천상태"] = "제외"
+    out.loc[v5_eligible, "V5추천상태"] = "통과"
+    out["V5추천사유"] = out.apply(
+        lambda row: (
+            f"{row.get('핵심수급주체', '-')} 수급 {row.get('체급별수급점수', 0):.1f} · "
+            f"주도성 {row.get('V5주도성점수', 0):.1f} · {row.get('V5진입상태', '관찰')}"
+        ),
+        axis=1,
+    )
+    if v5_eligible.any():
+        v5_pool = out[v5_eligible].sort_values("V5종합점수", ascending=False)
+        selected_v5 = []
+        selected_themes = set()
+        for idx, row in v5_pool.iterrows():
+            theme = str(row.get("테마", row.get("섹터", "")) or "").split(";")[0].strip()
+            if theme and theme in selected_themes:
+                continue
+            selected_v5.append(idx)
+            if theme:
+                selected_themes.add(theme)
+            if len(selected_v5) >= int(max_buy_candidates):
+                break
+        out.loc[v5_eligible, "V5추천상태"] = "통과대기"
+        if selected_v5:
+            out.loc[selected_v5, "V5추천상태"] = "추천"
 
     out["매수후보"] = "관찰"
     eligible = out[out["진입유형"].isin(["눌림목", "돌파", "주도눌림", "주도돌파"]) & (out["스윙우선순위"] >= 42)].copy()
@@ -2640,6 +2807,10 @@ def run_scraper(manual_full_parse=False):
     trend_cols = [
         '종목명', '종목코드', 'AI수급점수', '매수후보', '진입유형', '스윙우선순위',
         '기관동행점수', '수급품질점수', '주도주점수', '수급흡수율', '수급지속일수', '종목체급', '전략슬리브',
+        '체급별수급점수', '핵심수급주체', '핵심수급상태', '체급별수급사유',
+        '외인5일강도(%)', '외인10일강도(%)', '투신5일강도(%)', '사모5일강도(%)', '외인5일매수일수', '연기금5일매수일수',
+        '시장대비5일(%p)', '시장대비20일(%p)', 'V5주도성점수', 'V5주도성사유',
+        'V5진입상태', 'V5진입확인', 'V5진입품질', 'V5진입사유', 'V5종합점수', 'V5추천상태', 'V5추천사유',
         '거래대금활력', '20일평균거래대금(억)', '진입코멘트', '매도점검', '테마', '정배열', '추세품질점수',
         'MA5', 'MA10', 'MA20'
     ]

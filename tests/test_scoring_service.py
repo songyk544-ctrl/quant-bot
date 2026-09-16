@@ -2,7 +2,62 @@ import unittest
 
 import pandas as pd
 
-from services.scoring_service import passes_confirmed_pullback_filter
+from services.scoring_service import (
+    calculate_market_leadership_score,
+    calculate_size_aware_flow_score,
+    classify_stock_tier,
+    evaluate_v5_entry_setup,
+    passes_confirmed_pullback_filter,
+)
+
+
+class V5CoreScoringTest(unittest.TestCase):
+    def test_stock_tier_uses_market_cap_and_liquidity(self):
+        self.assertEqual(classify_stock_tier(150_000, 100), "대형")
+        self.assertEqual(classify_stock_tier(5_000, 1_200), "대형")
+        self.assertEqual(classify_stock_tier(20_000, 150), "중형")
+        self.assertEqual(classify_stock_tier(3_000, 80), "소형")
+
+    def test_large_and_small_caps_use_different_core_flow_actors(self):
+        large = calculate_size_aware_flow_score(
+            "대형", 0.9, 0.2, 0.3, 0.8,
+            foreign_positive=True,
+            pension_positive=False,
+            return_details=True,
+        )
+        small = calculate_size_aware_flow_score(
+            "소형", 0.9, 0.2, 0.3, 0.8,
+            foreign_positive=True,
+            pension_positive=False,
+            return_details=True,
+        )
+        self.assertEqual(large["core_actor"], "외국인")
+        self.assertEqual(small["core_actor"], "연기금")
+        self.assertGreater(large["score"], small["score"])
+        self.assertTrue(small["warnings"])
+
+    def test_market_leadership_rewards_relative_strength(self):
+        leader = calculate_market_leadership_score(5, 12, 0.9, 90, -4, return_details=True)
+        laggard = calculate_market_leadership_score(-5, -8, 0.9, 90, -4, return_details=True)
+        self.assertGreater(leader["score"], laggard["score"])
+        self.assertIn("시장대비", leader["reason"])
+
+    def test_entry_setup_requires_confirmed_pullback_or_breakout(self):
+        pullback = evaluate_v5_entry_setup(
+            12, 2, -5, -4, 0.9, 58, True, 70, return_details=True
+        )
+        waiting = evaluate_v5_entry_setup(
+            12, 2, -5, -4, 0.3, 58, True, 70, return_details=True
+        )
+        breakout = evaluate_v5_entry_setup(
+            15, 8, 0, 0.5, 1.4, 75, True, 68, return_details=True
+        )
+        self.assertTrue(pullback["passed"])
+        self.assertEqual(pullback["setup"], "눌림확인")
+        self.assertFalse(waiting["passed"])
+        self.assertEqual(waiting["setup"], "눌림대기")
+        self.assertTrue(breakout["passed"])
+        self.assertEqual(breakout["setup"], "돌파확인")
 
 
 class ConfirmedPullbackFilterTest(unittest.TestCase):

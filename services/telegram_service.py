@@ -137,9 +137,6 @@ def _append_source_health(lines, source_health):
     health = source_health or {}
     status = str(health.get("상태", ""))
     if status == "ok":
-        lines.append(
-            f"데이터: KIS 공식 종목 마스터 · {int(float(health.get('종목수', 0) or 0)):,}종목"
-        )
         return
     if status.startswith("fallback"):
         count = int(float(health.get("연속실패거래일", 1) or 1))
@@ -153,7 +150,7 @@ def _append_source_health(lines, source_health):
         )
 
 
-def build_telegram_action_message(
+def _build_legacy_telegram_action_message(
     df_final,
     now_kst,
     current_vix,
@@ -281,6 +278,176 @@ def build_telegram_action_message(
                 )
 
     lines.append("")
+    _append_source_health(lines, source_health)
+    lines.extend(["", f"대시보드: {DASHBOARD_URL}"])
+    return "\n".join(lines)
+
+
+def _market_action(snapshot, current_vix, candidate_count):
+    returns = pd.to_numeric(snapshot.get("등락률", pd.Series(dtype=float)), errors="coerce").dropna()
+    up_ratio = float((returns > 0).mean()) if not returns.empty else 0.5
+    if {"현재가", "MA20"}.issubset(snapshot.columns):
+        current = pd.to_numeric(snapshot["현재가"], errors="coerce")
+        ma20 = pd.to_numeric(snapshot["MA20"], errors="coerce")
+        valid = current.notna() & ma20.notna() & (ma20 > 0)
+        ma20_ratio = float((current[valid] >= ma20[valid]).mean()) if valid.any() else 0.5
+    elif "정배열" in snapshot.columns:
+        ma20_ratio = float(snapshot["정배열"].fillna(False).astype(bool).mean())
+    else:
+        ma20_ratio = 0.5
+    try:
+        vix = float(current_vix)
+    except Exception:
+        vix = 20.0
+
+    if vix >= 28.0 or up_ratio <= 0.32 or ma20_ratio <= 0.38:
+        return {
+            "label": "신규매수 중단",
+            "positions": 0,
+            "total_weight": 0,
+            "position_weight": 0,
+            "reason": "시장 위험 또는 시장 폭이 방어 기준에 해당합니다.",
+            "up_ratio": up_ratio,
+            "ma20_ratio": ma20_ratio,
+        }
+    if candidate_count <= 0 or vix >= 25.0 or up_ratio <= 0.43 or ma20_ratio <= 0.46:
+        return {
+            "label": "관찰",
+            "positions": min(1, candidate_count),
+            "total_weight": 20 if candidate_count else 0,
+            "position_weight": 20 if candidate_count else 0,
+            "reason": "시장 또는 후보 확인 조건이 충분하지 않습니다.",
+            "up_ratio": up_ratio,
+            "ma20_ratio": ma20_ratio,
+        }
+    if vix >= 22.0 or up_ratio <= 0.52 or ma20_ratio <= 0.52:
+        return {
+            "label": "선별 매수",
+            "positions": min(2, candidate_count),
+            "total_weight": 50,
+            "position_weight": 30,
+            "reason": "시장 전반보다 확인된 수급·진입 후보만 선별할 구간입니다.",
+            "up_ratio": up_ratio,
+            "ma20_ratio": ma20_ratio,
+        }
+    return {
+        "label": "매수 가능",
+        "positions": min(3, candidate_count),
+        "total_weight": 90,
+        "position_weight": 35,
+        "reason": "시장 폭과 후보 조건이 모두 진입 기준을 충족합니다.",
+        "up_ratio": up_ratio,
+        "ma20_ratio": ma20_ratio,
+    }
+
+
+def _candidate_reason_lines(row):
+    reasons = []
+    core_actor = str(row.get("핵심수급주체", "")).strip()
+    flow_score = pd.to_numeric(row.get("체급별수급점수"), errors="coerce")
+    if core_actor and pd.notna(flow_score):
+        reasons.append(f"{core_actor} 중심 수급 점수 {float(flow_score):.1f}")
+    rel5 = pd.to_numeric(row.get("시장대비5일(%p)"), errors="coerce")
+    rel20 = pd.to_numeric(row.get("시장대비20일(%p)"), errors="coerce")
+    if pd.notna(rel5) or pd.notna(rel20):
+        rel5_text = f"{float(rel5):+.1f}%p" if pd.notna(rel5) else "-"
+        rel20_text = f"{float(rel20):+.1f}%p" if pd.notna(rel20) else "-"
+        reasons.append(f"시장 대비 5일 {rel5_text} · 20일 {rel20_text}")
+    setup = str(row.get("V5진입상태", row.get("진입유형", ""))).strip()
+    if setup:
+        reasons.append(f"진입 상태 {setup}")
+    comment = str(row.get("진입코멘트", "")).strip()
+    if comment and comment not in {"-", "nan", "추가 확인 필요"}:
+        reasons.append(comment)
+    return reasons[:3]
+
+
+def build_telegram_action_message(
+    df_final,
+    now_kst,
+    current_vix,
+    regime,
+    is_eod_updated,
+    source_health=None,
+):
+    """모바일에서 빠르게 판단할 수 있는 수급 추천 중심 장마감 브리프."""
+    session_label = "장마감" if is_eod_updated else "장중"
+    snapshot = _current_snapshot(df_final)
+    try:
+        _, positions, _ = _build_core_book()
+    except Exception as exc:
+        print(f"[WARN] Telegram 보유종목 구성 실패: {exc}")
+        positions = pd.DataFrame()
+
+    candidates = pd.DataFrame()
+    v5_enabled = os.environ.get("TELEGRAM_USE_V5", "").strip().lower() in {"1", "true", "yes"}
+    uses_v5 = v5_enabled and not snapshot.empty and "V5추천상태" in snapshot.columns
+    if uses_v5:
+        candidates = snapshot[snapshot["V5추천상태"].astype(str).eq("추천")].copy()
+    if not uses_v5 and candidates.empty and not snapshot.empty and "매수후보" in snapshot.columns:
+        candidates = snapshot[snapshot["매수후보"].astype(str).eq("신규후보")].copy()
+
+    if not positions.empty and "종목명" in positions.columns and not candidates.empty:
+        held_names = set(positions["종목명"].dropna().astype(str))
+        candidates = candidates[~candidates["종목명"].astype(str).isin(held_names)]
+    score_cols = [c for c in (["V5종합점수"] if uses_v5 else ["스윙우선순위", "AI수급점수"]) if c in candidates.columns]
+    if score_cols:
+        for col in score_cols:
+            candidates[col] = pd.to_numeric(candidates[col], errors="coerce").fillna(0.0)
+        candidates = candidates.sort_values(score_cols, ascending=False)
+    candidates = candidates.head(3)
+    action = _market_action(snapshot, current_vix, len(candidates))
+
+    lines = [
+        f"AlphaPulse {session_label} 수급 브리프",
+        now_kst.strftime("%Y-%m-%d %H:%M KST"),
+        "",
+        "[오늘의 판단]",
+        action["label"],
+        (
+            f"최대 {action['positions']}종목 · 총 투자비중 {action['total_weight']}% 이내 · "
+            f"종목당 최대 {action['position_weight']}%"
+        ),
+        action["reason"],
+        "",
+        "[오늘의 수급 추천]",
+    ]
+    if candidates.empty:
+        lines.append("오늘 기준을 통과한 신규 후보가 없습니다.")
+    else:
+        if action["positions"] <= 0:
+            lines.append("시장 방어 기준으로 아래 종목은 관찰만 하며 신규 진입하지 않습니다.")
+        for rank, (_, row) in enumerate(candidates.iterrows(), start=1):
+            setup = row.get("V5진입상태", row.get("진입유형", "관찰"))
+            decision = f"관찰 · {setup}" if action["positions"] <= 0 else str(setup)
+            lines.extend(["", f"{rank}위 {_name(row.get('종목명'))}", f"판정: {decision}", "추천 이유"])
+            reasons = _candidate_reason_lines(row)
+            if reasons:
+                for reason_rank, reason in enumerate(reasons, start=1):
+                    lines.append(f"{reason_rank}. {reason}")
+            else:
+                lines.append("1. 수급·추세 후보 기준 통과")
+            check = str(row.get("매도점검", "보유/관찰"))
+            if check not in {"", "보유/관찰", "nan"}:
+                lines.append(f"주의: {check}")
+
+    risk_positions = pd.DataFrame()
+    if not positions.empty and "종목명" in positions.columns and not snapshot.empty:
+        extra = [c for c in ["매도점검", "진입유형"] if c in snapshot.columns]
+        enriched = positions.merge(snapshot[extra], left_on="종목명", right_index=True, how="left") if extra else positions.copy()
+        checks = enriched.get("매도점검", pd.Series("보유/관찰", index=enriched.index)).fillna("보유/관찰").astype(str)
+        risk_positions = enriched[checks.apply(lambda value: any(word in value for word in RISK_KEYWORDS))]
+    if not risk_positions.empty:
+        lines.extend(["", "[보유 위험 점검]"])
+        for rank, (_, row) in enumerate(risk_positions.head(3).iterrows(), start=1):
+            lines.append(f"{rank}. {_name(row.get('종목명'))} · {row.get('매도점검', '점검 필요')}")
+
+    lines.extend([
+        "",
+        "[추가 시황]",
+        f"시장 상태: {regime} · VIX {float(current_vix):.1f}",
+        f"상승 종목 {action['up_ratio'] * 100:.0f}% · 정배열 {action['ma20_ratio'] * 100:.0f}%",
+    ])
     _append_source_health(lines, source_health)
     lines.extend(["", f"대시보드: {DASHBOARD_URL}"])
     return "\n".join(lines)
