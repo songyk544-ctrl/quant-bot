@@ -84,12 +84,18 @@ def render_strategy_dashboard_tab(
     load_swing_trades_safe,
     fetch_yahoo_chart_history,
     macro_data=None,
+    load_strategy_settings=None,
+    save_strategy_settings=None,
 ):
     render_section_header(f"{app_name} 전략 대시보드", "백테스트, 현재 포지션, 신규 후보를 한 화면에서 운용 관점으로 확인합니다.", badge_text="Strategy")
     if not is_vip:
         show_premium_paywall("가상 포트폴리오 누적 수익률 및 운용 대시보드는 코드 인증 후 확인할 수 있습니다.")
     else:
-        strategy_settings = _load_strategy_settings()
+        strategy_settings = (
+            load_strategy_settings()
+            if callable(load_strategy_settings)
+            else _load_strategy_settings()
+        )
         saved_initial_cash = _parse_cash_amount(strategy_settings.get("initial_cash", 5_000_000))
         saved_start_date = pd.to_datetime(
             strategy_settings.get("benchmark_start_date", DEFAULT_BENCHMARK_START_DATE),
@@ -157,10 +163,19 @@ def render_strategy_dashboard_tab(
                 backtest_initial_cash = max(1_000_000, min(100_000_000, backtest_initial_cash))
             with bt_col_save:
                 if st.button("저장", key="save_strategy_initial_cash", use_container_width=True):
-                    settings = _load_strategy_settings()
+                    settings = (
+                        load_strategy_settings()
+                        if callable(load_strategy_settings)
+                        else _load_strategy_settings()
+                    )
                     settings["initial_cash"] = int(backtest_initial_cash)
                     settings["benchmark_start_date"] = selected_start_date.strftime("%Y-%m-%d")
-                    if _save_strategy_settings(settings):
+                    save_succeeded = (
+                        save_strategy_settings(settings)
+                        if callable(save_strategy_settings)
+                        else _save_strategy_settings(settings)
+                    )
+                    if save_succeeded:
                         st.toast("기준일과 초기 투자금을 저장했습니다.")
                     else:
                         st.warning("저장 실패")
@@ -372,7 +387,7 @@ def render_strategy_dashboard_tab(
                             <div class="kpi-title">{int(backtest_initial_cash):,}원 포트폴리오 수익률</div>
                             <div class="kpi-value">{current_port_ret:+.2f}%</div>
                             <span class="kpi-delta" style="background: rgba(54,192,106,0.18); color:{port_delta_color};">최근 {port_daily_diff:+.2f}%</span>
-                            <div class="kpi-meta">평가금액 {current_equity:,.0f}원 · 현금 {current_cash:,.0f}원</div>
+                            <div class="kpi-meta">가상 평가금액 {current_equity:,.0f}원 · 가상 대기현금 {current_cash:,.0f}원</div>
                         </div>
                         <div class="kpi-card">
                             <div class="kpi-title">KOSPI 누적 수익률</div>

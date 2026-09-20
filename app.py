@@ -1210,7 +1210,7 @@ def _load_user_state():
 
 
 def _save_user_state(state_obj, message):
-    _save_local_json("user_state_admin.json", state_obj)
+    local_saved = _save_local_json("user_state_admin.json", state_obj)
     _save_local_json("admin_ui_settings.json", state_obj.get("thresholds", {}))
     try:
         pf = pd.DataFrame(state_obj.get("portfolio", []))
@@ -1219,7 +1219,30 @@ def _save_user_state(state_obj, message):
         pf.to_csv("my_portfolio.csv", index=False, encoding="utf-8-sig")
     except Exception:
         pass
-    _github_put_json("user_state_admin.json", state_obj, message)
+    remote_saved = _github_put_json("user_state_admin.json", state_obj, message)
+    cfg = _github_state_config()
+    return remote_saved if cfg["token"] else local_saved
+
+
+def load_admin_strategy_settings():
+    """Load strategy settings from committed defaults, then persisted admin state."""
+    settings = _load_local_json(os.path.join("data", "strategy_settings.json"), {})
+    if not isinstance(settings, dict):
+        settings = {}
+    state = _load_user_state()
+    persisted = state.get("strategy_settings", {})
+    if isinstance(persisted, dict):
+        settings.update(persisted)
+    return settings
+
+
+def save_admin_strategy_settings(settings):
+    """Persist strategy settings locally and to GitHub for Streamlit Cloud restarts."""
+    if not isinstance(settings, dict):
+        return False
+    state = _load_user_state()
+    state["strategy_settings"] = dict(settings)
+    return _save_user_state(state, "chore(state): update strategy settings")
 
 
 def load_admin_risk_thresholds():
@@ -3347,6 +3370,8 @@ else:
                     load_swing_trades_safe,
                     fetch_yahoo_chart_history,
                     macro_data=macro_data,
+                    load_strategy_settings=load_admin_strategy_settings,
+                    save_strategy_settings=save_admin_strategy_settings,
                 )
             except TypeError as e:
                 if "macro_data" not in str(e) and "positional" not in str(e):
