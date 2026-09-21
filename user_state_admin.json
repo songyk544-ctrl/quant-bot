@@ -9,5 +9,9 @@
       "수량": 3,
       "매수가": 1400000
     }
-  ]
+  ],
+  "strategy_settings": {
+    "initial_cash": 2500000,
+    "benchmark_start_date": "2026-09-01"
+  }
 }
