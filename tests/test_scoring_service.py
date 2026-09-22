@@ -8,6 +8,7 @@ from services.scoring_service import (
     classify_stock_tier,
     evaluate_v5_entry_setup,
     passes_confirmed_pullback_filter,
+    score_v5_disclosures,
 )
 
 
@@ -58,6 +59,39 @@ class V5CoreScoringTest(unittest.TestCase):
         self.assertEqual(waiting["setup"], "눌림대기")
         self.assertTrue(breakout["passed"])
         self.assertEqual(breakout["setup"], "돌파확인")
+
+    def test_v5_disclosure_score_rewards_material_positive_event(self):
+        result = score_v5_disclosures(
+            ["- [공시] 단일판매ㆍ공급계약체결 (20260921)"],
+            as_of_date="2026-09-22",
+            return_details=True,
+        )
+        self.assertEqual(result["risk_level"], "우호")
+        self.assertGreater(result["adjustment"], 0)
+        self.assertFalse(result["blocked"])
+        self.assertIn("수주·계약", result["reason"])
+
+    def test_v5_disclosure_score_penalizes_dilution_without_hard_block(self):
+        result = score_v5_disclosures(
+            ["- [공시] 주요사항보고서(유상증자결정) (20260922)"],
+            as_of_date="2026-09-22",
+            return_details=True,
+        )
+        self.assertEqual(result["risk_level"], "주의")
+        self.assertLess(result["adjustment"], 0)
+        self.assertFalse(result["blocked"])
+        self.assertIn("주주가치 희석", result["reason"])
+
+    def test_v5_disclosure_score_blocks_critical_event(self):
+        result = score_v5_disclosures(
+            ["- [공시] 단일판매ㆍ공급계약 해지 (20260922)"],
+            as_of_date="2026-09-22",
+            return_details=True,
+        )
+        self.assertEqual(result["risk_level"], "차단")
+        self.assertTrue(result["blocked"])
+        self.assertLessEqual(result["adjustment"], -10)
+        self.assertIn("계약 취소", result["reason"])
 
 
 class ConfirmedPullbackFilterTest(unittest.TestCase):

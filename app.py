@@ -2418,7 +2418,33 @@ else:
     # --- 탭 3: 수급 스크리너 ---
     with tab3:
         render_section_header("알파 레이더", "핵심 후보를 카드/테이블로 빠르게 스캔하고, 상세 지표는 필요 시 확장해서 확인합니다.")
-        st.caption("스윙점수는 전체 매매 우선순위이고, 진입유형/신규후보는 정배열·눌림목·돌파·테마중복·시장상태까지 통과한 실행 구분입니다.")
+        v5_required_columns = {"V5종합점수", "V5추천상태", "V5진입상태"}
+        v5_available = v5_required_columns.issubset(df_summary.columns)
+        score_view_options = ["스윙", "V5"] if v5_available else ["스윙"]
+        if "alpha_score_view" in st.session_state and st.session_state.alpha_score_view not in score_view_options:
+            del st.session_state["alpha_score_view"]
+        if hasattr(st, "segmented_control"):
+            alpha_score_view = st.segmented_control(
+                "후보 기준",
+                score_view_options,
+                default="스윙",
+                key="alpha_score_view",
+            )
+        else:
+            alpha_score_view = st.radio(
+                "후보 기준",
+                score_view_options,
+                horizontal=True,
+                index=0,
+                key="alpha_score_view",
+            )
+        use_v5_radar = alpha_score_view == "V5" and v5_available
+        if use_v5_radar:
+            st.caption("V5는 체급별 핵심 수급·시장 대비 주도성·확인된 진입 신호·최근 공시 위험을 함께 보는 시험 운용 기준입니다.")
+        else:
+            st.caption("스윙점수는 전체 매매 우선순위이고, 진입유형/신규후보는 정배열·눌림목·돌파·테마중복·시장상태까지 통과한 실행 구분입니다.")
+            if not v5_available:
+                st.caption("V5 결과는 다음 데이터 파싱 후 선택할 수 있습니다.")
         if "view_mode" not in st.session_state:
             st.session_state.view_mode = "card"
             
@@ -2439,42 +2465,70 @@ else:
             df_alpha_sorted["매수후보"] = "관찰"
         if "스윙우선순위" not in df_alpha_sorted.columns:
             df_alpha_sorted["스윙우선순위"] = 0.0
-        if "현재_순위" not in df_alpha_sorted.columns:
-            df_alpha_sorted["현재_순위"] = range(1, len(df_alpha_sorted) + 1)
-        df_alpha_sorted["_alpha_group_order"] = df_alpha_sorted["매수후보"].astype(str).map({
-            "신규후보": 0,
-            "관찰": 1,
-        }).fillna(2)
         df_alpha_sorted["스윙우선순위"] = pd.to_numeric(df_alpha_sorted["스윙우선순위"], errors="coerce").fillna(0.0)
-        df_alpha_sorted["현재_순위"] = pd.to_numeric(df_alpha_sorted["현재_순위"], errors="coerce").fillna(9999)
-        df_alpha_sorted = df_alpha_sorted.sort_values(
-            ["_alpha_group_order", "스윙우선순위", "현재_순위"],
-            ascending=[True, False, True],
-        )
-        alpha_buy_candidates = df_alpha_sorted[df_alpha_sorted["매수후보"].astype(str).eq("신규후보")].copy()
+        if use_v5_radar:
+            for col, default_value in {
+                "V5공시점수": 50.0,
+                "V5공시보정": 0.0,
+                "V5공시위험": "중립",
+                "V5공시사유": "다음 파싱부터 공시 판정 반영",
+            }.items():
+                if col not in df_alpha_sorted.columns:
+                    df_alpha_sorted[col] = default_value
+            df_alpha_sorted["V5종합점수"] = pd.to_numeric(df_alpha_sorted["V5종합점수"], errors="coerce").fillna(0.0)
+            df_alpha_sorted["V5순위"] = df_alpha_sorted["V5종합점수"].rank(method="min", ascending=False).astype(int)
+            df_alpha_sorted["_alpha_group_order"] = df_alpha_sorted["V5추천상태"].astype(str).map({
+                "추천": 0,
+                "통과": 1,
+                "통과대기": 1,
+                "관찰": 2,
+                "제외": 3,
+            }).fillna(3)
+            df_alpha_sorted = df_alpha_sorted.sort_values(
+                ["_alpha_group_order", "V5종합점수", "V5순위"],
+                ascending=[True, False, True],
+            )
+            alpha_buy_candidates = df_alpha_sorted[df_alpha_sorted["V5추천상태"].astype(str).eq("추천")].copy()
+        else:
+            if "현재_순위" not in df_alpha_sorted.columns:
+                df_alpha_sorted["현재_순위"] = range(1, len(df_alpha_sorted) + 1)
+            df_alpha_sorted["현재_순위"] = pd.to_numeric(df_alpha_sorted["현재_순위"], errors="coerce").fillna(9999)
+            df_alpha_sorted["_alpha_group_order"] = df_alpha_sorted["매수후보"].astype(str).map({
+                "신규후보": 0,
+                "관찰": 1,
+            }).fillna(2)
+            df_alpha_sorted = df_alpha_sorted.sort_values(
+                ["_alpha_group_order", "스윙우선순위", "현재_순위"],
+                ascending=[True, False, True],
+            )
+            alpha_buy_candidates = df_alpha_sorted[df_alpha_sorted["매수후보"].astype(str).eq("신규후보")].copy()
         if not alpha_buy_candidates.empty:
             top_pick = alpha_buy_candidates.iloc[0]
             top_pick_name = str(top_pick.get("종목명", "-"))
             top_pick_sleeve = str(top_pick.get("전략슬리브", "-"))
-            top_pick_entry = str(top_pick.get("진입유형", "-"))
-            top_pick_score = float(pd.to_numeric(top_pick.get("스윙우선순위", 0.0), errors="coerce") or 0.0)
-            top_pick_rank = int(pd.to_numeric(top_pick.get("현재_순위", 0), errors="coerce") or 0)
+            top_pick_entry = str(top_pick.get("V5진입상태" if use_v5_radar else "진입유형", "-"))
+            top_pick_score = float(pd.to_numeric(top_pick.get("V5종합점수" if use_v5_radar else "스윙우선순위", 0.0), errors="coerce") or 0.0)
+            top_pick_rank = int(pd.to_numeric(top_pick.get("V5순위" if use_v5_radar else "현재_순위", 0), errors="coerce") or 0)
             top_pick_price = float(pd.to_numeric(top_pick.get("현재가", 0.0), errors="coerce") or 0.0)
+            top_pick_label = "V5 1순위 추천" if use_v5_radar else "오늘의 1순위 매수 후보"
+            top_pick_score_label = "V5" if use_v5_radar else "스윙"
+            top_pick_reason = str(top_pick.get("V5추천사유", "")) if use_v5_radar else f"{top_pick_sleeve} · {top_pick_entry}"
             st.markdown(
                 f"""
                 <div class="decision-card" style="border-color:#2F6B4A; box-shadow:0 8px 22px rgba(48,218,169,0.10); margin-bottom:10px;">
-                    <div class="decision-label">오늘의 1순위 매수 후보</div>
+                    <div class="decision-label">{top_pick_label}</div>
                     <div class="decision-value">{html.escape(top_pick_name)}</div>
                     <div class="decision-meta">
-                        {html.escape(top_pick_sleeve)} · {html.escape(top_pick_entry)} · 스윙 {top_pick_score:.1f} · 전체 {top_pick_rank}위<br>
-                        현재 {top_pick_price:,.0f}원 · 신규후보 {len(alpha_buy_candidates):,}개 중 최상위
+                        {html.escape(top_pick_reason)} · {top_pick_score_label} {top_pick_score:.1f} · 전체 {top_pick_rank}위<br>
+                        현재 {top_pick_price:,.0f}원 · 추천 {len(alpha_buy_candidates):,}개 중 최상위
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
         else:
-            st.info("오늘은 신규 매수 후보가 없습니다. 관찰 후보만 점검하세요.")
+            empty_candidate_label = "V5 추천" if use_v5_radar else "신규 매수 후보"
+            st.info(f"오늘은 {empty_candidate_label}가 없습니다. 관찰 후보만 점검하세요.")
         df_display_all = df_alpha_sorted if is_vip else df_alpha_sorted.head(5)
         if "alpha_card_limit" not in st.session_state:
             st.session_state.alpha_card_limit = 10
@@ -2487,7 +2541,7 @@ else:
             html_lines = []
             current_group = None
             for idx, row in df_display.iterrows():
-                rank = int(row['현재_순위'])
+                rank = int(row['V5순위'] if use_v5_radar else row['현재_순위'])
                 name = row['종목명']
                 sector = safe_get(row, '테마표시', safe_get(row, '섹터', '분류안됨'))
                 price = f"{safe_get(row, '현재가', 0):,.0f}"
@@ -2499,29 +2553,46 @@ else:
                 rank_chg = safe_get(row, '랭킹추세', '-')
                 f_str = f"{float(safe_get(row, '외인강도(%)', 0)):.1f}%"
                 p_str = f"{float(safe_get(row, '연기금강도(%)', 0)):.1f}%"
-                entry_type = safe_get(row, '진입유형', '관찰')
-                buy_tag = safe_get(row, '매수후보', '관찰')
+                entry_type = safe_get(row, 'V5진입상태' if use_v5_radar else '진입유형', '관찰')
+                buy_tag = safe_get(row, 'V5추천상태' if use_v5_radar else '매수후보', '관찰')
                 swing_score = float(safe_get(row, '스윙우선순위', 0))
+                v5_score = float(safe_get(row, 'V5종합점수', 0))
                 inst_score = float(safe_get(row, '기관동행점수', 0))
                 sell_check = safe_get(row, '매도점검', '보유/관찰')
-                group_label = "오늘 매수 후보" if buy_tag == "신규후보" else ("관찰 후보" if buy_tag == "관찰" else "제외/후순위")
+                if use_v5_radar:
+                    group_label = "V5 오늘 추천" if buy_tag == "추천" else ("V5 통과 대기" if buy_tag in ["통과", "통과대기"] else ("V5 관찰" if buy_tag == "관찰" else "V5 제외"))
+                else:
+                    group_label = "오늘 매수 후보" if buy_tag == "신규후보" else ("관찰 후보" if buy_tag == "관찰" else "제외/후순위")
                 if group_label != current_group:
                     current_group = group_label
                     html_lines.append(f'<div style="color:#A7B0C2; font-size:0.82em; font-weight:800; margin:10px 0 6px 2px;">{group_label}</div>')
-                tag_bg = "#183323" if buy_tag == "신규후보" else ("#3A2F13" if entry_type in ["눌림목", "돌파"] else "#2A2A35")
-                tag_color = "#36C06A" if buy_tag == "신규후보" else ("#FCD34D" if entry_type in ["눌림목", "돌파"] else "#CBD5E1")
+                is_primary_candidate = buy_tag == ("추천" if use_v5_radar else "신규후보")
+                is_entry_candidate = entry_type in (["눌림확인", "돌파확인"] if use_v5_radar else ["눌림목", "돌파"])
+                tag_bg = "#183323" if is_primary_candidate else ("#3A2F13" if is_entry_candidate else "#2A2A35")
+                tag_color = "#36C06A" if is_primary_candidate else ("#FCD34D" if is_entry_candidate else "#CBD5E1")
                 
+                if use_v5_radar:
+                    rank_chg = ""
                 rc_color = "#FF4B4B" if "▲" in str(rank_chg) else ("#3B82F6" if "▼" in str(rank_chg) else "#888888")
                 
-                card_cls = "alpha-card-new" if buy_tag == "신규후보" else ""
+                card_cls = "alpha-card-new" if is_primary_candidate else ""
                 rank_badge_cls = ""
                 name_cls = ""
+                rank_label = "V5" if use_v5_radar else "스윙"
+                if use_v5_radar:
+                    score_line = f'V5 <b style="color:#FCD34D;">{v5_score:.1f}</b> <span style="color:#7E899E;">/ 스윙 {swing_score:.1f} · AI {ai_score:.1f}</span>'
+                    disclosure_level = html.escape(str(safe_get(row, 'V5공시위험', '중립')))
+                    disclosure_reason = html.escape(str(safe_get(row, 'V5공시사유', '최근 중요 공시 신호 없음')))
+                    check_line = f"공시 {disclosure_level}: {disclosure_reason}"
+                else:
+                    score_line = f'스윙 <b style="color:#FCD34D;">{swing_score:.1f}</b> <span style="color:#7E899E;">/ AI {ai_score:.1f} · {ai_rank}위</span>'
+                    check_line = f"점검: {html.escape(str(sell_check))}"
                 card_html = f"""
 <div class="{card_cls}" style="background:#111b2d; padding:12px 13px; border-radius:10px; margin-bottom:9px; border:1px solid #26324A; box-shadow:0 6px 16px rgba(0,0,0,0.14);">
 <div class="alpha-card-head">
 <div class="alpha-card-left">
 <div class="alpha-chip-row">
-<span class="{rank_badge_cls}" style="background:#172033; border:1px solid #334155; color:#DDE6F5; font-size:0.7em; font-weight:800; padding:4px 8px; border-radius:999px; white-space:nowrap;">스윙 {rank}위</span>
+<span class="{rank_badge_cls}" style="background:#172033; border:1px solid #334155; color:#DDE6F5; font-size:0.7em; font-weight:800; padding:4px 8px; border-radius:999px; white-space:nowrap;">{rank_label} {rank}위</span>
 <span style="font-size: 0.72em; font-weight: 800; color: {tag_color}; background:{tag_bg}; border:1px solid #374151; padding:4px 7px; border-radius:999px; white-space:nowrap;">{buy_tag} · {entry_type}</span>
 <span style="font-size: 0.8em; font-weight: bold; color: {rc_color}; white-space: nowrap;">{rank_chg}</span>
 </div>
@@ -2536,9 +2607,9 @@ else:
 </div>
 </div>
 <div style="display:flex; justify-content:space-between; font-size:0.83em; color:#DDD; background:#0f1726; padding:9px 10px; border-radius:8px; align-items:center; flex-wrap:wrap; gap:8px; border:1px solid #243047;">
-<div>스윙 <b style="color:#FCD34D;">{swing_score:.1f}</b> <span style="color:#7E899E;">/ AI {ai_score:.1f} · {ai_rank}위</span></div>
+<div>{score_line}</div>
 <div>기금 <b style="color:#FCA5A5;">{p_str}</b> <span style="color:#3A4558;">|</span> 기관동행 <b style="color:#86EFAC;">{inst_score:.1f}</b></div>
-<div style="width:100%; color:#A7B0C0; font-size:0.82em;">점검: {html.escape(str(sell_check))}</div>
+<div style="width:100%; color:#A7B0C0; font-size:0.82em;">{check_line}</div>
 </div>
 </div>
 """
@@ -2578,7 +2649,7 @@ else:
 
             style_target = df_display_table
             styled_df = style_target
-            score_cols = [c for c in ['AI수급점수'] if c in style_target.columns]
+            score_cols = [c for c in (['V5종합점수'] if use_v5_radar else ['AI수급점수']) if c in style_target.columns]
             flow_cols = [c for c in ['등락률', '외인강도(%)', '연기금강도(%)', '투신강도(%)', '사모강도(%)'] if c in style_target.columns]
             momentum_cols = [c for c in ['랭킹추세'] if c in style_target.columns]
             
@@ -2591,7 +2662,8 @@ else:
                 "스윙우선순위": "{:.2f}", "기관동행점수": "{:.2f}",
                 "수급품질점수": "{:.1f}", "주도주점수": "{:.1f}", "수급흡수율": "{:.2f}", "거래대금활력": "{:.2f}",
                 "20일평균거래대금(억)": "{:,.0f}",
-                "연기금5일강도(%)": "{:.2f}%", "연기금10일강도(%)": "{:.2f}%"
+                "연기금5일강도(%)": "{:.2f}%", "연기금10일강도(%)": "{:.2f}%",
+                "V5종합점수": "{:.2f}", "V5공시점수": "{:.1f}", "V5공시보정": "{:+.1f}",
             }
             if 'PER' in df_display_table.columns: format_dict["PER"] = "{:.1f}"
             if 'ROE' in df_display_table.columns: format_dict["ROE"] = "{:.1f}%"
@@ -2619,8 +2691,12 @@ else:
                 print(f"[WARN] 스크리너 Styler 적용 실패, 기본 테이블로 대체: {e}")
                 styled_df = style_target
 
-            base_columns = ["_index", "매수후보", "진입유형", "스윙우선순위", "테마표시", "AI수급점수", "AI순위", "매도점검", "현재가", "등락률", "소속"]
-            advanced_columns = ["전략슬리브", "기관동행점수", "수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "종목체급", "거래대금활력", "20일평균거래대금(억)", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
+            if use_v5_radar:
+                base_columns = ["_index", "V5추천상태", "V5진입상태", "V5종합점수", "V5순위", "V5공시위험", "V5공시사유", "테마표시", "현재가", "등락률", "소속"]
+                advanced_columns = ["V5공시점수", "V5공시보정", "V5진입품질", "V5진입사유", "V5주도성점수", "V5주도성사유", "체급별수급점수", "핵심수급주체", "체급별수급사유", "스윙우선순위", "AI수급점수", "기관동행점수", "수급품질점수", "수급흡수율", "수급지속일수", "종목체급", "거래대금활력", "20일평균거래대금(억)", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "시가총액"]
+            else:
+                base_columns = ["_index", "매수후보", "진입유형", "스윙우선순위", "테마표시", "AI수급점수", "AI순위", "매도점검", "현재가", "등락률", "소속"]
+                advanced_columns = ["전략슬리브", "기관동행점수", "수급품질점수", "주도주점수", "수급흡수율", "수급지속일수", "종목체급", "거래대금활력", "20일평균거래대금(억)", "정배열", "추세품질점수", "MA5", "MA10", "MA20", "연기금5일강도(%)", "연기금10일강도(%)", "외인강도(%)", "연기금강도(%)", "투신강도(%)", "사모강도(%)", "이격도(%)", "손바뀜(%)", "외인연속", "연기금연속", "신호등급", "신호신뢰도", "점수변화(안정화)", "시가총액"]
             current_columns = base_columns + advanced_columns if show_advanced else base_columns
 
             event = st.dataframe(
@@ -2651,6 +2727,21 @@ else:
                     "랭킹추세": st.column_config.Column("순위변동", width="small"), 
                     "AI수급점수": st.column_config.NumberColumn("🏆 AI점수", width="small", format="%.2f"),
                     "AI순위": st.column_config.NumberColumn("AI순위", width="small", format="%d위"),
+                    "V5추천상태": st.column_config.Column("V5 후보", width="small"),
+                    "V5진입상태": st.column_config.Column("V5 진입", width="small"),
+                    "V5종합점수": st.column_config.NumberColumn("V5 점수", width="small", format="%.2f"),
+                    "V5순위": st.column_config.NumberColumn("V5 순위", width="small", format="%d위"),
+                    "V5공시위험": st.column_config.Column("공시", width="small"),
+                    "V5공시사유": st.column_config.Column("공시 판단", width="large"),
+                    "V5공시점수": st.column_config.NumberColumn("공시점수", width="small", format="%.1f"),
+                    "V5공시보정": st.column_config.NumberColumn("공시보정", width="small", format="%+.1f"),
+                    "V5진입품질": st.column_config.NumberColumn("진입품질", width="small", format="%.1f"),
+                    "V5진입사유": st.column_config.Column("진입 판단", width="large"),
+                    "V5주도성점수": st.column_config.NumberColumn("주도성", width="small", format="%.1f"),
+                    "V5주도성사유": st.column_config.Column("주도성 판단", width="large"),
+                    "체급별수급점수": st.column_config.NumberColumn("핵심수급", width="small", format="%.1f"),
+                    "핵심수급주체": st.column_config.Column("수급주체", width="small"),
+                    "체급별수급사유": st.column_config.Column("수급 판단", width="large"),
                     "신호등급": st.column_config.Column("신호등급", width="small"),
                     "신호신뢰도": st.column_config.NumberColumn("신뢰도", width="small"),
                     "점수변화(안정화)": st.column_config.NumberColumn("안정화Δ", width="small"),

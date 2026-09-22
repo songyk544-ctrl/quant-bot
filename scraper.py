@@ -41,6 +41,7 @@ from services.scoring_service import (
     calculate_trend_quality,
     evaluate_v5_entry_setup,
     score_disclosures_and_reports,
+    score_v5_disclosures,
 )
 from services.telegram_service import build_telegram_action_message, send_telegram_message
 from services.source_health_service import record_source_health
@@ -250,7 +251,9 @@ def build_replay_score_trend(top_n=3, min_lookback=10):
         "체급별수급점수", "핵심수급주체", "핵심수급상태", "체급별수급사유",
         "외인5일강도(%)", "외인10일강도(%)", "투신5일강도(%)", "사모5일강도(%)", "외인5일매수일수", "연기금5일매수일수",
         "시장대비5일(%p)", "시장대비20일(%p)", "V5주도성점수", "V5주도성사유",
-        "V5진입상태", "V5진입확인", "V5진입품질", "V5진입사유", "V5종합점수", "V5추천상태", "V5추천사유",
+        "V5진입상태", "V5진입확인", "V5진입품질", "V5진입사유",
+        "V5공시점수", "V5공시보정", "V5공시위험", "V5공시차단", "V5공시사유",
+        "V5종합점수", "V5추천상태", "V5추천사유",
         "정배열", "추세품질점수", "MA5", "MA10", "MA20", "순위", "날짜"
     ]
     existing = pd.DataFrame(columns=replay_cols)
@@ -1047,14 +1050,23 @@ def apply_enhanced_qual_for_top_candidates(df_final, current_vix, top_n=40):
     if "AI수급점수" not in df_out.columns:
         return df_out
 
+    # 기존 AI/스윙 점수의 공시 반영 방식은 유지하고, 강화된 공시 판정은
+    # 차세대 V5에서만 사용한다. 수집하지 않은 종목은 중립으로 둔다.
+    df_out["V5공시점수"] = 50.0
+    df_out["V5공시보정"] = 0.0
+    df_out["V5공시위험"] = "중립"
+    df_out["V5공시차단"] = False
+    df_out["V5공시사유"] = "최근 중요 공시 신호 없음"
+
     top_idx = df_out.sort_values("AI수급점수", ascending=False).head(top_n).index
     for idx in top_idx:
         row = df_out.loc[idx]
         name = row.get("종목명", "")
         code = row.get("종목코드", "")
-        disclosures = get_recent_disclosures(code, name, max_items=3)
+        disclosures = get_recent_disclosures(code, name, max_items=6)
         reports = get_recent_analyst_reports(name, max_items=2)
-        event_qual = score_disclosures_and_reports(disclosures, reports)
+        event_qual = score_disclosures_and_reports(disclosures[:3], reports)
+        v5_disclosure = score_v5_disclosures(disclosures, return_details=True)
 
         base_qual = float(row.get("정성점수", 50))
         blended_qual = (base_qual * 0.7) + (event_qual * 0.3)
@@ -1064,6 +1076,11 @@ def apply_enhanced_qual_for_top_candidates(df_final, current_vix, top_n=40):
         df_out.at[idx, "정성보정치"] = qual_adj
         df_out.at[idx, "점수모드"] = score_mode
         df_out.at[idx, "AI수급점수"] = final_score
+        df_out.at[idx, "V5공시점수"] = v5_disclosure["score"]
+        df_out.at[idx, "V5공시보정"] = v5_disclosure["adjustment"]
+        df_out.at[idx, "V5공시위험"] = v5_disclosure["risk_level"]
+        df_out.at[idx, "V5공시차단"] = bool(v5_disclosure["blocked"])
+        df_out.at[idx, "V5공시사유"] = v5_disclosure["reason"]
 
     return df_out.sort_values("AI수급점수", ascending=False)
 
@@ -1617,11 +1634,13 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
     out["V5진입사유"] = [item["reason"] for item in entry_results]
     qualitative = _num("정성점수", 50.0)
     qualitative_adjustment = ((qualitative - 50.0) * 0.1).clip(-5.0, 5.0)
+    disclosure_adjustment = _num("V5공시보정", 0.0).clip(-10.0, 6.0)
     out["V5종합점수"] = (
         out["체급별수급점수"] * 0.45
         + out["V5주도성점수"] * 0.35
         + out["V5진입품질"] * 0.15
         + qualitative_adjustment
+        + disclosure_adjustment
     ).clip(0.0, 100.0).round(2)
 
     risk_label = "RiskOff" if current_vix >= 28 else ("Neutral" if current_vix >= 22 else "RiskOn")
@@ -1769,20 +1788,26 @@ def apply_swing_strategy_overlay(df_final, current_vix=20.0, max_buy_candidates=
 
     out["V5추천상태"] = "관찰"
     v5_risk = out["매도점검"].astype(str).str.contains("매도|제외|훼손|축소|주의|청산|이탈", regex=True, na=False)
+    if "V5공시차단" in out.columns:
+        v5_disclosure_blocked = out["V5공시차단"].fillna(False).astype(bool)
+    else:
+        v5_disclosure_blocked = pd.Series(False, index=out.index, dtype=bool)
     v5_eligible = (
         out["V5진입확인"].astype(bool)
         & (out["체급별수급점수"] >= 55.0)
         & (out["V5주도성점수"] >= 55.0)
         & liquidity_ok_v5
         & ~v5_risk
+        & ~v5_disclosure_blocked
         & (risk_label != "RiskOff")
     )
-    out.loc[v5_risk | (~liquidity_ok_v5), "V5추천상태"] = "제외"
+    out.loc[v5_risk | (~liquidity_ok_v5) | v5_disclosure_blocked, "V5추천상태"] = "제외"
     out.loc[v5_eligible, "V5추천상태"] = "통과"
     out["V5추천사유"] = out.apply(
         lambda row: (
             f"{row.get('핵심수급주체', '-')} 수급 {row.get('체급별수급점수', 0):.1f} · "
-            f"주도성 {row.get('V5주도성점수', 0):.1f} · {row.get('V5진입상태', '관찰')}"
+            f"주도성 {row.get('V5주도성점수', 0):.1f} · {row.get('V5진입상태', '관찰')} · "
+            f"공시 {row.get('V5공시위험', '중립')}"
         ),
         axis=1,
     )
@@ -2059,7 +2084,7 @@ def _normalize_stock_code_6(stock_code):
         return s.zfill(6)
     return s if len(s) == 6 else ""
 
-def _fetch_dart_list_json_pages(corp_code, api_key, bgn_de, end_de, pblntf_ty):
+def _fetch_dart_list_json_pages(corp_code, api_key, bgn_de, end_de, pblntf_ty=None):
     """DART list.json 전체 페이지 수집. 실패 시 None."""
     url = "https://opendart.fss.or.kr/api/list.json"
     merged = []
@@ -2072,8 +2097,9 @@ def _fetch_dart_list_json_pages(corp_code, api_key, bgn_de, end_de, pblntf_ty):
             "end_de": end_de,
             "page_no": str(page_no),
             "page_count": "100",
-            "pblntf_ty": pblntf_ty,
         }
+        if pblntf_ty:
+            params["pblntf_ty"] = pblntf_ty
         try:
             r = requests.get(url, params=params, timeout=15)
             data = r.json()
@@ -2150,13 +2176,9 @@ def get_recent_disclosures(stock_code, stock_name, max_items=3):
         today = datetime.now().date()
         end_de = today.strftime("%Y%m%d")
         bgn_de = (today - timedelta(days=14)).strftime("%Y%m%d")
-        combined = []
-        for pty in ("I", "A"):
-            batch = _fetch_dart_list_json_pages(corp_code, dart_key, bgn_de, end_de, pty)
-            if batch is None:
-                combined = None
-                break
-            combined.extend(batch)
+        # 유형 필터를 생략해 주요사항·발행·지분·거래소·정기공시를 한 번에 받는다.
+        # 기존 A/I 두 번 호출보다 호출량은 줄고, 희석·계약해지 같은 중요 공시 누락도 막는다.
+        combined = _fetch_dart_list_json_pages(corp_code, dart_key, bgn_de, end_de)
         if combined is not None and combined:
             by_rcept = {}
             for it in combined:
@@ -2810,7 +2832,9 @@ def run_scraper(manual_full_parse=False):
         '체급별수급점수', '핵심수급주체', '핵심수급상태', '체급별수급사유',
         '외인5일강도(%)', '외인10일강도(%)', '투신5일강도(%)', '사모5일강도(%)', '외인5일매수일수', '연기금5일매수일수',
         '시장대비5일(%p)', '시장대비20일(%p)', 'V5주도성점수', 'V5주도성사유',
-        'V5진입상태', 'V5진입확인', 'V5진입품질', 'V5진입사유', 'V5종합점수', 'V5추천상태', 'V5추천사유',
+        'V5진입상태', 'V5진입확인', 'V5진입품질', 'V5진입사유',
+        'V5공시점수', 'V5공시보정', 'V5공시위험', 'V5공시차단', 'V5공시사유',
+        'V5종합점수', 'V5추천상태', 'V5추천사유',
         '거래대금활력', '20일평균거래대금(억)', '진입코멘트', '매도점검', '테마', '정배열', '추세품질점수',
         'MA5', 'MA10', 'MA20'
     ]

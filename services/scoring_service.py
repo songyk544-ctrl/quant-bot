@@ -1,3 +1,6 @@
+import re
+from datetime import date
+
 import pandas as pd
 
 
@@ -529,6 +532,119 @@ def score_disclosures_and_reports(disclosures, reports, return_details=False):
         "negative_hits": neg_hits,
         "reason": f"긍정 이벤트 {pos_hits}개, 부정 이벤트 {neg_hits}개",
     }
+
+
+def score_v5_disclosures(disclosures, as_of_date=None, return_details=False):
+    """최근 공시 제목을 V5 전용 이벤트 점수와 위험 신호로 변환한다.
+
+    공시 제목만으로 계약 규모나 재무 영향까지 단정할 수 없으므로 점수 폭은
+    제한한다. 다만 거래정지, 횡령, 계약 해지처럼 제목만으로도 중대한 사건은
+    V5 신규 후보를 차단한다.
+    """
+    items = [str(item).strip() for item in (disclosures or []) if str(item).strip()]
+    reference = pd.to_datetime(as_of_date, errors="coerce") if as_of_date is not None else pd.Timestamp(date.today())
+    if pd.isna(reference):
+        reference = pd.Timestamp(date.today())
+    reference = reference.normalize()
+
+    blocking_rules = [
+        ("거래정지", ["거래정지", "매매거래정지"]),
+        ("상장폐지 위험", ["상장폐지", "상장적격성 실질심사"]),
+        ("회계·법적 중대 위험", ["횡령", "배임", "감사의견거절", "부도", "파산", "회생절차"]),
+        ("계약 취소", ["계약해지", "계약 해지", "수주취소", "수주 취소", "공급계약 해지"]),
+    ]
+    caution_rules = [
+        ("주주가치 희석", ["유상증자", "전환사채", "신주인수권부사채", "교환사채", "전환청구권행사"]),
+        ("소송·분쟁", ["소송", "중재", "가압류", "가처분"]),
+        ("실적 악화", ["적자전환", "영업손실", "손상차손", "하향", "감소"]),
+        ("정정 공시", ["정정"]),
+    ]
+    positive_rules = [
+        ("주주환원", ["자기주식취득", "자기주식 취득", "자기주식소각", "자기주식 소각", "소각결정", "소각 결정"]),
+        ("수주·계약", ["단일판매", "공급계약체결", "공급계약 체결", "수주"]),
+        ("실적 개선", ["흑자전환", "영업이익 증가", "매출액 증가", "실적 개선"]),
+        ("배당", ["현금배당", "현금ㆍ현물배당", "배당결정", "배당 결정"]),
+    ]
+
+    def _event_date(text):
+        compact = re.search(r"\b(20\d{6})\b", text)
+        dotted = re.search(r"\b(20\d{2})[.\-/](\d{1,2})[.\-/](\d{1,2})\b", text)
+        raw = compact.group(1) if compact else (
+            f"{dotted.group(1)}{int(dotted.group(2)):02d}{int(dotted.group(3)):02d}" if dotted else ""
+        )
+        parsed = pd.to_datetime(raw, format="%Y%m%d", errors="coerce")
+        return parsed.normalize() if pd.notna(parsed) else reference
+
+    def _recency_weight(text):
+        age = max(0, int((reference - _event_date(text)).days))
+        if age <= 3:
+            return 1.0
+        if age <= 7:
+            return 0.8
+        if age <= 14:
+            return 0.55
+        return 0.3
+
+    adjustment = 0.0
+    blocked = False
+    events = []
+    for text in items:
+        normalized = re.sub(r"\s+", " ", text)
+        weight = _recency_weight(normalized)
+        matched = False
+        for label, keywords in blocking_rules:
+            if any(keyword in normalized for keyword in keywords):
+                adjustment -= 10.0 * weight
+                blocked = True
+                events.append((label, -10.0 * weight))
+                matched = True
+                break
+        if matched:
+            continue
+        for label, keywords in caution_rules:
+            if any(keyword in normalized for keyword in keywords):
+                penalty = -6.0 if label == "주주가치 희석" else (-4.0 if label != "정정 공시" else -1.5)
+                adjustment += penalty * weight
+                events.append((label, penalty * weight))
+                matched = True
+                break
+        if matched:
+            continue
+        for label, keywords in positive_rules:
+            if any(keyword in normalized for keyword in keywords):
+                bonus = 5.0 if label in {"수주·계약", "주주환원"} else (4.0 if label == "실적 개선" else 2.0)
+                adjustment += bonus * weight
+                events.append((label, bonus * weight))
+                break
+
+    adjustment = max(-10.0, min(6.0, adjustment))
+    score = max(20.0, min(80.0, 50.0 + adjustment * 3.0))
+    if blocked:
+        risk_level = "차단"
+    elif adjustment <= -2.0:
+        risk_level = "주의"
+    elif adjustment >= 2.0:
+        risk_level = "우호"
+    else:
+        risk_level = "중립"
+
+    if events:
+        ordered = sorted(events, key=lambda item: abs(item[1]), reverse=True)
+        event_summary = ", ".join(dict.fromkeys(label for label, _ in ordered[:3]))
+        reason = f"{event_summary} · V5 {adjustment:+.1f}점"
+    else:
+        reason = "최근 중요 공시 신호 없음"
+
+    result = {
+        "score": round(score, 2),
+        "adjustment": round(adjustment, 2),
+        "risk_level": risk_level,
+        "blocked": blocked,
+        "reason": reason,
+        "event_count": len(events),
+        "warnings": ["공시 제목 기반 판정으로 금액·매출 대비 규모는 별도 확인 필요"] if events else [],
+    }
+    return result if return_details else result["score"]
 
 
 def build_market_state_features(hist):
