@@ -166,16 +166,22 @@ def merge_history_snapshot(new_history):
     """
     new_norm = _normalize_history_frame(new_history)
     if new_norm.empty:
+        if new_history is not None and not new_history.empty:
+            raise RuntimeError("history_new_snapshot_invalid")
         return pd.DataFrame()
 
     frames = []
     if csv_exists("history.csv"):
         try:
-            old_norm = _normalize_history_frame(read_table_prefer_db("history.csv", on_bad_lines="skip"))
-            if not old_norm.empty:
-                frames.append(old_norm)
-        except Exception as e:
-            print(f"[WARN] 기존 history.csv 로드 실패, 새 수집분만 사용합니다: {e}")
+            previous = read_table_prefer_db("history.csv")
+            old_norm = _normalize_history_frame(previous)
+        except Exception:
+            raise RuntimeError("history_existing_snapshot_unreadable") from None
+        # A read failure can be returned as an empty frame by the CSV adapter.
+        # Never turn a failed or partial restore into a replacement snapshot.
+        if old_norm.empty or len(old_norm) != len(previous):
+            raise RuntimeError("history_existing_snapshot_invalid")
+        frames.append(old_norm)
     frames.append(new_norm)
 
     merged = pd.concat(frames, ignore_index=True, sort=False)
@@ -2000,19 +2006,19 @@ def load_score_trend_safe():
     ]
     if not csv_exists("score_trend.csv"):
         return pd.DataFrame(columns=base_cols)
-    df = read_table_prefer_db("score_trend.csv", on_bad_lines="skip")
-    if df is None:
-        return pd.DataFrame(columns=base_cols)
-    if df.empty:
-        return pd.DataFrame(columns=base_cols)
+    try:
+        df = read_table_prefer_db("score_trend.csv", dtype={"종목코드": str})
+    except Exception:
+        raise RuntimeError("score_trend_existing_snapshot_unreadable") from None
+    if df is None or df.empty:
+        raise RuntimeError("score_trend_existing_snapshot_invalid")
+    df = df.copy()
 
     df.columns = [str(c).replace('\ufeff', '').strip() for c in df.columns]
     bad_cols = [c for c in df.columns if any(x in str(c) for x in ["<<<<<<<", "=======", ">>>>>>>"])]
-    if bad_cols:
-        df = df.drop(columns=bad_cols, errors='ignore')
-
-    if '날짜' not in df.columns:
-        return pd.DataFrame(columns=base_cols)
+    if bad_cols or df.columns.duplicated().any() or not {'날짜', '종목명', '종목코드'}.issubset(df.columns):
+        raise RuntimeError("score_trend_existing_snapshot_invalid")
+    original_rows = len(df)
 
     marker_pat = r"^(?:<<<<<<<|=======|>>>>>>>)"
     if '날짜' in df.columns:
@@ -2020,10 +2026,13 @@ def load_score_trend_safe():
     if '종목명' in df.columns:
         df = df[~df['종목명'].astype(str).str.contains(marker_pat, regex=True, na=False)]
 
+    if len(df) != original_rows:
+        raise RuntimeError("score_trend_existing_snapshot_invalid")
     for c in base_cols + optional_cols:
         if c not in df.columns:
             df[c] = None
-    return df[base_cols + optional_cols]
+    # Preserve archived V5 fields and future metadata; never recalculate old scores.
+    return df
 
 def _score_news_candidate(candidate):
     return _score_news_candidate_base(candidate, include_relevance=False)
