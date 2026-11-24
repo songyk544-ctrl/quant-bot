@@ -1,13 +1,12 @@
 """Offline candidate adapter for the existing Quant Data Scraper publication."""
 import argparse
 from contextlib import closing
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from hashlib import sha256
 from io import BytesIO
 import json
 import os
 from pathlib import Path
-import re
 import sqlite3
 
 import pandas as pd
@@ -18,9 +17,14 @@ from .scoring_service import (
     passes_confirmed_pullback_filter, passes_relative_strength_filter,
 )
 
+from .forward_signal_contract import (
+    APPEND_FIELDS, CAPTURE_FIELDS, CODE, KST, MAX_MANIFEST_RECORDS, SHA1, SHA256, canonical, digest, instant,
+    require as _require,
+    validate_capture, validate_manifest,
+)
+from .forward_signal_observation import observe, read_json, verify_observation
+
 ROOT = Path(__file__).resolve().parents[1]
-KST = timezone(timedelta(hours=9))
-CODE = re.compile(r'(?=.*[0-9])[0-9A-Z]{6}')
 V5_STATES = {'추천', '통과대기', '통과', '관찰', '제외'}
 FILES = ('data.csv', 'daily_candidates.csv', 'source_health.csv', 'history.csv')
 SCORE = '스윙우선순위'
@@ -28,25 +32,6 @@ PROFILES = {'V3': 'v3 상대강도', 'V4': 'v4 수급확인'}
 HISTORY_FIELDS = ('종가', '거래대금(억)', '연기금', '투신', '사모')
 MAX_FILE = 16 * 1024 * 1024
 
-
-def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
-
-
-def digest(value):
-    return sha256(canonical(value).encode()).hexdigest()
-
-
-def instant(value):
-    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    if parsed.utcoffset() is None:
-        raise ValueError('timezone_required')
-    return parsed.astimezone(timezone.utc)
-
-
-def _require(ok, error):
-    if not ok:
-        raise ValueError(error)
 
 
 def _result(codes):
@@ -114,8 +99,8 @@ def capture(receipt, directory):
     session, run_id = receipt['session'], receipt['run_id']
     generated = instant(receipt['generated_at'])
     _require(date.fromisoformat(session).isoformat() == session <= generated.astimezone(KST).date().isoformat()
-             and type(run_id) is int and run_id > 0 and re.fullmatch(r'[0-9a-f]{40}', receipt['code_sha'])
-             and re.fullmatch(r'[0-9a-f]{64}', receipt['config_sha256'])
+             and type(run_id) is int and run_id > 0 and SHA1.fullmatch(receipt['code_sha'])
+             and SHA256.fullmatch(receipt['config_sha256'])
              and receipt['outcome'] in {'success', 'failed'}, 'invalid_capture_receipt')
     evidence, tables = {}, {}
     results = {}
@@ -138,8 +123,13 @@ def capture(receipt, directory):
                     'observed_at': generated.isoformat(), 'available_at': generated.isoformat(),
                 }
             health, stocks = tables['source_health.csv'].iloc[-1], tables['data.csv']
+            checked = datetime.fromisoformat(health['확인시각'])
+            if checked.utcoffset() is None:
+                checked = checked.replace(tzinfo=KST)
             _require(health['기준거래일'] == session and health['상태'] == 'ok'
+                     and health['소스'] == 'KIS_MASTER' and health['연속실패거래일'] == '0'
                      and health['fallback사용'].lower() == 'false'
+                     and session <= checked.astimezone(KST).date().isoformat() and checked <= generated
                      and int(health['종목수']) == len(stocks)
                      and not stocks.empty and stocks['종목명'].str.strip().ne('').all()
                      and stocks['종목명'].is_unique and stocks['종목코드'].is_unique
@@ -165,7 +155,7 @@ def capture(receipt, directory):
                                         'sha256': digest(receipt['calendar'])}
             except (KeyError, IndexError, ValueError):
                 results.update(dict.fromkeys(PROFILES, _missing('candidate_filter_inputs_unverified')))
-    return [{'schema': 1, 'session': session, 'strategy': version,
+    records = [{'schema': 1, 'session': session, 'strategy': version,
              'scope': 'operational_recommendation' if version == 'V5' else 'archived_candidate_filter',
              'run_id': run_id, 'code_sha': receipt['code_sha'], 'config_sha256': receipt['config_sha256'],
              'generated_at': generated.isoformat(),
@@ -173,37 +163,60 @@ def capture(receipt, directory):
                         if version != 'V5' or key not in {'history', 'calendar'}},
              **results[version]} for version in ('V3', 'V4', 'V5')]
 
+    validate_capture(records)
+    return records
 
-def publish(path, receipts, observed_at):
-    """Commit all stream revisions together. Repeating an identical run is a no-op."""
+
+def _manifest(db):
+    records = [json.loads(value) for (value,) in db.execute(
+        'SELECT body FROM manifest ORDER BY stream, revision LIMIT ?', (MAX_MANIFEST_RECORDS + 1,))]
+    validate_manifest(records)
+    captures = {}
+    for record in records:
+        key = record['session'], record['run_id']
+        captures.setdefault(key, []).append(record)
+    observations = {(session, run_id): (fingerprint, json.loads(body)) for session, run_id, fingerprint, body in
+                    db.execute('SELECT session, run_id, key_sha256, body FROM observations')}
+    _require(captures.keys() == observations.keys(), 'archive_observations_missing')
+    for key, rows in captures.items():
+        fingerprint, receipt = observations[key]
+        capture_rows = [{k: row[k] for k in CAPTURE_FIELDS} for row in rows]
+        identity = validate_capture(capture_rows)
+        _require(SHA256.fullmatch(fingerprint) and 'signature' in receipt
+                 and all(receipt.get(field) == value for field, value in identity.items())
+                 and receipt.get('capture_sha256') == digest(capture_rows)
+                 and all(row['published_at'] == receipt.get('available_at') for row in rows),
+                 'archive_observation_mismatch')
+    return records
+
+
+def publish(path, records, receipt, reader_public_key):
+    """Commit all stream revisions and the verified reader proof together."""
+    observed, key_sha = verify_observation(records, receipt, reader_public_key)
     _require(not path.is_symlink(), 'archive_path_is_symlink')
     path = path.resolve()
     inside_git = any((parent / '.git').is_file() or (parent / '.git' / 'HEAD').is_file() for parent in path.parents)
-    _require(not path.is_relative_to(ROOT) and not inside_git,
-             'archive_must_be_outside_quant_checkout')
-    observed = instant(observed_at)
-    _require({row['strategy'] for row in receipts} == {'V3', 'V4', 'V5'} and len(receipts) == 3,
-             'incomplete_capture')
-    _require(len({(row['session'], row['run_id'], row['code_sha'], row['config_sha256'], row['generated_at'])
-                  for row in receipts}) == 1, 'mixed_capture_receipt')
-    os.close(os.open(path, os.O_CREAT | os.O_RDWR, 0o600))
+    _require(not path.is_relative_to(ROOT) and not inside_git, 'archive_must_be_outside_quant_checkout')
+    os.close(os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600))
     with closing(sqlite3.connect(path, timeout=15, isolation_level=None)) as db:
         db.execute('PRAGMA synchronous=FULL')
-        db.execute('CREATE TABLE IF NOT EXISTS manifest (stream TEXT, run_id INTEGER, revision INTEGER, body TEXT, '
-                   'UNIQUE(stream, run_id), UNIQUE(stream, revision))')
         db.execute('BEGIN IMMEDIATE')
-        appended = 0
         try:
-            for record in receipts:
-                _require(instant(record['generated_at']) <= observed, 'publication_before_capture')
+            db.execute('CREATE TABLE IF NOT EXISTS manifest (stream TEXT, run_id INTEGER, revision INTEGER, body TEXT, '
+                       'UNIQUE(stream, run_id), UNIQUE(stream, revision))')
+            db.execute('CREATE TABLE IF NOT EXISTS observations (session TEXT, run_id INTEGER, key_sha256 TEXT, '
+                       'body TEXT, PRIMARY KEY(session, run_id))')
+            if db.execute('SELECT 1 FROM manifest LIMIT 1').fetchone():
+                _manifest(db)
+            appended = 0
+            for record in records:
                 stream = canonical([record[key] for key in ('session', 'strategy', 'scope')])
                 existing = db.execute('SELECT body FROM manifest WHERE stream=? AND run_id=?',
                                       (stream, record['run_id'])).fetchone()
                 if existing:
                     old = json.loads(existing[0])
-                    for key in ('revision', 'published_at', 'previous_sha256'):
-                        del old[key]
-                    _require(old == record, 'conflicting_run_retry')
+                    _require({k: v for k, v in old.items() if k not in APPEND_FIELDS} == record,
+                             'conflicting_run_retry')
                     continue
                 prev = db.execute('SELECT revision, body FROM manifest WHERE stream=? ORDER BY revision DESC LIMIT 1',
                                   (stream,)).fetchone()
@@ -214,23 +227,21 @@ def publish(path, receipts, observed_at):
                 db.execute('INSERT INTO manifest VALUES (?, ?, ?, ?)',
                            (stream, record['run_id'], row['revision'], canonical(row)))
                 appended += 1
+            if appended:
+                _require(appended == len(records), 'partial_run_archive')
+                db.execute('INSERT INTO observations VALUES (?, ?, ?, ?)',
+                           (records[0]['session'], records[0]['run_id'], key_sha, canonical(receipt)))
+                _manifest(db)
+            db.commit()
         except Exception:
             db.rollback()
             raise
-        db.commit()
     return appended
 
 
 def export(path):
     with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True)) as db:
-        return [json.loads(value) for (value,) in db.execute('SELECT body FROM manifest ORDER BY stream, revision')]
-
-
-def _read_json(path):
-    with path.open('rb') as source:
-        raw = source.read(MAX_FILE + 1)
-    _require(len(raw) <= MAX_FILE, 'receipt_too_large')
-    return json.loads(raw)
+        return _manifest(db)
 
 
 def main(argv=None):
@@ -239,20 +250,26 @@ def main(argv=None):
     stage = commands.add_parser('capture')
     stage.add_argument('--receipt', required=True, type=Path)
     stage.add_argument('--data-dir', required=True, type=Path)
+    reader = commands.add_parser('observe')
+    reader.add_argument('--capture', required=True, type=Path)
+    reader.add_argument('--reader-private-key', required=True, type=Path)
     append = commands.add_parser('publish')
     append.add_argument('--archive', required=True, type=Path)
     append.add_argument('--capture', required=True, type=Path)
     append.add_argument('--publication-receipt', required=True, type=Path)
+    append.add_argument('--reader-public-key', required=True, type=Path)
     read = commands.add_parser('export')
     read.add_argument('--archive', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == 'capture':
-            print(canonical(capture(_read_json(args.receipt), args.data_dir)))
+            print(canonical(capture(read_json(args.receipt), args.data_dir)))
+        elif args.command == 'observe':
+            print(canonical(observe(args.capture, args.reader_private_key)))
         elif args.command == 'publish':
-            receipt, records = _read_json(args.publication_receipt), _read_json(args.capture)
-            _require(receipt['capture_sha256'] == digest(records), 'capture_publication_digest_mismatch')
-            print(canonical({'appended': publish(args.archive, records, receipt['available_at'])}))
+            appended = publish(args.archive, read_json(args.capture), read_json(args.publication_receipt),
+                               args.reader_public_key)
+            print(canonical({'appended': appended}))
         else:
             print(canonical(export(args.archive)))
     except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as error:
